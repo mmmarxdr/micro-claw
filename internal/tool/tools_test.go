@@ -417,7 +417,7 @@ func TestParseSize(t *testing.T) {
 		{"2MB", 2 * 1024 * 1024},
 		{"512KB", 512 * 1024},
 		{"1024", 1024},
-		{"5GB", 0},   // unknown suffix → 0
+		{"5GB", 0}, // unknown suffix → 0
 		{"", 0},
 		{"100KB", 100 * 1024},
 		{"5MB", 5 * 1024 * 1024},
@@ -442,7 +442,7 @@ func TestReadFileTool(t *testing.T) {
 	t.Run("success read of temp file", func(t *testing.T) {
 		dir := t.TempDir()
 		fPath := filepath.Join(dir, "test.txt")
-		if err := os.WriteFile(fPath, []byte("hello"), 0644); err != nil {
+		if err := os.WriteFile(fPath, []byte("hello"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		rt := NewReadFileTool(config.FileToolConfig{BasePath: dir, MaxFileSize: "1MB"})
@@ -493,7 +493,7 @@ func TestReadFileTool(t *testing.T) {
 		// write 2049 bytes
 		data := bytes.Repeat([]byte("x"), 2049)
 		fPath := filepath.Join(dir, "big.txt")
-		if err := os.WriteFile(fPath, data, 0644); err != nil {
+		if err := os.WriteFile(fPath, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		rt := NewReadFileTool(config.FileToolConfig{BasePath: dir, MaxFileSize: "2KB"})
@@ -604,7 +604,7 @@ func TestWriteFileTool(t *testing.T) {
 		dir := t.TempDir()
 		// Create a directory where we want to write a file — WriteFile should fail
 		targetDir := filepath.Join(dir, "isdir")
-		if err := os.Mkdir(targetDir, 0755); err != nil {
+		if err := os.Mkdir(targetDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		wt := NewWriteFileTool(config.FileToolConfig{BasePath: dir, MaxFileSize: "1MB"})
@@ -625,10 +625,10 @@ func TestWriteFileTool(t *testing.T) {
 func TestListFilesTool(t *testing.T) {
 	t.Run("success list with files and subdirs", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(filepath.Join(dir, "mydir"), 0755); err != nil {
+		if err := os.Mkdir(filepath.Join(dir, "mydir"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		lt := NewListFilesTool(config.FileToolConfig{BasePath: dir})
@@ -664,7 +664,7 @@ func TestListFilesTool(t *testing.T) {
 
 	t.Run("null params defaults to base path root", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("x"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		lt := NewListFilesTool(config.FileToolConfig{BasePath: dir})
@@ -741,7 +741,10 @@ func TestHTTPFetchTool_Success(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotMethod = r.Method
 			buf := new(bytes.Buffer)
-			buf.ReadFrom(r.Body)
+			if _, err := buf.ReadFrom(r.Body); err != nil {
+				http.Error(w, "read body error", http.StatusInternalServerError)
+				return
+			}
 			gotBody = buf.String()
 			gotHeader = r.Header.Get("X-Custom")
 			fmt.Fprint(w, "received")
@@ -980,6 +983,66 @@ func TestHTTPFetchTool_ErrorCases(t *testing.T) {
 		_, err := ht.Execute(context.Background(), json.RawMessage(`{bad}`))
 		if err == nil {
 			t.Error("expected Go error, got nil")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestBuildRegistry_MCPDisabled
+// ---------------------------------------------------------------------------
+
+func TestBuildRegistry_MCPDisabled(t *testing.T) {
+	t.Run("MCP disabled registry contains only built-ins", func(t *testing.T) {
+		cfg := config.ToolsConfig{
+			Shell: config.ShellToolConfig{Enabled: true},
+			File:  config.FileToolConfig{Enabled: true},
+			MCP:   config.MCPConfig{Enabled: false},
+		}
+		reg := BuildRegistry(cfg)
+		// Expect 4 built-in tools: shell_exec, read_file, write_file, list_files
+		if len(reg) != 4 {
+			t.Errorf("expected 4 tools with MCP disabled, got %d", len(reg))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestMergeTools
+// ---------------------------------------------------------------------------
+
+func TestMergeTools(t *testing.T) {
+	t.Run("external tools merged into registry", func(t *testing.T) {
+		reg := map[string]Tool{
+			"built_in": NewShellTool(config.ShellToolConfig{}),
+		}
+		external := map[string]Tool{
+			"mcp_tool": NewHTTPFetchTool(config.HTTPToolConfig{}),
+		}
+		MergeTools(reg, external)
+		if _, ok := reg["mcp_tool"]; !ok {
+			t.Error("expected 'mcp_tool' in registry after merge")
+		}
+		if len(reg) != 2 {
+			t.Errorf("expected 2 tools, got %d", len(reg))
+		}
+	})
+
+	t.Run("built-in wins on collision", func(t *testing.T) {
+		builtIn := NewShellTool(config.ShellToolConfig{})
+		reg := map[string]Tool{
+			"shell_exec": builtIn,
+		}
+		// Provide an external tool with the same name
+		external := map[string]Tool{
+			"shell_exec": NewHTTPFetchTool(config.HTTPToolConfig{}),
+		}
+		MergeTools(reg, external)
+		// The built-in must still be in the registry (no overwrite)
+		if reg["shell_exec"] != builtIn {
+			t.Error("expected built-in to win on collision")
+		}
+		if len(reg) != 1 {
+			t.Errorf("expected 1 tool, got %d", len(reg))
 		}
 	})
 }

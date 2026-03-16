@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,8 +73,21 @@ func TestFileStore_LoadNonExistent(t *testing.T) {
 	store := NewFileStore(config.StoreConfig{Path: tmpDir})
 
 	_, err := store.LoadConversation(context.Background(), "no-existe")
-	if err == nil {
-		t.Errorf("Expected error loading non-existent conversation")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestFileStore_ErrNotFound_Wrapped(t *testing.T) {
+	tmpDir := t.TempDir()
+	st := NewFileStore(config.StoreConfig{Path: tmpDir})
+	_, err := st.LoadConversation(context.Background(), "no-existe")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected errors.Is(err, ErrNotFound), got: %v", err)
+	}
+	// The raw error must be wrapped (not the sentinel itself)
+	if err == ErrNotFound {
+		t.Errorf("expected error to be wrapped, not the sentinel itself, got: %v", err)
 	}
 }
 
@@ -126,13 +140,13 @@ func TestFileStore_MemoryAppendAndSearch(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		if err := store.AppendMemory(ctx, e); err != nil {
+		if err := store.AppendMemory(ctx, "global", e); err != nil {
 			t.Fatalf("AppendMemory failed: %v", err)
 		}
 	}
 
 	// Case insensitive search
-	matches, err := store.SearchMemory(ctx, "GOLANG", 5)
+	matches, err := store.SearchMemory(ctx, "global", "GOLANG", 5)
 	if err != nil {
 		t.Fatalf("SearchMemory failed: %v", err)
 	}
@@ -154,10 +168,10 @@ func TestFileStore_MemorySearchLimit(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		e := MemoryEntry{ID: fmt.Sprintf("m%d", i), Content: "Test item"}
-		_ = store.AppendMemory(ctx, e)
+		_ = store.AppendMemory(ctx, "global", e)
 	}
 
-	matches, _ := store.SearchMemory(ctx, "test", 3)
+	matches, _ := store.SearchMemory(ctx, "global", "test", 3)
 	if len(matches) != 3 {
 		t.Errorf("Expected exactly 3 matches due to limit, got %d", len(matches))
 	}
@@ -259,12 +273,12 @@ func TestFileStore_SearchMemory_TagMatch(t *testing.T) {
 		Tags:      []string{"golang", "testing"},
 		CreatedAt: time.Now(),
 	}
-	if err := store.AppendMemory(ctx, entry); err != nil {
+	if err := store.AppendMemory(ctx, "global", entry); err != nil {
 		t.Fatalf("AppendMemory: %v", err)
 	}
 
 	// Should find by tag "golang"
-	matches, err := store.SearchMemory(ctx, "golang", 5)
+	matches, err := store.SearchMemory(ctx, "global", "golang", 5)
 	if err != nil {
 		t.Fatalf("SearchMemory: %v", err)
 	}
@@ -273,7 +287,7 @@ func TestFileStore_SearchMemory_TagMatch(t *testing.T) {
 	}
 
 	// Should NOT find for unrelated tag
-	noMatches, err := store.SearchMemory(ctx, "python", 5)
+	noMatches, err := store.SearchMemory(ctx, "global", "python", 5)
 	if err != nil {
 		t.Fatalf("SearchMemory: %v", err)
 	}
@@ -293,11 +307,11 @@ func TestFileStore_SearchMemory_EmptyQuery(t *testing.T) {
 			Content:   fmt.Sprintf("memory entry %d", i),
 			CreatedAt: time.Now(),
 		}
-		_ = store.AppendMemory(ctx, e)
+		_ = store.AppendMemory(ctx, "global", e)
 	}
 
 	// Empty string is a substring of every string — should return all 3
-	matches, err := store.SearchMemory(ctx, "", 10)
+	matches, err := store.SearchMemory(ctx, "global", "", 10)
 	if err != nil {
 		t.Fatalf("SearchMemory: %v", err)
 	}
@@ -316,12 +330,12 @@ func TestFileStore_SearchMemory_CaseInsensitive(t *testing.T) {
 		Content:   "Golang is great",
 		CreatedAt: time.Now(),
 	}
-	if err := store.AppendMemory(ctx, entry); err != nil {
+	if err := store.AppendMemory(ctx, "global", entry); err != nil {
 		t.Fatalf("AppendMemory: %v", err)
 	}
 
 	for _, query := range []string{"golang", "GOLANG", "GoLang"} {
-		matches, err := store.SearchMemory(ctx, query, 5)
+		matches, err := store.SearchMemory(ctx, "global", query, 5)
 		if err != nil {
 			t.Fatalf("SearchMemory(%q): %v", query, err)
 		}
@@ -347,7 +361,7 @@ func TestFileStore_LoadConversation_CorruptJSON(t *testing.T) {
 
 	// Overwrite the file with corrupt JSON
 	corruptPath := filepath.Join(tmpDir, "conversations", convID+".json")
-	if err := os.WriteFile(corruptPath, []byte("{not valid json"), 0644); err != nil {
+	if err := os.WriteFile(corruptPath, []byte("{not valid json"), 0o644); err != nil {
 		t.Fatalf("writing corrupt file: %v", err)
 	}
 
@@ -374,11 +388,11 @@ func TestFileStore_AtomicWrite_UnwritableDir(t *testing.T) {
 
 	// Make the conversations directory unwritable
 	convDir := filepath.Join(tmpDir, "conversations")
-	if err := os.Chmod(convDir, 0000); err != nil {
+	if err := os.Chmod(convDir, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	// Restore permissions when test ends so t.TempDir() cleanup works
-	defer os.Chmod(convDir, 0755)
+	defer func() { _ = os.Chmod(convDir, 0o755) }()
 
 	newConv := Conversation{ID: "new-conv", ChannelID: "cli"}
 	err := store.SaveConversation(ctx, newConv)
@@ -428,7 +442,7 @@ func TestFileStore_ListConversations_DirEntrySkipped(t *testing.T) {
 
 	// Create a sub-directory inside conversations/ — it should be ignored.
 	subDir := filepath.Join(tmpDir, "conversations", "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, 0o755); err != nil {
 		t.Fatalf("mkdir subdir: %v", err)
 	}
 
@@ -475,7 +489,7 @@ func TestFileStore_MemPath_TildeExpansion(t *testing.T) {
 	ctx := context.Background()
 
 	// AppendMemory exercises memPath with tilde.
-	err := store.AppendMemory(ctx, MemoryEntry{ID: "tilde-mem", Content: "tilde test"})
+	err := store.AppendMemory(ctx, "global", MemoryEntry{ID: "tilde-mem", Content: "tilde test"})
 	if err != nil {
 		t.Fatalf("AppendMemory with tilde basePath failed: %v", err)
 	}
@@ -486,7 +500,7 @@ func TestFileStore_MemPath_TildeExpansion(t *testing.T) {
 func TestFileStore_SaveMemory_MemPathError(t *testing.T) {
 	parent := t.TempDir()
 	blockPath := filepath.Join(parent, "not-a-dir")
-	if err := os.WriteFile(blockPath, []byte("block"), 0644); err != nil {
+	if err := os.WriteFile(blockPath, []byte("block"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -496,7 +510,7 @@ func TestFileStore_SaveMemory_MemPathError(t *testing.T) {
 
 	// AppendMemory calls loadMemory (memPath fails) then saveMemory.
 	// loadMemory will fail first — that's fine, it still exercises the path.
-	err := store.AppendMemory(ctx, MemoryEntry{ID: "x"})
+	err := store.AppendMemory(ctx, "global", MemoryEntry{ID: "x"})
 	if err == nil {
 		t.Fatal("expected error when basePath cannot be created")
 	}
@@ -509,7 +523,7 @@ func TestFileStore_ConvPath_MkdirAllError(t *testing.T) {
 
 	// Block MkdirAll by creating a regular file where the directory should be.
 	blockPath := filepath.Join(tmpDir, "conversations")
-	if err := os.WriteFile(blockPath, []byte("block"), 0644); err != nil {
+	if err := os.WriteFile(blockPath, []byte("block"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -529,7 +543,7 @@ func TestFileStore_MemPath_MkdirAllError(t *testing.T) {
 
 	// Create a regular file where the sub-directory (basePath) should live.
 	blockPath := filepath.Join(parent, "not-a-dir")
-	if err := os.WriteFile(blockPath, []byte("block"), 0644); err != nil {
+	if err := os.WriteFile(blockPath, []byte("block"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -538,7 +552,7 @@ func TestFileStore_MemPath_MkdirAllError(t *testing.T) {
 	store := NewFileStore(config.StoreConfig{Path: basePath})
 	ctx := context.Background()
 
-	err := store.AppendMemory(ctx, MemoryEntry{ID: "x", Content: "test"})
+	err := store.AppendMemory(ctx, "global", MemoryEntry{ID: "x", Content: "test"})
 	if err == nil {
 		t.Fatal("expected MkdirAll error when basePath cannot be created, got nil")
 	}
@@ -561,10 +575,10 @@ func TestFileStore_LoadConversation_ReadError(t *testing.T) {
 	}
 
 	convFile := filepath.Join(tmpDir, "conversations", convID+".json")
-	if err := os.Chmod(convFile, 0000); err != nil {
+	if err := os.Chmod(convFile, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	defer os.Chmod(convFile, 0644)
+	defer func() { _ = os.Chmod(convFile, 0o644) }()
 
 	_, err := store.LoadConversation(ctx, convID)
 	if err == nil {
@@ -589,10 +603,10 @@ func TestFileStore_ListConversations_ReadDirError(t *testing.T) {
 	}
 
 	convDir := filepath.Join(tmpDir, "conversations")
-	if err := os.Chmod(convDir, 0000); err != nil {
+	if err := os.Chmod(convDir, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	defer os.Chmod(convDir, 0755)
+	defer func() { _ = os.Chmod(convDir, 0o755) }()
 
 	_, err := store.ListConversations(ctx, "", 0)
 	if err == nil {
@@ -607,14 +621,14 @@ func TestFileStore_LoadMemory_CorruptJSON(t *testing.T) {
 	store := NewFileStore(config.StoreConfig{Path: tmpDir})
 	ctx := context.Background()
 
-	memFile := filepath.Join(tmpDir, "memory.json")
-	if err := os.WriteFile(memFile, []byte("{not valid json"), 0644); err != nil {
+	memFile := filepath.Join(tmpDir, "memory_global.json")
+	if err := os.WriteFile(memFile, []byte("{not valid json"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	_, err := store.SearchMemory(ctx, "anything", 5)
+	_, err := store.SearchMemory(ctx, "global", "anything", 5)
 	if err == nil {
-		t.Fatal("expected unmarshal error for corrupt memory.json, got nil")
+		t.Fatal("expected unmarshal error for corrupt memory_global.json, got nil")
 	}
 }
 
@@ -630,19 +644,19 @@ func TestFileStore_LoadMemory_ReadError(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a valid memory.json first.
-	if err := store.AppendMemory(ctx, MemoryEntry{ID: "m1", Content: "hi"}); err != nil {
+	if err := store.AppendMemory(ctx, "global", MemoryEntry{ID: "m1", Content: "hi"}); err != nil {
 		t.Fatalf("setup AppendMemory: %v", err)
 	}
 
-	memFile := filepath.Join(tmpDir, "memory.json")
-	if err := os.Chmod(memFile, 0000); err != nil {
+	memFile := filepath.Join(tmpDir, "memory_global.json")
+	if err := os.Chmod(memFile, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	defer os.Chmod(memFile, 0644)
+	defer func() { _ = os.Chmod(memFile, 0o644) }()
 
-	_, err := store.SearchMemory(ctx, "hi", 5)
+	_, err := store.SearchMemory(ctx, "global", "hi", 5)
 	if err == nil {
-		t.Fatal("expected read error for unreadable memory.json, got nil")
+		t.Fatal("expected read error for unreadable memory_global.json, got nil")
 	}
 }
 
@@ -656,14 +670,14 @@ func TestFileStore_SaveMemory_AtomicWriteError(t *testing.T) {
 	ctx := context.Background()
 
 	// Create memory.json as a directory so atomicWrite's rename fails.
-	memDir := filepath.Join(tmpDir, "memory.json")
-	if err := os.Mkdir(memDir, 0755); err != nil {
+	memDir := filepath.Join(tmpDir, "memory_global.json")
+	if err := os.Mkdir(memDir, 0o755); err != nil {
 		t.Fatalf("setup mkdir: %v", err)
 	}
 
-	err := store.AppendMemory(ctx, MemoryEntry{ID: "x", Content: "test"})
+	err := store.AppendMemory(ctx, "global", MemoryEntry{ID: "x", Content: "test"})
 	if err == nil {
-		t.Fatal("expected atomicWrite error when memory.json is a directory, got nil")
+		t.Fatal("expected atomicWrite error when memory_global.json is a directory, got nil")
 	}
 }
 

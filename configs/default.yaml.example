@@ -1,0 +1,156 @@
+# =============================================================================
+# microagent — configuration example
+# =============================================================================
+# Copy this file to configs/default.yaml and fill in the values marked with
+# REPLACE_ME. That file is git-ignored, so your secrets never leave this machine.
+#
+#   cp configs/default.yaml.example configs/default.yaml
+#
+# Alternatively you can export the keys as environment variables and let
+# dev.sh pick them up automatically:
+#
+#   export OPENROUTER_API_KEY="sk-or-v1-..."
+#   ./dev.sh run
+#
+# String values support ${ENV_VAR} interpolation — the loader expands them at
+# startup and fails fast if the variable is not set.
+# =============================================================================
+
+agent:
+  name: "Micro"
+  personality: |
+    You are a concise, helpful personal assistant.
+    You respond in the same language the user writes in.
+    You prefer short, actionable answers over lengthy explanations.
+  max_iterations: 10
+  max_tokens_per_turn: 4096
+  history_length: 20
+  memory_results: 5
+
+# -----------------------------------------------------------------------------
+# Provider — choose one block and delete (or comment out) the others.
+# -----------------------------------------------------------------------------
+
+# -- OpenRouter (routes to the best available model) --------------------------
+provider:
+  type: openrouter
+  model: openrouter/auto          # or e.g. "meta-llama/llama-3.3-70b-instruct:free"
+  api_key: "REPLACE_ME"           # get yours at https://openrouter.ai/keys
+  # api_key: ${OPENROUTER_API_KEY} # alternative: read from env var
+  timeout: 60s
+  max_retries: 3
+  # Optional fallback provider activated on rate-limit / unavailability:
+  # fallback:
+  #   type: openrouter
+  #   model: meta-llama/llama-3.3-70b-instruct:free
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   timeout: 30s
+
+# -- Anthropic ----------------------------------------------------------------
+# provider:
+#   type: anthropic
+#   model: claude-3-5-sonnet-20241022
+#   api_key: "REPLACE_ME"         # get yours at https://console.anthropic.com/
+#   # api_key: ${ANTHROPIC_API_KEY}
+#   timeout: 60s
+#   max_retries: 3
+
+# -- Google Gemini ------------------------------------------------------------
+# provider:
+#   type: gemini
+#   model: gemini-2.0-flash
+#   api_key: "REPLACE_ME"         # get yours at https://aistudio.google.com/apikey
+#   # api_key: ${GEMINI_API_KEY}
+#   timeout: 60s
+#   max_retries: 3
+
+# -----------------------------------------------------------------------------
+# Channel — choose one block and delete (or comment out) the others.
+# -----------------------------------------------------------------------------
+
+# -- CLI (stdin / stdout — great for local development) -----------------------
+channel:
+  type: cli
+
+# -- Telegram -----------------------------------------------------------------
+# channel:
+#   type: telegram
+#   token: "REPLACE_ME"           # get a token from @BotFather on Telegram
+#   allowed_users:
+#     - REPLACE_ME                # your Telegram numeric user ID (use @userinfobot to find it)
+
+# -----------------------------------------------------------------------------
+# Tools
+# -----------------------------------------------------------------------------
+tools:
+  # MCP (Model Context Protocol) client — disabled by default.
+  # Uncomment to connect to external MCP servers.
+  # mcp:
+  #   enabled: false
+  #   connect_timeout: 10s
+  #   servers:
+  #     - name: filesystem
+  #       transport: stdio
+  #       command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  #       prefix_tools: false
+  #     - name: remote
+  #       transport: http
+  #       url: "http://localhost:3000/mcp"
+  #       prefix_tools: true
+
+  shell:
+    enabled: true
+    allowed_commands:
+      - ls
+      - cat
+      - grep
+      - find
+      - wc
+      - head
+      - tail
+      - echo
+      - date
+      - pwd
+    allow_all: false              # set true only if you trust the model completely
+    working_dir: "~"
+
+  file:
+    enabled: true
+    base_path: "~/workspace"      # all file paths are sandboxed under this directory
+    max_file_size: "1MB"
+
+  http:
+    enabled: true
+    timeout: 15s
+    max_response_size: "512KB"
+    blocked_domains: []           # e.g. ["internal.corp.com"] to block specific hosts
+
+# -----------------------------------------------------------------------------
+# Store
+# -----------------------------------------------------------------------------
+store:
+  type: file                  # alternatively: sqlite (uses microagent.db at the same path for better scalability)
+  # type: sqlite              # alternative: uses microagent.db at the same path for better scalability
+  path: "~/.microagent/data"
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level: info                     # debug | info | warn | error
+  format: text                    # text | json
+  file: ""                        # leave empty to log to stderr only
+
+# -----------------------------------------------------------------------------
+# Limits
+# -----------------------------------------------------------------------------
+limits:
+  tool_timeout: 30s
+  total_timeout: 120s
+
+# -----------------------------------------------------------------------------
+# Audit log (records every tool execution)
+# -----------------------------------------------------------------------------
+audit:
+  enabled: false
+  path: "~/.microagent/audit"

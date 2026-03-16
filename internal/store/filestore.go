@@ -35,14 +35,14 @@ func (s *FileStore) convPath(id string) (string, error) {
 		}
 	}
 	dir := filepath.Join(basePath, "conversations")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	id = filepath.Base(filepath.Clean(id))
 	return filepath.Join(dir, id+".json"), nil
 }
 
-func (s *FileStore) memPath() (string, error) {
+func (s *FileStore) memPath(scopeID string) (string, error) {
 	basePath := s.config.Path
 	if basePath == "" {
 		basePath = "~/.microagent/data"
@@ -52,15 +52,20 @@ func (s *FileStore) memPath() (string, error) {
 			basePath = strings.Replace(basePath, "~", usr, 1)
 		}
 	}
-	if err := os.MkdirAll(basePath, 0755); err != nil {
+	if err := os.MkdirAll(basePath, 0o755); err != nil {
 		return "", err
 	}
-	return filepath.Join(basePath, "memory.json"), nil
+	if scopeID == "" {
+		scopeID = "global"
+	}
+	// Sanitize scopeID against directory traversal
+	scopeID = filepath.Base(filepath.Clean(scopeID))
+	return filepath.Join(basePath, "memory_"+scopeID+".json"), nil
 }
 
 func (s *FileStore) atomicWrite(path string, data []byte) error {
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, path)
@@ -89,7 +94,7 @@ func (s *FileStore) LoadConversation(ctx context.Context, id string) (*Conversat
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("not found")
+			return nil, fmt.Errorf("loading conversation %s: %w", id, ErrNotFound)
 		}
 		return nil, err
 	}
@@ -144,8 +149,8 @@ func (s *FileStore) ListConversations(ctx context.Context, channelID string, lim
 	return convs, nil
 }
 
-func (s *FileStore) loadMemory() ([]MemoryEntry, error) {
-	path, err := s.memPath()
+func (s *FileStore) loadMemory(scopeID string) ([]MemoryEntry, error) {
+	path, err := s.memPath(scopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +171,8 @@ func (s *FileStore) loadMemory() ([]MemoryEntry, error) {
 	return entries, nil
 }
 
-func (s *FileStore) saveMemory(entries []MemoryEntry) error {
-	path, err := s.memPath()
+func (s *FileStore) saveMemory(scopeID string, entries []MemoryEntry) error {
+	path, err := s.memPath(scopeID)
 	if err != nil {
 		return err
 	}
@@ -180,18 +185,18 @@ func (s *FileStore) saveMemory(entries []MemoryEntry) error {
 	return s.atomicWrite(path, data)
 }
 
-func (s *FileStore) AppendMemory(ctx context.Context, entry MemoryEntry) error {
-	entries, err := s.loadMemory()
+func (s *FileStore) AppendMemory(ctx context.Context, scopeID string, entry MemoryEntry) error {
+	entries, err := s.loadMemory(scopeID)
 	if err != nil {
 		return err
 	}
 
 	entries = append(entries, entry)
-	return s.saveMemory(entries)
+	return s.saveMemory(scopeID, entries)
 }
 
-func (s *FileStore) SearchMemory(ctx context.Context, query string, limit int) ([]MemoryEntry, error) {
-	entries, err := s.loadMemory()
+func (s *FileStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error) {
+	entries, err := s.loadMemory(scopeID)
 	if err != nil {
 		return nil, err
 	}

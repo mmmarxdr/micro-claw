@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
 	"microagent/internal/provider"
@@ -17,6 +18,7 @@ type Agent struct {
 	channel  channel.Channel
 	provider provider.Provider
 	store    store.Store
+	auditor  audit.Auditor
 	tools    map[string]tool.Tool
 }
 
@@ -26,6 +28,7 @@ func New(
 	ch channel.Channel,
 	prov provider.Provider,
 	st store.Store,
+	auditor audit.Auditor,
 	tools map[string]tool.Tool,
 ) *Agent {
 	return &Agent{
@@ -34,6 +37,7 @@ func New(
 		channel:  ch,
 		provider: prov,
 		store:    st,
+		auditor:  auditor,
 		tools:    tools,
 	}
 }

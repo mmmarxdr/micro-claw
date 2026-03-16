@@ -1,16 +1,21 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
-
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrNoConfig is returned by FindConfigPath when no configuration file is found.
+// Callers should use errors.Is(err, ErrNoConfig) to distinguish this condition
+// from parse errors or permission errors.
+var ErrNoConfig = errors.New("no config file found")
 
 type Config struct {
 	Agent    AgentConfig    `yaml:"agent"`
@@ -20,6 +25,7 @@ type Config struct {
 	Store    StoreConfig    `yaml:"store"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	Limits   LimitsConfig   `yaml:"limits"`
+	Audit    AuditConfig    `yaml:"audit"`
 }
 
 type AgentConfig struct {
@@ -31,25 +37,72 @@ type AgentConfig struct {
 	MemoryResults    int    `yaml:"memory_results"`
 }
 
+// FallbackConfig configures an optional secondary provider for resilience.
+// When present, the runtime wraps the primary in a FallbackProvider decorator.
+type FallbackConfig struct {
+	Type    string        `yaml:"type"               json:"type"`
+	Model   string        `yaml:"model"              json:"model"`
+	APIKey  string        `yaml:"api_key"            json:"api_key"`
+	BaseURL string        `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Timeout time.Duration `yaml:"timeout"            json:"timeout"`
+}
+
 type ProviderConfig struct {
-	Type       string        `yaml:"type"`
-	Model      string        `yaml:"model"`
-	APIKey     string        `yaml:"api_key"`
-	BaseURL    string        `yaml:"base_url"`
-	Timeout    time.Duration `yaml:"timeout"`
-	MaxRetries int           `yaml:"max_retries"`
+	Type       string          `yaml:"type"`
+	Model      string          `yaml:"model"`
+	APIKey     string          `yaml:"api_key"`
+	BaseURL    string          `yaml:"base_url"`
+	Timeout    time.Duration   `yaml:"timeout"`
+	MaxRetries int             `yaml:"max_retries"`
+	Fallback   *FallbackConfig `yaml:"fallback,omitempty" json:"fallback,omitempty"`
 }
 
 type ChannelConfig struct {
-	Type         string   `yaml:"type"`
-	Token        string   `yaml:"token"` // e.g. for telegram
-	AllowedUsers []string `yaml:"allowed_users"`
+	Type         string  `yaml:"type"`
+	Token        string  `yaml:"token"` // e.g. for telegram
+	AllowedUsers []int64 `yaml:"allowed_users"`
 }
 
 type ToolsConfig struct {
 	Shell ShellToolConfig `yaml:"shell"`
 	File  FileToolConfig  `yaml:"file"`
 	HTTP  HTTPToolConfig  `yaml:"http"`
+	MCP   MCPConfig       `yaml:"mcp"`
+}
+
+// MCPConfig is the top-level config block for MCP client support.
+// YAML key: tools.mcp
+type MCPConfig struct {
+	Enabled        bool              `yaml:"enabled"`
+	ConnectTimeout time.Duration     `yaml:"connect_timeout"` // default: 10s
+	Servers        []MCPServerConfig `yaml:"servers"`
+}
+
+// MCPServerConfig describes one MCP server connection.
+type MCPServerConfig struct {
+	Name        string   `yaml:"name"`
+	Transport   string   `yaml:"transport"`    // "stdio" | "http"
+	Command     []string `yaml:"command"`      // stdio only: [executable, args...]
+	URL         string   `yaml:"url"`          // http only
+	PrefixTools bool     `yaml:"prefix_tools"` // prefix tool names with server name
+}
+
+// Validate returns an error if the server config is invalid.
+// Called from Config.validate() when MCP is enabled.
+func (s *MCPServerConfig) Validate() error {
+	switch s.Transport {
+	case "stdio":
+		if len(s.Command) == 0 {
+			return fmt.Errorf("mcp server %q: transport 'stdio' requires non-empty command", s.Name)
+		}
+	case "http":
+		if s.URL == "" {
+			return fmt.Errorf("mcp server %q: transport 'http' requires non-empty url", s.Name)
+		}
+	default:
+		return fmt.Errorf("mcp server %q: unknown transport %q (must be 'stdio' or 'http')", s.Name, s.Transport)
+	}
+	return nil
 }
 
 type ShellToolConfig struct {
@@ -73,8 +126,9 @@ type HTTPToolConfig struct {
 }
 
 type StoreConfig struct {
-	Type string `yaml:"type"`
-	Path string `yaml:"path"`
+	Type          string `yaml:"type"`
+	Path          string `yaml:"path"`
+	EncryptionKey string `yaml:"encryption_key,omitempty"` // hex-encoded 32-byte key; also read from MICROAGENT_SECRET_KEY env var
 }
 
 type LoggingConfig struct {
@@ -88,8 +142,14 @@ type LimitsConfig struct {
 	TotalTimeout time.Duration `yaml:"total_timeout"`
 }
 
+type AuditConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Type    string `yaml:"type"` // "file" (default) | "sqlite"
+	Path    string `yaml:"path"`
+}
+
 func (c *Config) applyDefaults() {
-	if c.Agent.MaxIterations < 0 {
+	if c.Agent.MaxIterations == 0 {
 		c.Agent.MaxIterations = 10
 	}
 	if c.Agent.HistoryLength == 0 {
@@ -125,6 +185,18 @@ func (c *Config) applyDefaults() {
 	if c.Store.Type == "" {
 		c.Store.Type = "file"
 	}
+	if c.Store.Path == "" {
+		c.Store.Path = "~/.microagent/data"
+	}
+	if c.Audit.Type == "" {
+		c.Audit.Type = "file"
+	}
+	if c.Audit.Path == "" {
+		c.Audit.Path = "~/.microagent/audit"
+	}
+	if c.Tools.MCP.ConnectTimeout == 0 {
+		c.Tools.MCP.ConnectTimeout = 10 * time.Second
+	}
 }
 
 func expandTilde(path string) string {
@@ -141,17 +213,33 @@ func (c *Config) resolvePaths() {
 	c.Store.Path = expandTilde(c.Store.Path)
 	c.Tools.File.BasePath = expandTilde(c.Tools.File.BasePath)
 	c.Tools.Shell.WorkingDir = expandTilde(c.Tools.Shell.WorkingDir)
+	c.Audit.Path = expandTilde(c.Audit.Path)
 }
 
 func (c *Config) validate() error {
-	if c.Provider.APIKey == "" {
+	if c.Provider.APIKey == "" && c.Provider.Type != "ollama" {
 		return fmt.Errorf("provider.api_key is required")
 	}
 	switch c.Provider.Type {
-	case "anthropic", "openai", "ollama", "test", "test_provider", "":
+	case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider", "":
 		// valid
 	default:
 		return fmt.Errorf("unknown provider.type: %s", c.Provider.Type)
+	}
+
+	if c.Provider.Fallback != nil {
+		if c.Provider.Fallback.APIKey == "" {
+			return fmt.Errorf("provider.fallback.api_key is required")
+		}
+		if c.Provider.Fallback.Model == "" {
+			return fmt.Errorf("provider.fallback.model is required")
+		}
+		switch c.Provider.Fallback.Type {
+		case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider", "":
+			// valid
+		default:
+			return fmt.Errorf("unknown provider.fallback.type: %s", c.Provider.Fallback.Type)
+		}
 	}
 
 	switch c.Channel.Type {
@@ -166,6 +254,21 @@ func (c *Config) validate() error {
 	}
 	if c.Limits.ToolTimeout > c.Limits.TotalTimeout {
 		return fmt.Errorf("limits.tool_timeout cannot be greater than limits.total_timeout")
+	}
+
+	switch c.Store.Type {
+	case "file", "sqlite", "":
+		// valid
+	default:
+		return fmt.Errorf("unknown store.type: %s (must be 'file' or 'sqlite')", c.Store.Type)
+	}
+
+	if c.Tools.MCP.Enabled {
+		for i := range c.Tools.MCP.Servers {
+			if err := c.Tools.MCP.Servers[i].Validate(); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -211,18 +314,23 @@ func FindConfigPath(override string) (string, error) {
 		return localPath, nil
 	}
 
-	return "", fmt.Errorf("no config file found")
+	return "", ErrNoConfig
 }
 
 func Load(path string) (*Config, error) {
 	resolvedPath, err := FindConfigPath(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load: %w", err)
 	}
 
 	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+
+	// Treat a completely blank file the same as a missing config.
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, fmt.Errorf("load: %w", ErrNoConfig)
 	}
 
 	expanded, err := expandSafeEnv(string(data))

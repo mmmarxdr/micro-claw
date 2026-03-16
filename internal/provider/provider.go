@@ -3,7 +3,28 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 )
+
+// Sentinel errors for provider failure classification.
+// Use errors.Is() to check for these in callers.
+var (
+	ErrRateLimit   = errors.New("rate limit")            // HTTP 429
+	ErrUnavailable = errors.New("service unavailable")   // HTTP 5xx, network/timeout
+	ErrAuth        = errors.New("authentication failed") // HTTP 401, 403
+	ErrBadRequest  = errors.New("bad request")           // HTTP 400, other 4xx
+)
+
+// wrapNetworkError classifies a network-level error using sentinel errors.
+// context.Canceled and context.DeadlineExceeded are returned as-is (caller cancelled).
+// All other network errors are wrapped as ErrUnavailable.
+func wrapNetworkError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrUnavailable, err)
+}
 
 type ChatMessage struct {
 	Role       string     `json:"role"` // "user", "assistant", "tool"
@@ -48,4 +69,5 @@ type Provider interface {
 	Name() string
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	SupportsTools() bool
+	HealthCheck(ctx context.Context) (string, error)
 }

@@ -1,5 +1,3 @@
-//go:build integration
-
 package agent
 
 import (
@@ -15,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
 	"microagent/internal/provider"
@@ -139,12 +138,12 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch n {
 		case 1:
-			w.Write([]byte(buildAnthropicToolUseResponse(
+			_, _ = w.Write([]byte(buildAnthropicToolUseResponse(
 				"tc-001", "list_files",
 				map[string]any{"path": "."},
 			)))
 		default:
-			w.Write([]byte(buildAnthropicTextResponse("Files listed successfully.")))
+			_, _ = w.Write([]byte(buildAnthropicTextResponse("Files listed successfully.")))
 		}
 	}))
 	t.Cleanup(ts.Close)
@@ -172,6 +171,7 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 		ch,
 		prov,
 		st,
+		audit.NoopAuditor{},
 		toolRegistry,
 	)
 
@@ -232,7 +232,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	// -------------------------------------------------------------------------
 	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(buildAnthropicTextResponse(assistantReply)))
+		_, _ = w.Write([]byte(buildAnthropicTextResponse(assistantReply)))
 	}))
 	t.Cleanup(ts1.Close)
 
@@ -243,7 +243,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	var outBuf1 bytes.Buffer
 	ch1 := channel.NewCLIChannel(config.ChannelConfig{}, pr1, &outBuf1)
 
-	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch1, prov1, st1, nil)
+	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch1, prov1, st1, audit.NoopAuditor{}, nil)
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel1)
@@ -275,7 +275,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	}
 
 	// Verify AppendMemory was called — search for a word from the reply.
-	memories, err := st1.SearchMemory(context.Background(), "remember", 10)
+	memories, err := st1.SearchMemory(context.Background(), "cli", "remember", 10)
 	if err != nil {
 		t.Fatalf("Turn 1: SearchMemory error: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 			})
 		}
 
-		w.Write([]byte(buildAnthropicTextResponse("Turn 2 response.")))
+		_, _ = w.Write([]byte(buildAnthropicTextResponse("Turn 2 response.")))
 	}))
 	t.Cleanup(ts2.Close)
 
@@ -323,7 +323,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	var outBuf2 bytes.Buffer
 	ch2 := channel.NewCLIChannel(config.ChannelConfig{}, pr2, &outBuf2)
 
-	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch2, prov2, st2, nil)
+	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch2, prov2, st2, audit.NoopAuditor{}, nil)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel2)
@@ -391,13 +391,13 @@ func TestIntegration_AddNewTool(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch n {
 		case 1:
-			w.Write([]byte(buildAnthropicToolUseResponse(
+			_, _ = w.Write([]byte(buildAnthropicToolUseResponse(
 				"echo-001", "echo_tool",
 				map[string]any{"message": "hello from tool"},
 			)))
 		default:
 			// Verify the tool_result reached the server by checking the request body.
-			w.Write([]byte(buildAnthropicTextResponse("Echo confirmed.")))
+			_, _ = w.Write([]byte(buildAnthropicTextResponse("Echo confirmed.")))
 		}
 	}))
 	t.Cleanup(ts.Close)
@@ -419,6 +419,7 @@ func TestIntegration_AddNewTool(t *testing.T) {
 		ch,
 		prov,
 		st,
+		audit.NoopAuditor{},
 		toolRegistry,
 	)
 
@@ -468,6 +469,7 @@ func (e *echoTestTool) Schema() json.RawMessage {
 		"required": ["message"]
 	}`)
 }
+
 func (e *echoTestTool) Execute(_ context.Context, params json.RawMessage) (tool.ToolResult, error) {
 	atomic.AddInt32(e.callCount, 1)
 	var p struct {

@@ -1,7 +1,12 @@
 package tool
 
-import "microagent/internal/config"
+import (
+	"microagent/internal/config"
+)
 
+// BuildRegistry constructs the built-in tool map from config.
+// MCP tools are merged in by the caller (main.go) via MergeTools,
+// which avoids an import cycle between internal/tool and internal/mcp.
 func BuildRegistry(cfg config.ToolsConfig) map[string]Tool {
 	registry := make(map[string]Tool)
 
@@ -25,4 +30,16 @@ func BuildRegistry(cfg config.ToolsConfig) map[string]Tool {
 	}
 
 	return registry
+}
+
+// MergeTools merges external tools (e.g. from MCP) into an existing registry.
+// Built-ins already in the registry take precedence — MCP tools whose names
+// collide with built-ins are skipped (the caller logs the warning before calling).
+// This function does not log; callers are responsible for collision warnings.
+func MergeTools(registry map[string]Tool, external map[string]Tool) {
+	for name, t := range external {
+		if _, exists := registry[name]; !exists {
+			registry[name] = t
+		}
+	}
 }

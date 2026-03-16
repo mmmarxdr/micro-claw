@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +29,7 @@ provider:
 channel:
   type: "test_channel"
   token: "test-token"
-  allowed_users: ["user1", "user2"]
+  allowed_users: [12345, 67890]
 tools:
   shell:
     enabled: true
@@ -44,7 +46,7 @@ tools:
     max_response_size: "1MB"
     blocked_domains: ["evil.com"]
 store:
-  type: "test_store"
+  type: "file"
   path: "/store"
 logging:
   level: "debug"
@@ -71,6 +73,57 @@ limits:
 	}
 	if len(cfg.Channel.AllowedUsers) != 2 {
 		t.Errorf("Expected 2 allowed users, got %d", len(cfg.Channel.AllowedUsers))
+	}
+}
+
+func TestLoadConfig_AbsentMaxIterationsDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		wantMaxIter int
+		wantErr     bool
+	}{
+		{
+			name: "absent max_iterations defaults to 10",
+			yaml: `
+provider:
+  api_key: "test-key"
+`,
+			wantMaxIter: 10,
+			wantErr:     false,
+		},
+		{
+			name: "explicit zero max_iterations defaults to 10",
+			yaml: `
+provider:
+  api_key: "test-key"
+agent:
+  max_iterations: 0
+`,
+			wantMaxIter: 10,
+			wantErr:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpFile := createTempFile(t, tc.yaml)
+			defer os.Remove(tmpFile)
+
+			cfg, err := Load(tmpFile)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load expected no error, got: %v", err)
+			}
+			if cfg.Agent.MaxIterations != tc.wantMaxIter {
+				t.Errorf("expected MaxIterations=%d, got %d", tc.wantMaxIter, cfg.Agent.MaxIterations)
+			}
+		})
 	}
 }
 
@@ -240,12 +293,12 @@ channel:
 `,
 		},
 		{
-			name: "zero max iterations",
+			name: "negative max iterations",
 			yamlData: `
 provider:
   api_key: "abc"
 agent:
-  max_iterations: 0
+  max_iterations: -1
 `,
 		},
 		{
@@ -333,15 +386,23 @@ func TestLoadConfig_FilePriority(t *testing.T) {
 
 	// Create test configs
 	flagConfig := filepath.Join(tmpDir, "flag.yaml")
-	os.WriteFile(flagConfig, []byte("provider:\n  api_key: \"flag\"\nagent:\n  max_iterations: 5\n"), 0644)
+	if err := os.WriteFile(flagConfig, []byte("provider:\n  api_key: \"flag\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+		t.Fatalf("write flag config: %v", err)
+	}
 
 	localConfig := filepath.Join(tmpDir, "config.yaml")
-	os.WriteFile(localConfig, []byte("provider:\n  api_key: \"local\"\nagent:\n  max_iterations: 5\n"), 0644)
+	if err := os.WriteFile(localConfig, []byte("provider:\n  api_key: \"local\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
 
 	homeConfigDir := filepath.Join(tmpDir, ".microagent")
-	os.MkdirAll(homeConfigDir, 0755)
+	if err := os.MkdirAll(homeConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir home config dir: %v", err)
+	}
 	homeConfig := filepath.Join(homeConfigDir, "config.yaml")
-	os.WriteFile(homeConfig, []byte("provider:\n  api_key: \"home\"\nagent:\n  max_iterations: 5\n"), 0644)
+	if err := os.WriteFile(homeConfig, []byte("provider:\n  api_key: \"home\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+		t.Fatalf("write home config: %v", err)
+	}
 
 	// Mock os.UserHomeDir temporarily by overriding the internal resolver var (we'll implement this hook in config.go later if needed, or just test logic)
 	// For testing FilePriority logic per se, LoadAuto reads the rules.
@@ -359,7 +420,7 @@ func TestFindConfigPath_Override(t *testing.T) {
 	t.Run("override path exists returns path", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		cfgPath := filepath.Join(tmpDir, "my-config.yaml")
-		if err := os.WriteFile(cfgPath, []byte(""), 0644); err != nil {
+		if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
 		got, err := FindConfigPath(cfgPath)
@@ -423,10 +484,10 @@ func TestLoad_UnreadableFile(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "unreadable.yaml")
-	if err := os.WriteFile(cfgPath, []byte("provider:\n  api_key: abc\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("provider:\n  api_key: abc\n"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	if err := os.Chmod(cfgPath, 0000); err != nil {
+	if err := os.Chmod(cfgPath, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 
@@ -436,6 +497,354 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reading") {
 		t.Errorf("expected error to mention 'reading', got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestMCPServerConfigValidate
+// ---------------------------------------------------------------------------
+
+func TestMCPServerConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     MCPServerConfig
+		wantErr bool
+		errStr  string
+	}{
+		{
+			name:    "valid stdio with command",
+			cfg:     MCPServerConfig{Name: "fs", Transport: "stdio", Command: []string{"npx", "arg"}},
+			wantErr: false,
+		},
+		{
+			name:    "valid http with url",
+			cfg:     MCPServerConfig{Name: "remote", Transport: "http", URL: "http://localhost:3000/mcp"},
+			wantErr: false,
+		},
+		{
+			name:    "stdio missing command",
+			cfg:     MCPServerConfig{Name: "fs", Transport: "stdio", Command: []string{}},
+			wantErr: true,
+			errStr:  "command",
+		},
+		{
+			name:    "http missing url",
+			cfg:     MCPServerConfig{Name: "remote", Transport: "http", URL: ""},
+			wantErr: true,
+			errStr:  "url",
+		},
+		{
+			name:    "unknown transport",
+			cfg:     MCPServerConfig{Name: "bad", Transport: "grpc"},
+			wantErr: true,
+			errStr:  "grpc",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+					return
+				}
+				if tc.errStr != "" && !strings.Contains(err.Error(), tc.errStr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.errStr)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestMCPDefaults verifies that applyDefaults sets ConnectTimeout to 10s.
+func TestMCPDefaults(t *testing.T) {
+	yamlData := `
+provider:
+  api_key: "test-key"
+tools:
+  mcp:
+    enabled: true
+    servers:
+      - name: fs
+        transport: stdio
+        command: ["echo", "hello"]
+`
+	tmpFile := createTempFile(t, yamlData)
+	defer os.Remove(tmpFile)
+
+	cfg, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load expected no error, got: %v", err)
+	}
+
+	const wantTimeout = 10 * time.Second
+	if cfg.Tools.MCP.ConnectTimeout != wantTimeout {
+		t.Errorf("MCP.ConnectTimeout = %v, want %v", cfg.Tools.MCP.ConnectTimeout, wantTimeout)
+	}
+}
+
+// TestMCPValidation verifies that Config.validate() propagates per-server validation.
+func TestMCPValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+		errStr  string
+	}{
+		{
+			name: "valid mcp config passes validation",
+			yaml: `
+provider:
+  api_key: "test-key"
+tools:
+  mcp:
+    enabled: true
+    servers:
+      - name: fs
+        transport: stdio
+        command: ["npx", "mcp-server"]
+`,
+			wantErr: false,
+		},
+		{
+			name: "invalid server config propagates error",
+			yaml: `
+provider:
+  api_key: "test-key"
+tools:
+  mcp:
+    enabled: true
+    servers:
+      - name: bad-server
+        transport: stdio
+`,
+			wantErr: true,
+			errStr:  "command",
+		},
+		{
+			name: "unknown transport fails",
+			yaml: `
+provider:
+  api_key: "test-key"
+tools:
+  mcp:
+    enabled: true
+    servers:
+      - name: bad-server
+        transport: grpc
+`,
+			wantErr: true,
+			errStr:  "grpc",
+		},
+		{
+			name: "mcp disabled skips validation",
+			yaml: `
+provider:
+  api_key: "test-key"
+tools:
+  mcp:
+    enabled: false
+    servers:
+      - name: bad-server
+        transport: stdio
+`,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpFile := createTempFile(t, tc.yaml)
+			defer os.Remove(tmpFile)
+
+			_, err := Load(tmpFile)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+					return
+				}
+				if tc.errStr != "" && !strings.Contains(err.Error(), tc.errStr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.errStr)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestConfig_StoreType_Valid verifies that known store types pass validation.
+func TestConfig_StoreType_Valid(t *testing.T) {
+	for _, storeType := range []string{"file", "sqlite", ""} {
+		t.Run("type="+storeType, func(t *testing.T) {
+			yaml := `
+provider:
+  api_key: "test-key"
+store:
+  type: "` + storeType + `"
+`
+			tmpFile := createTempFile(t, yaml)
+			defer os.Remove(tmpFile)
+
+			_, err := Load(tmpFile)
+			if err != nil {
+				t.Errorf("expected no error for store.type=%q, got: %v", storeType, err)
+			}
+		})
+	}
+}
+
+// TestConfig_StoreType_Invalid verifies that unknown store types fail validation.
+func TestConfig_StoreType_Invalid(t *testing.T) {
+	yaml := `
+provider:
+  api_key: "test-key"
+store:
+  type: "badger"
+`
+	tmpFile := createTempFile(t, yaml)
+	defer os.Remove(tmpFile)
+
+	_, err := Load(tmpFile)
+	if err == nil {
+		t.Fatal("expected validation error for store.type='badger', got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown store.type") {
+		t.Errorf("error should contain 'unknown store.type', got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6b: ErrNoConfig sentinel and applyDefaults path defaults
+// ---------------------------------------------------------------------------
+
+func TestApplyDefaults_StorePathDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+	if cfg.Store.Path != "~/.microagent/data" {
+		t.Errorf("Store.Path = %q, want %q", cfg.Store.Path, "~/.microagent/data")
+	}
+}
+
+func TestApplyDefaults_AuditPathDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+	if cfg.Audit.Path != "~/.microagent/audit" {
+		t.Errorf("Audit.Path = %q, want %q", cfg.Audit.Path, "~/.microagent/audit")
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitPaths(t *testing.T) {
+	cfg := &Config{
+		Store: StoreConfig{Path: "/custom/store"},
+		Audit: AuditConfig{Path: "/custom/audit"},
+	}
+	cfg.applyDefaults()
+	if cfg.Store.Path != "/custom/store" {
+		t.Errorf("Store.Path = %q, want %q", cfg.Store.Path, "/custom/store")
+	}
+	if cfg.Audit.Path != "/custom/audit" {
+		t.Errorf("Audit.Path = %q, want %q", cfg.Audit.Path, "/custom/audit")
+	}
+}
+
+func TestErrNoConfig_ErrorsIs(t *testing.T) {
+	wrapped := fmt.Errorf("wrap: %w", ErrNoConfig)
+	if !errors.Is(wrapped, ErrNoConfig) {
+		t.Error("errors.Is(wrapped, ErrNoConfig) should be true for a wrapped ErrNoConfig")
+	}
+	other := fmt.Errorf("other error")
+	if errors.Is(other, ErrNoConfig) {
+		t.Error("errors.Is(other, ErrNoConfig) should be false for an unrelated error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Ollama api_key validation tests
+// ---------------------------------------------------------------------------
+
+func TestValidate_OllamaEmptyAPIKeyAllowed(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Type:  "ollama",
+			Model: "llama3.2",
+		},
+	}
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Errorf("expected no validation error for ollama with empty api_key, got: %v", err)
+	}
+}
+
+func TestValidate_AnthropicEmptyAPIKeyStillFails(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Type: "anthropic",
+		},
+	}
+	cfg.applyDefaults()
+	err := cfg.validate()
+	if err == nil {
+		t.Error("expected validation error for anthropic with empty api_key, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "api_key is required") {
+		t.Errorf("expected error to contain 'api_key is required', got: %v", err)
+	}
+}
+
+func TestValidate_OllamaOtherChecksStillActive(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Type: "ollama",
+		},
+		Agent: AgentConfig{
+			MaxIterations: -1, // invalid — should still be caught
+		},
+	}
+	cfg.applyDefaults()
+	// Override the default MaxIterations to the invalid value
+	cfg.Agent.MaxIterations = -1
+	err := cfg.validate()
+	if err == nil {
+		t.Error("expected validation error for negative MaxIterations, got nil")
+	}
+	if err != nil && strings.Contains(err.Error(), "api_key is required") {
+		t.Errorf("error should be about max_iterations, not api_key: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX 1 — Empty / whitespace-only config file returns ErrNoConfig
+// ---------------------------------------------------------------------------
+
+func TestLoad_EmptyFileReturnsErrNoConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if !errors.Is(err, ErrNoConfig) {
+		t.Errorf("expected errors.Is(err, ErrNoConfig) to be true for empty file, got: %v", err)
+	}
+}
+
+func TestLoad_WhitespaceOnlyFileReturnsErrNoConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("\n\n  \n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if !errors.Is(err, ErrNoConfig) {
+		t.Errorf("expected errors.Is(err, ErrNoConfig) to be true for whitespace-only file, got: %v", err)
 	}
 }
 

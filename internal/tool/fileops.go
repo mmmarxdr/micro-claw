@@ -64,6 +64,7 @@ func (t *ReadFileTool) Name() string { return "read_file" }
 func (t *ReadFileTool) Description() string {
 	return "Read the contents of a file. Path is relative to the configured base_path."
 }
+
 func (t *ReadFileTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -120,6 +121,7 @@ func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
 	return "Write content to a file. Creates parent directories if needed. Path is relative to the configured base_path."
 }
+
 func (t *WriteFileTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -152,11 +154,11 @@ func (t *WriteFileTool) Execute(ctx context.Context, params json.RawMessage) (To
 		return ToolResult{IsError: true, Content: fmt.Sprintf("content size %d exceeds maximum allowed %s", len(input.Content), t.config.MaxFileSize)}, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return ToolResult{IsError: true, Content: fmt.Sprintf("failed to create directories: %v", err)}, nil
 	}
 
-	if err := os.WriteFile(target, []byte(input.Content), 0644); err != nil {
+	if err := os.WriteFile(target, []byte(input.Content), 0o644); err != nil {
 		return ToolResult{IsError: true, Content: fmt.Sprintf("failed to write file: %v", err)}, nil
 	}
 
@@ -176,6 +178,7 @@ func (t *ListFilesTool) Name() string { return "list_files" }
 func (t *ListFilesTool) Description() string {
 	return "List files and directories at the given path. Path is relative to the configured base_path."
 }
+
 func (t *ListFilesTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",

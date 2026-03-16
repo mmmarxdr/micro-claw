@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"os/user"
+	"strconv"
 	"strings"
 
 	"microagent/internal/config"
@@ -89,14 +90,18 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (ToolRe
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return ToolResult{IsError: true, Content: "Tool timed out"}, nil
+			return ToolResult{IsError: true, Content: "Tool timed out", Meta: map[string]string{"command": cmdStr, "exit_code": "-1"}}, nil
 		}
-		return ToolResult{IsError: true, Content: fmt.Sprintf("Command failed: %v\nOutput: %s", err, outStr)}, nil
+		exitCode := "-1"
+		if cmd.ProcessState != nil {
+			exitCode = strconv.Itoa(cmd.ProcessState.ExitCode())
+		}
+		return ToolResult{IsError: true, Content: fmt.Sprintf("Command failed: %v\nOutput: %s", err, outStr), Meta: map[string]string{"command": cmdStr, "exit_code": exitCode}}, nil
 	}
 
 	if len(outStr) == 0 {
 		outStr = "(command successful, no output)"
 	}
 
-	return ToolResult{Content: outStr}, nil
+	return ToolResult{Content: outStr, Meta: map[string]string{"command": cmdStr, "exit_code": "0"}}, nil
 }

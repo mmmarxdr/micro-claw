@@ -43,6 +43,12 @@ go.work.sum
 ehthumbs.db
 Thumbs.db
 
+# Developer-only scripts (not for contributors)
+dev.sh
+
+# Personal config with real API keys — use configs/default.yaml.example as template
+configs/default.yaml
+
 # ----------------------------------------------------------------------
 # NOTA: Las carpetas .agents y .atl no se incluyen aquí 
 # de forma explícita para que Git las pueda rastrear, 

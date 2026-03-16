@@ -812,8 +812,10 @@ When sending tool results back, they go as `role: "user"` messages with `tool_re
 | **1 — MVP** | Core agent loop + single channel + single provider | Working CLI agent with shell, file, and HTTP tools. Conversation persistence. <50MB idle. |
 | **2 — Multi-channel** | Telegram, Discord, webhook input | Channel router, per-channel session isolation, reconnection logic |
 | **3 — Multi-provider** | OpenAI, Ollama (local models), provider fallback chain | Streaming support (SSE), provider health checks |
-| **4 — Extensibility** | MCP support, Markdown skills, heartbeat/cron, plugin system | External tool loading, proactive agent behavior |
-| **5 — Production** | SQLite store, embeddings, multi-agent, observability, Docker | Token cost tracking, dashboards, deployment automation |
+| **4a — MCP Support** | MCP client via `mark3labs/mcp-go`, `MCPToolAdapter` wrapping remote tools into `tool.Tool` interface | Stdio + HTTP transports, config-driven server list, zero changes to agent loop |
+| **4b — Markdown Skills** | Load behavioral instructions + dynamic shell-backed tools from `.md` skill files | Prompt injection layer + optional `tool` YAML block per file |
+| **4c — Heartbeat/Cron** | `HeartbeatChannel` virtual channel, inbox refactor to share across channels | Proactive scheduled tasks, multi-channel inbox unblocks Phase 2 router |
+| **5 — Production** | SQLite store (with AES-256-GCM encrypted secrets table + embedded setup wizard on first launch), embeddings, multi-agent, observability, Docker | Token cost tracking, dashboards, deployment automation, secure key management |
 
 ---
 

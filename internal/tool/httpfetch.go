@@ -126,5 +126,12 @@ func (t *HTTPFetchTool) Execute(ctx context.Context, params json.RawMessage) (To
 	}
 
 	result := fmt.Sprintf("Status: %s\n\n%s%s", resp.Status, string(bodyBytes), truncated)
-	return ToolResult{Content: result}, nil
+	return ToolResult{
+		Content: result,
+		Meta: map[string]string{
+			"url":            input.URL,
+			"status_code":    fmt.Sprintf("%d", resp.StatusCode),
+			"response_bytes": fmt.Sprintf("%d", len(bodyBytes)),
+		},
+	}, nil
 }

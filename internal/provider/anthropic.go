@@ -36,6 +36,17 @@ func (p *AnthropicProvider) SupportsTools() bool {
 	return true
 }
 
+func (p *AnthropicProvider) HealthCheck(ctx context.Context) (string, error) {
+	if p.config.APIKey == "" {
+		return "", fmt.Errorf("anthropic: missing api_key")
+	}
+	model := p.config.Model
+	if model == "" {
+		model = "claude-3-5-sonnet-20241022"
+	}
+	return model, nil
+}
+
 type anthropicMessage struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
@@ -134,11 +145,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	}
 
 	for _, t := range req.Tools {
-		apiReq.Tools = append(apiReq.Tools, anthropicTool{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
+		apiReq.Tools = append(apiReq.Tools, anthropicTool(t))
 	}
 
 	bodyBytes, err := json.Marshal(apiReq)
@@ -169,7 +176,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 
 		resp, err := p.client.Do(httpReq)
 		if err != nil {
-			lastErr = err
+			lastErr = fmt.Errorf("anthropic: request failed: %w", wrapNetworkError(err))
 			delay := time.Duration(attempt+1) * time.Second
 			select {
 			case <-ctx.Done():
@@ -183,7 +190,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("anthropic api error: %d %s", resp.StatusCode, string(respBody))
+			lastErr = classifyAnthropicError(resp.StatusCode, respBody)
 			if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 				delay := time.Duration(attempt+1) * 2 * time.Second
 				select {
@@ -205,6 +212,20 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	}
 
 	return nil, fmt.Errorf("failed after %d attempts, last error: %w", maxRetries, lastErr)
+}
+
+// classifyAnthropicError maps HTTP status codes to sentinel errors.
+func classifyAnthropicError(statusCode int, body []byte) error {
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("%w: anthropic api error %d %s", ErrRateLimit, statusCode, string(body))
+	case statusCode >= 500:
+		return fmt.Errorf("%w: anthropic api error %d %s", ErrUnavailable, statusCode, string(body))
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		return fmt.Errorf("%w: anthropic api error %d %s", ErrAuth, statusCode, string(body))
+	default: // 400 and other 4xx
+		return fmt.Errorf("%w: anthropic api error %d %s", ErrBadRequest, statusCode, string(body))
+	}
 }
 
 func (p *AnthropicProvider) parseResponse(apiResp anthropicResponse) (*ChatResponse, error) {

@@ -7,7 +7,7 @@ import (
 
 type IncomingMessage struct {
 	ID        string
-	ChannelID string            // e.g., "cli", "telegram:123456"
+	ChannelID string // e.g., "cli", "telegram:123456"
 	SenderID  string
 	Text      string
 	Metadata  map[string]string // channel-specific data

@@ -53,7 +53,7 @@ func buildSuccessBody(text string) string {
 
 func writeJSON(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(body))
+	_, _ = w.Write([]byte(body))
 }
 
 // ---- TestNewAnthropicProvider_Defaults --------------------------------------
@@ -237,32 +237,8 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var captured []byte
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r.Body.Read(captured) // capture via decoder below
-				var buf strings.Builder
-				dec := json.NewDecoder(r.Body)
-				_ = dec // we decode below
-				// Actually read and store the body
-				http.MaxBytesReader(w, r.Body, 1<<20)
-				captured2 := make([]byte, 0, 4096)
-				tmp := make([]byte, 512)
-				for {
-					n, err := r.Body.Read(tmp)
-					captured2 = append(captured2, tmp[:n]...)
-					if err != nil {
-						break
-					}
-				}
-				captured = captured2
-				_ = buf
-				writeJSON(w, buildSuccessBody("ok"))
-			}))
-			defer ts.Close()
-
-			// Capture body properly
 			var capturedBody []byte
-			ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var err error
 				capturedBody, err = readAll(r.Body)
 				if err != nil {
@@ -270,9 +246,9 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 				}
 				writeJSON(w, buildSuccessBody("ok"))
 			}))
-			defer ts2.Close()
+			defer ts.Close()
 
-			prov := newTestProvider(t, ts2)
+			prov := newTestProvider(t, ts)
 			_, err := prov.Chat(context.Background(), ChatRequest{Messages: tc.messages})
 			if err != nil {
 				t.Fatalf("Chat() error: %v", err)
@@ -282,7 +258,6 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 				t.Fatalf("could not unmarshal request body: %v\nbody: %s", err, capturedBody)
 			}
 			tc.verify(t, bodyMap)
-			_ = ts // silence unused var warning
 		})
 	}
 }
@@ -537,7 +512,7 @@ func TestAnthropicProvider_NoRetryOn400(t *testing.T) {
 func TestAnthropicProvider_InvalidJSON(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{not json}`))
+		_, _ = w.Write([]byte(`{not json}`))
 	}))
 	defer ts.Close()
 
