@@ -6,13 +6,26 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"golang.org/x/sync/errgroup"
 
 	"microagent/internal/config"
 	"microagent/internal/tool"
 )
+
+// listableClient is satisfied by *client.Client in production and by mock
+// types in tests. It extends MCPCaller with the ListTools discovery method,
+// eliminating the need for a type-assertion to *client.Client in the factory.
+type listableClient interface {
+	MCPCaller
+	ListTools(ctx context.Context, req mcp.ListToolsRequest) (*mcp.ListToolsResult, error)
+}
+
+// ConnectorFunc is the function type for connecting to a single MCP server.
+// It is used by BuildMCPToolsWithConnector to allow test injection of mock
+// connectors without spawning real subprocesses or network connections.
+// The returned listableClient must be closed by the caller when done.
+type ConnectorFunc func(ctx context.Context, cfg config.MCPServerConfig) (listableClient, error)
 
 // serverResult carries the outcome of one concurrent server connection attempt.
 // Errors captured here are non-fatal — the agent starts regardless.
@@ -30,8 +43,55 @@ type serverResult struct {
 // they never prevent the agent from starting. The outer error is reserved for
 // truly fatal pre-flight issues (none anticipated given config validation).
 func BuildMCPTools(ctx context.Context, cfg config.MCPConfig) (map[string]tool.Tool, *Manager, error) {
-	if !cfg.Enabled || len(cfg.Servers) == 0 {
+	return BuildMCPToolsWithConnector(ctx, cfg, connectStdioListable, connectHTTPListable)
+}
+
+// connectStdioListable wraps connectStdio to return a listableClient.
+func connectStdioListable(ctx context.Context, cfg config.MCPServerConfig) (listableClient, error) {
+	c, err := connectStdio(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	lc, ok := c.(listableClient)
+	if !ok {
+		_ = c.Close()
+		return nil, fmt.Errorf("stdio client for %q does not implement ListTools", cfg.Name)
+	}
+	return lc, nil
+}
+
+// connectHTTPListable wraps connectHTTP to return a listableClient.
+func connectHTTPListable(ctx context.Context, cfg config.MCPServerConfig) (listableClient, error) {
+	c, err := connectHTTP(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	lc, ok := c.(listableClient)
+	if !ok {
+		_ = c.Close()
+		return nil, fmt.Errorf("http client for %q does not implement ListTools", cfg.Name)
+	}
+	return lc, nil
+}
+
+// BuildMCPToolsWithConnector is the testable core. It accepts injectable
+// connector functions for both transports, enabling unit tests to mock
+// network/subprocess behaviour without spawning real processes.
+//
+// All existing callers use BuildMCPTools which delegates here with the real
+// connectStdio/connectHTTP functions — the public API is unchanged.
+func BuildMCPToolsWithConnector(
+	ctx context.Context,
+	cfg config.MCPConfig,
+	stdioConnector ConnectorFunc,
+	httpConnector ConnectorFunc,
+) (map[string]tool.Tool, *Manager, error) {
+	if !cfg.Enabled {
 		return nil, &Manager{}, nil
+	}
+
+	if len(cfg.Servers) == 0 {
+		return make(map[string]tool.Tool), &Manager{}, nil
 	}
 
 	timeout := cfg.ConnectTimeout
@@ -57,17 +117,18 @@ func BuildMCPTools(ctx context.Context, cfg config.MCPConfig) (map[string]tool.T
 			connectCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			var caller MCPCaller
+			var caller listableClient
 			var err error
 
 			switch srv.Transport {
 			case "stdio":
-				caller, err = connectStdio(connectCtx, srv)
+				caller, err = stdioConnector(connectCtx, srv)
 			case "http":
-				caller, err = connectHTTP(connectCtx, srv)
+				caller, err = httpConnector(connectCtx, srv)
 			default:
 				// Should not reach here — config.validate() rejects unknown transports.
-				err = fmt.Errorf("unknown transport %q", srv.Transport)
+				results[i] = serverResult{cfg: srv, err: fmt.Errorf("unknown transport %q", srv.Transport)}
+				return nil // non-fatal
 			}
 
 			if err != nil {
@@ -75,18 +136,7 @@ func BuildMCPTools(ctx context.Context, cfg config.MCPConfig) (map[string]tool.T
 				return nil // non-fatal
 			}
 
-			// List tools from the connected server.
-			// The client.Client satisfies MCPCaller (CallTool + Close) AND
-			// exposes ListTools. We hold it as a *client.Client temporarily
-			// for discovery; adapters only need the MCPCaller subset.
-			fullClient, ok := caller.(*client.Client)
-			if !ok {
-				_ = caller.Close()
-				results[i] = serverResult{cfg: srv, err: fmt.Errorf("unexpected client type for %q", srv.Name)}
-				return nil
-			}
-
-			listResult, err := fullClient.ListTools(connectCtx, mcp.ListToolsRequest{})
+			listResult, err := caller.ListTools(connectCtx, mcp.ListToolsRequest{})
 			if err != nil {
 				_ = caller.Close()
 				results[i] = serverResult{cfg: srv, err: fmt.Errorf("list tools from %q: %w", srv.Name, err)}

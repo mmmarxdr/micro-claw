@@ -45,6 +45,44 @@ type Store interface {
 	Close() error
 }
 
+// CronJob represents a scheduled recurring task.
+type CronJob struct {
+	ID            string
+	Schedule      string     // 5-field cron expression
+	ScheduleHuman string     // human-readable description
+	Prompt        string
+	ChannelID     string
+	Enabled       bool
+	CreatedAt     time.Time
+	LastRunAt     *time.Time
+	NextRunAt     *time.Time
+}
+
+// CronResult is the output of a single cron job execution.
+type CronResult struct {
+	ID       string
+	JobID    string
+	RanAt    time.Time
+	Output   string
+	ErrorMsg string
+}
+
+// CronStore is an optional extension to Store for scheduling support.
+// Only SQLiteStore implements this; FileStore does not.
+type CronStore interface {
+	CreateJob(ctx context.Context, job CronJob) (CronJob, error)
+	ListJobs(ctx context.Context) ([]CronJob, error)
+	GetJob(ctx context.Context, id string) (CronJob, error)
+	DeleteJob(ctx context.Context, id string) error
+	SaveResult(ctx context.Context, result CronResult) error
+	ListResults(ctx context.Context, jobID string, limit int) ([]CronResult, error)
+	PruneResults(ctx context.Context, retentionDays, maxPerJob int) error
+
+	// UpdateJobRunTimes sets last_run_at and next_run_at for a cron job.
+	// Best-effort: called after each job fire. No-op if job is absent.
+	UpdateJobRunTimes(ctx context.Context, id string, lastRunAt, nextRunAt time.Time) error
+}
+
 // SecretsStore is an optional extension of Store for encrypted key-value secrets.
 // Only SQLiteStore implements this interface. Callers type-assert:
 //

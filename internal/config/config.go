@@ -26,6 +26,19 @@ type Config struct {
 	Logging  LoggingConfig  `yaml:"logging"`
 	Limits   LimitsConfig   `yaml:"limits"`
 	Audit    AuditConfig    `yaml:"audit"`
+	Cron     CronConfig     `yaml:"cron"`
+	Skills             []string `yaml:"skills"`
+	SkillsDir          string   `yaml:"skills_dir"`
+	SkillsRegistryURL  string   `yaml:"skills_registry_url"`
+}
+
+// CronConfig holds configuration for the cron scheduling subsystem.
+type CronConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	Timezone         string `yaml:"timezone"`
+	RetentionDays    int    `yaml:"retention_days"`
+	MaxResultsPerJob int    `yaml:"max_results_per_job"`
+	MaxConcurrent    int    `yaml:"max_concurrent"`
 }
 
 type AgentConfig struct {
@@ -80,11 +93,12 @@ type MCPConfig struct {
 
 // MCPServerConfig describes one MCP server connection.
 type MCPServerConfig struct {
-	Name        string   `yaml:"name"`
-	Transport   string   `yaml:"transport"`    // "stdio" | "http"
-	Command     []string `yaml:"command"`      // stdio only: [executable, args...]
-	URL         string   `yaml:"url"`          // http only
-	PrefixTools bool     `yaml:"prefix_tools"` // prefix tool names with server name
+	Name        string            `yaml:"name"`
+	Transport   string            `yaml:"transport"`    // "stdio" | "http"
+	Command     []string          `yaml:"command"`      // stdio only: [executable, args...]
+	URL         string            `yaml:"url"`          // http only
+	PrefixTools bool              `yaml:"prefix_tools"` // prefix tool names with server name
+	Env         map[string]string `yaml:"env,omitempty"` // extra env vars injected into the subprocess (stdio) or passed to HTTP headers (future)
 }
 
 // Validate returns an error if the server config is invalid.
@@ -197,6 +211,21 @@ func (c *Config) applyDefaults() {
 	if c.Tools.MCP.ConnectTimeout == 0 {
 		c.Tools.MCP.ConnectTimeout = 10 * time.Second
 	}
+	if c.SkillsDir == "" {
+		c.SkillsDir = "~/.microagent/skills"
+	}
+	if c.Cron.Timezone == "" {
+		c.Cron.Timezone = "UTC"
+	}
+	if c.Cron.RetentionDays == 0 {
+		c.Cron.RetentionDays = 30
+	}
+	if c.Cron.MaxResultsPerJob == 0 {
+		c.Cron.MaxResultsPerJob = 50
+	}
+	if c.Cron.MaxConcurrent == 0 {
+		c.Cron.MaxConcurrent = 4
+	}
 }
 
 func expandTilde(path string) string {
@@ -214,6 +243,10 @@ func (c *Config) resolvePaths() {
 	c.Tools.File.BasePath = expandTilde(c.Tools.File.BasePath)
 	c.Tools.Shell.WorkingDir = expandTilde(c.Tools.Shell.WorkingDir)
 	c.Audit.Path = expandTilde(c.Audit.Path)
+	c.SkillsDir = expandTilde(c.SkillsDir)
+	for i, p := range c.Skills {
+		c.Skills[i] = expandTilde(p)
+	}
 }
 
 func (c *Config) validate() error {
@@ -271,10 +304,22 @@ func (c *Config) validate() error {
 		}
 	}
 
+	if c.Cron.Enabled {
+		if c.Store.Type != "sqlite" {
+			return fmt.Errorf("cron requires store.type = 'sqlite', got %q", c.Store.Type)
+		}
+		if _, err := time.LoadLocation(c.Cron.Timezone); err != nil {
+			return fmt.Errorf("cron.timezone %q is invalid: %w", c.Cron.Timezone, err)
+		}
+	}
+
 	return nil
 }
 
-func expandSafeEnv(s string) (string, error) {
+// ExpandSafeEnv expands ${VAR} references in s using os.LookupEnv.
+// It returns an error if any referenced variable is not set in the environment.
+// Malformed references (e.g. ${PARTIAL) are left as-is.
+func ExpandSafeEnv(s string) (string, error) {
 	// os.ExpandEnv simply removes unresolvable chunks. We want to catch ones that are explicitly meant as variables but missing,
 	// except if they are malformed like ${PARTIAL. A regex gives us more control.
 	re := regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -333,7 +378,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("load: %w", ErrNoConfig)
 	}
 
-	expanded, err := expandSafeEnv(string(data))
+	expanded, err := ExpandSafeEnv(string(data))
 	if err != nil {
 		return nil, fmt.Errorf("expanding env vars: %w", err)
 	}

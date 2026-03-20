@@ -19,9 +19,11 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	cronpkg "microagent/internal/cron"
 	"microagent/internal/mcp"
 	"microagent/internal/provider"
 	"microagent/internal/setup"
+	"microagent/internal/skill"
 	"microagent/internal/store"
 	"microagent/internal/tool"
 	"microagent/internal/tui"
@@ -32,9 +34,55 @@ var (
 	showVersion = flag.Bool("version", false, "print version and exit")
 	dashboard   = flag.Bool("dashboard", false, "open read-only TUI dashboard and exit")
 	runSetup    = flag.Bool("setup", false, "run the interactive setup wizard and exit")
+	daemon      = flag.Bool("daemon", false, "run as background daemon (no interactive channel; cron only)")
 )
 
+// extractFlagValue scans args for "--flag value" or "--flag=value" and returns
+// the value, or "" if not found. Used for pre-parse config path extraction.
+func extractFlagValue(args []string, names ...string) string {
+	for i, a := range args {
+		for _, n := range names {
+			if a == n && i+1 < len(args) {
+				return args[i+1]
+			}
+			if strings.HasPrefix(a, n+"=") {
+				return strings.TrimPrefix(a, n+"=")
+			}
+		}
+	}
+	return ""
+}
+
 func main() {
+	// Subcommand dispatch — must precede flag.Parse() so that
+	// "microagent mcp --help" does not trigger flag's unknown-flag error.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
+		if err := runMCPCommand(os.Args[2:], cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "skills" {
+		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
+		if err := runSkillsCommand(os.Args[2:], cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "cron" {
+		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
+		if err := runCronCommand(os.Args[2:], cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	flag.Parse()
 
 	if *showVersion {
@@ -69,7 +117,7 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		if err := tui.RunDashboard(cfg); err != nil {
+		if err := tui.RunDashboard(cfg, *cfgPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Dashboard error: %v\n", err)
 			os.Exit(1)
 		}
@@ -111,8 +159,28 @@ func main() {
 
 	toolsRegistry := tool.BuildRegistry(cfg.Tools)
 
-	// Connect to MCP servers concurrently and merge their tools into the registry.
-	// Built-in tools always win on name collision.
+	// Load skill files — non-fatal, warn+skip per file.
+	// Skills are merged before MCP so that user-authored skill tools win on collision.
+	// Priority: built-in > skill > MCP.
+	var skillContents []skill.SkillContent
+	if len(cfg.Skills) > 0 {
+		var skillTools map[string]tool.Tool
+		var skillWarns []error
+		skillContents, skillTools, skillWarns = skill.LoadSkills(cfg.Skills, cfg.Tools.Shell, cfg.Limits)
+		for _, w := range skillWarns {
+			slog.Warn("skills: load warning", "error", w)
+		}
+		for name, t := range skillTools {
+			if _, exists := toolsRegistry[name]; exists {
+				slog.Warn("skills: tool collision with built-in, built-in wins", "tool", name)
+				continue
+			}
+			toolsRegistry[name] = t
+		}
+	}
+
+	// Connect to MCP servers and merge their tools into the registry.
+	// Built-in and skill tools win on name collision.
 	if cfg.Tools.MCP.Enabled {
 		mcpTools, mcpManager, err := mcp.BuildMCPTools(ctx, cfg.Tools.MCP)
 		if err != nil {
@@ -122,7 +190,7 @@ func main() {
 		defer mcpManager.Close()
 		for name, t := range mcpTools {
 			if _, exists := toolsRegistry[name]; exists {
-				slog.Warn("mcp: tool name collision with built-in, built-in wins", "tool", name)
+				slog.Warn("mcp: tool name collision, existing tool wins", "tool", name)
 				continue
 			}
 			toolsRegistry[name] = t
@@ -162,27 +230,23 @@ func main() {
 	}
 	slog.Info("provider health check passed", "verified_model_name", verifiedName)
 
-	var ch channel.Channel
-	switch cfg.Channel.Type {
-	case "telegram":
-		t, err := channel.NewTelegramChannel(cfg.Channel)
-		if err != nil {
-			slog.Error("failed to initialize telegram channel", "error", err)
-			os.Exit(1)
-		}
-		ch = t
-	case "cli", "":
-		ch = channel.NewCLIChannelDefault(cfg.Channel)
-	default:
-		slog.Error("unknown channel type", "type", cfg.Channel.Type)
-		os.Exit(1)
-	}
 	st, err := store.New(cfg.Store)
 	if err != nil {
 		slog.Error("failed to initialize store", "type", cfg.Store.Type, "error", err)
 		os.Exit(1)
 	}
 	defer st.Close()
+
+	// Type-assert CronStore when cron is enabled.
+	var cronSt store.CronStore
+	if cfg.Cron.Enabled {
+		cs, ok := st.(store.CronStore)
+		if !ok {
+			slog.Error("cron: store does not implement CronStore; set store.type = sqlite")
+			os.Exit(1)
+		}
+		cronSt = cs
+	}
 
 	var auditor audit.Auditor = audit.NoopAuditor{}
 	if cfg.Audit.Enabled {
@@ -206,7 +270,60 @@ func main() {
 		}
 	}
 
-	ag := agent.New(cfg.Agent, cfg.Limits, ch, prov, st, auditor, toolsRegistry)
+	// Build channels slice.
+	var channels []channel.Channel
+
+	// Build user-facing channel unless running in daemon mode.
+	if !*daemon {
+		switch cfg.Channel.Type {
+		case "telegram":
+			t, err := channel.NewTelegramChannel(cfg.Channel)
+			if err != nil {
+				slog.Error("failed to initialize telegram channel", "error", err)
+				os.Exit(1)
+			}
+			channels = append(channels, t)
+		case "cli", "":
+			channels = append(channels, channel.NewCLIChannelDefault(cfg.Channel))
+		default:
+			slog.Error("unknown channel type", "type", cfg.Channel.Type)
+			os.Exit(1)
+		}
+	}
+
+	// Build cron subsystem if enabled.
+	if cfg.Cron.Enabled {
+		tz, _ := time.LoadLocation(cfg.Cron.Timezone)
+		scheduler := cronpkg.NewScheduler(cronSt, tz, cfg.Cron.RetentionDays, cfg.Cron.MaxResultsPerJob)
+
+		// origSender delivers cron results back to the user's real channel.
+		// It's nil-safe: if channels is empty (daemon mode), Send is skipped by CronChannel.
+		var origSender cronpkg.OriginalSender
+		if len(channels) > 0 {
+			userCh := channels[0]
+			origSender = userCh.Send
+		}
+
+		cronChannel := cronpkg.NewCronChannel(scheduler, cronSt, origSender)
+		channels = append(channels, cronChannel)
+
+		// Merge cron tools into registry.
+		cronTools := tool.BuildCronTools(scheduler, cronSt, toolsRegistry, prov)
+		for name, t := range cronTools {
+			if _, exists := toolsRegistry[name]; !exists {
+				toolsRegistry[name] = t
+			}
+		}
+	}
+
+	if len(channels) == 0 {
+		slog.Error("no channels configured; use --daemon with cron.enabled=true or configure a channel")
+		os.Exit(1)
+	}
+
+	mux := channel.NewMultiplexChannel(channels)
+
+	ag := agent.New(cfg.Agent, cfg.Limits, mux, prov, st, auditor, toolsRegistry, skillContents, cfg.Cron.MaxConcurrent)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

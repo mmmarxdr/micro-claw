@@ -191,6 +191,45 @@ The agent searches for config in order: `--config` flag → `~/.microagent/confi
 | `enabled` | bool | `false` | Write an audit log of all tool executions |
 | `path` | string | `"~/.microagent/audit"` | Directory for audit log files |
 
+### `skills`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `skills` | []string | `[]` | Paths to `.md` skill files loaded at startup |
+| `skills_dir` | string | `~/.microagent/skills` | Directory where `microagent skills add` stores installed skills |
+| `skills_registry_url` | string | `""` | Base URL for short-name skill resolution (e.g. `microagent skills add git-helper`) |
+
+Paths in `skills` support `~` expansion. Example:
+
+```yaml
+skills:
+  - ~/.microagent/skills/git-helper.md
+  - ~/my-skills/react-patterns.md
+
+skills_dir: ~/.microagent/skills
+# skills_registry_url: https://skills.example.com
+```
+
+### `cron`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the cron scheduler |
+| `timezone` | string | `"UTC"` | Timezone for cron expressions (e.g. `"America/New_York"`) |
+| `retention_days` | int | `30` | Delete job results older than this many days |
+| `max_results_per_job` | int | `50` | Keep at most this many results per job |
+| `max_concurrent` | int | `4` | Max concurrent agent turns (cron + interactive share this pool) |
+
+Cron requires `store.type: sqlite`. Example:
+
+```yaml
+cron:
+  enabled: true
+  timezone: "America/New_York"
+  retention_days: 30
+  max_results_per_job: 50
+```
+
 ---
 
 ## Providers
@@ -254,6 +293,123 @@ tools:
 
 ---
 
+## Skills
+
+Skills are `.md` files that extend the agent with two capabilities:
+
+1. **Prose injection** — the skill's body text is appended to the system prompt at startup, giving the agent domain knowledge or behavioral instructions.
+2. **Shell tools** — fenced ` ```yaml tool ` blocks register fixed shell commands as agent tools. The LLM can call them by name but cannot modify their command — unlike `shell_exec`, skill tools bypass the whitelist because the command is fixed at load time by the user.
+
+### Skill file format
+
+````markdown
+---
+name: git-helper
+description: Git workflow assistant
+version: 1.0.0
+author: you
+---
+
+You are an expert at Git workflows. Prefer rebase over merge for feature branches.
+
+```yaml tool
+name: git_log_pretty
+description: Show recent commits in a readable format
+command: git log --oneline --graph --decorate -20
+timeout: 10s
+```
+````
+
+### Installing skills
+
+```bash
+# From a URL
+microagent skills add https://example.com/react-patterns.md
+
+# From a local file
+microagent skills add ./my-skill.md
+
+# Short name (requires skills_registry_url in config)
+microagent skills add git-helper
+```
+
+> **Security note:** skills installed from URLs write files that execute shell commands with your user privileges. Only install skills from sources you trust. A warning is always printed before any URL fetch.
+
+### Managing skills
+
+```bash
+microagent skills list           # list registered skills
+microagent skills list --store   # also show unregistered files in skills_dir
+microagent skills info <name>    # show frontmatter, prose, and tools
+microagent skills remove <name>  # unregister and delete from store
+microagent skills remove <name> --keep-file  # unregister only
+```
+
+### Tool priority
+
+When two tools share a name, the resolution order is: **built-in > skill > MCP**. A skill tool always wins over an MCP server tool with the same name.
+
+---
+
+## Scheduled Tasks (Cron)
+
+The cron system lets you schedule recurring tasks in natural language. Enable it in config (`cron.enabled: true`, requires SQLite store), load `configs/skills/cron.md` as a skill, and the agent will understand scheduling intent.
+
+### Scheduling a task
+
+Tell the agent what you want and when:
+
+```
+every morning at 9am give me a summary of my unread emails
+```
+
+Or use the explicit `/cron` prefix. The agent calls `schedule_task` internally, converts the schedule to a cron expression via an LLM sub-call, and confirms back:
+
+```
+✓ Scheduled: 'give me a summary of my unread emails'
+Schedule: every day at 9:00 AM (cron: 0 9 * * *)
+Next run: Sat, 21 Mar 2026 09:00:00 UTC
+Job ID: a1b2c3d4e5f6
+```
+
+If a required tool or MCP is missing (e.g. you asked about email but have no email MCP configured), the agent warns you and suggests the setup command.
+
+### Managing scheduled tasks
+
+Ask the agent, or use the CLI directly (no running agent needed):
+
+```bash
+microagent cron list              # show all scheduled jobs
+microagent cron info <id>         # show job details + last 10 results
+microagent cron delete <id>       # remove a job
+```
+
+The agent also understands natural requests: "show my scheduled tasks", "cancel the email cron".
+
+### Daemon mode
+
+Run the agent in background mode (no interactive channel — cron only):
+
+```bash
+microagent --daemon
+# or as a systemd service
+```
+
+In daemon mode, job results are stored in `cron_results` and sent back to the originating channel (CLI or Telegram) that created the job.
+
+### cron.md skill
+
+To enable cron UX, add `configs/skills/cron.md` to your skills list:
+
+```yaml
+skills:
+  - configs/skills/cron.md
+```
+
+Without this skill, the agent has no instructions to recognize scheduling intent — the tools exist but the agent won't know when to use them.
+
+---
+
 ## Running
 
 ```bash
@@ -266,6 +422,29 @@ tools:
 | `-version` | Print version and exit |
 | `-dashboard` | Open read-only TUI dashboard and exit |
 | `-setup` | Run the interactive setup wizard and exit |
+
+### Subcommands
+
+```bash
+microagent mcp list                   # list configured MCP servers
+microagent mcp add --name X --transport stdio --command "npx ..."
+microagent mcp remove <name>
+microagent mcp test <name>            # connect and list tools
+microagent mcp validate               # validate MCP config section
+microagent mcp manage                 # interactive TUI management screen
+
+microagent skills add <url|path|name> # install a skill
+microagent skills list [--store]      # list installed skills
+microagent skills remove <name>       # uninstall a skill
+microagent skills info <name>         # show skill details
+
+microagent cron list              # list scheduled cron jobs
+microagent cron info <id>         # show job details and last results
+microagent cron delete <id>       # delete a scheduled job
+microagent --daemon               # run in background mode (cron only)
+```
+
+All subcommands accept `--config <path>` to override the config file location.
 
 Auto-search order: `~/.microagent/config.yaml` → `./config.yaml`.
 
@@ -331,6 +510,7 @@ The `--dashboard` flag opens a read-only TUI dashboard that displays stats and c
 | Audit Events | Scrollable table of recent audit records (ID, type, model, tokens, duration, tool status) |
 | Store | Conversation count, memory entries, and secrets count from the data store |
 | Config | Active provider, model, channel type, store path, and audit path (API key always redacted) |
+| MCP | Configured MCP servers with name, transport, command/URL, and status; press `e` to open the interactive MCP management screen |
 
 **Keyboard controls in the dashboard:**
 
@@ -397,22 +577,25 @@ Or use the contributor script which runs both:
 
 ```
 microagent/
-├── cmd/microagent/      # Entrypoint: config → wire → run
+├── cmd/microagent/      # Entrypoint: config → wire → run; mcp + skills subcommands
 ├── internal/
 │   ├── agent/           # Agent loop (loop.go), context builder (context.go)
 │   ├── channel/         # Channel interface + CLI and Telegram implementations
 │   ├── provider/        # Provider interface + OpenRouter/Anthropic/Gemini clients
-│   ├── tool/            # Tool interface, registry, shell/file/http/MCP tools
-│   ├── store/           # Store interface + file-based JSON persistence
-│   ├── mcp/             # MCP client (stdio + http transports)
+│   ├── tool/            # Tool interface, registry, shell/file/http tools
+│   ├── store/           # Store interface + SQLite persistence
+│   ├── mcp/             # MCP client (stdio + http), MCPService (config management)
+│   ├── cron/            # Cron scheduler (robfig/cron/v3), CronChannel, daemon mode
+│   ├── skill/           # Skill loader, parser, shell tool, SkillService (install)
 │   └── config/          # YAML parsing, env var resolution, validation
-└── configs/             # Example config files
+└── configs/             # Example config and skill files
 ```
 
 ---
 
 ## Roadmap
 
-- **SQLite store** — structured conversation and memory storage, with encrypted secrets table
+- **Skill registry** — `microagent skills add git-helper` short-name installs from a hosted registry
 - **Discord channel** — Discord bot integration alongside CLI and Telegram
 - **OpenAI / Ollama providers** — OpenAI-compatible API support and local model inference via Ollama
+- **CI/CD pipeline** — Dockerfile, GitLab CI, and Fly.io pre-production environment

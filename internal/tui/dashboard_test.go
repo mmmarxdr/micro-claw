@@ -13,14 +13,14 @@ func TestDashboardModel_TabSwitching(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{APIKey: "sk-test"},
 	}
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 
 	// Start at tabOverview (0).
 	if m.activeTab != tabOverview {
 		t.Fatalf("initial activeTab = %d, want %d (tabOverview)", m.activeTab, tabOverview)
 	}
 
-	tabs := []dashTab{tabOverview, tabAuditEvents, tabStore, tabConfig, tabOverview}
+	tabs := []dashTab{tabOverview, tabAuditEvents, tabStore, tabConfig, tabMCP, tabOverview}
 	for i, want := range tabs[1:] {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = updated.(DashboardModel)
@@ -34,13 +34,13 @@ func TestDashboardModel_LeftArrowTabSwitching(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{APIKey: "sk-test"},
 	}
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 
-	// Left arrow from tabOverview (0) should wrap to tabConfig (3).
+	// Left arrow from tabOverview (0) should wrap to tabMCP (4).
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(DashboardModel)
-	if m.activeTab != tabConfig {
-		t.Errorf("left arrow from tabOverview: activeTab = %d, want %d (tabConfig)", m.activeTab, tabConfig)
+	if m.activeTab != tabMCP {
+		t.Errorf("left arrow from tabOverview: activeTab = %d, want %d (tabMCP)", m.activeTab, tabMCP)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestDashboardModel_RightArrowTabSwitching(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{APIKey: "sk-test"},
 	}
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 
 	// Right arrow from tabOverview (0) goes to tabAuditEvents (1).
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -62,7 +62,7 @@ func TestDashboardModel_QKeyQuits(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{APIKey: "sk-test"},
 	}
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if cmd == nil {
@@ -87,7 +87,7 @@ func TestRenderConfig_RedactsAPIKey(t *testing.T) {
 		Audit:   config.AuditConfig{Path: "/audit"},
 	}
 
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 	output := renderConfig(m)
 
 	if strings.Contains(output, "sk-real-secret-key") {
@@ -109,7 +109,7 @@ func TestDashboardModel_DataLoadedMsg(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{APIKey: "sk-test"},
 	}
-	m := newDashboardModel(cfg)
+	m := newDashboardModel(cfg, "")
 
 	// Simulate the data load completing.
 	loaded := dataLoadedMsg{
@@ -141,7 +141,7 @@ func TestDashboardModel_DataLoadedMsg(t *testing.T) {
 }
 
 func TestRenderOverview_NoData(t *testing.T) {
-	m := newDashboardModel(&config.Config{})
+	m := newDashboardModel(&config.Config{}, "")
 	m.overview = OverviewData{NoData: true}
 
 	output := renderOverview(m)
@@ -151,7 +151,7 @@ func TestRenderOverview_NoData(t *testing.T) {
 }
 
 func TestRenderStore_NoData(t *testing.T) {
-	m := newDashboardModel(&config.Config{})
+	m := newDashboardModel(&config.Config{}, "")
 	m.storeStats = StoreStats{NoData: true}
 
 	output := renderStore(m)
@@ -161,7 +161,7 @@ func TestRenderStore_NoData(t *testing.T) {
 }
 
 func TestRenderAuditEvents_Empty(t *testing.T) {
-	m := newDashboardModel(&config.Config{})
+	m := newDashboardModel(&config.Config{}, "")
 	m.auditEvents = nil
 
 	output := renderAuditEvents(m)

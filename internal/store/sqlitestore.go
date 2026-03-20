@@ -64,6 +64,27 @@ CREATE TABLE IF NOT EXISTS secrets (
 	value      TEXT NOT NULL,
 	updated_at DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cron_jobs (
+	id             TEXT PRIMARY KEY,
+	schedule       TEXT NOT NULL,
+	schedule_human TEXT NOT NULL,
+	prompt         TEXT NOT NULL,
+	channel_id     TEXT NOT NULL,
+	enabled        INTEGER NOT NULL DEFAULT 1,
+	created_at     INTEGER NOT NULL,
+	last_run_at    INTEGER,
+	next_run_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS cron_results (
+	id        TEXT PRIMARY KEY,
+	job_id    TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
+	ran_at    INTEGER NOT NULL,
+	output    TEXT,
+	error_msg TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cron_results_job_ran ON cron_results(job_id, ran_at DESC);
 `
 
 // SQLiteStore is a Store implementation backed by a SQLite database.
@@ -319,8 +340,252 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 	return entries, nil
 }
 
-// Compile-time assertion: SQLiteStore must satisfy SecretsStore.
+// Compile-time assertions.
 var _ SecretsStore = (*SQLiteStore)(nil)
+var _ CronStore = (*SQLiteStore)(nil)
+
+// ─── CronStore implementation ─────────────────────────────────────────────────
+
+// CreateJob inserts a new CronJob. The job is returned as-is (ID must be set by caller).
+func (s *SQLiteStore) CreateJob(ctx context.Context, job CronJob) (CronJob, error) {
+	var lastRunAt, nextRunAt *int64
+	if job.LastRunAt != nil {
+		v := job.LastRunAt.Unix()
+		lastRunAt = &v
+	}
+	if job.NextRunAt != nil {
+		v := job.NextRunAt.Unix()
+		nextRunAt = &v
+	}
+	enabledInt := 0
+	if job.Enabled {
+		enabledInt = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO cron_jobs (id, schedule, schedule_human, prompt, channel_id, enabled, created_at, last_run_at, next_run_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.ID, job.Schedule, job.ScheduleHuman, job.Prompt, job.ChannelID,
+		enabledInt, job.CreatedAt.Unix(), lastRunAt, nextRunAt,
+	)
+	if err != nil {
+		return CronJob{}, fmt.Errorf("creating cron job %s: %w", job.ID, err)
+	}
+	return job, nil
+}
+
+// ListJobs returns all enabled cron jobs ordered by created_at ascending.
+func (s *SQLiteStore) ListJobs(ctx context.Context) ([]CronJob, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, schedule, schedule_human, prompt, channel_id, enabled, created_at, last_run_at, next_run_at
+		 FROM cron_jobs WHERE enabled = 1 ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing cron jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []CronJob
+	for rows.Next() {
+		job, err := scanCronJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning cron job row: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cron job rows: %w", err)
+	}
+	if jobs == nil {
+		jobs = []CronJob{}
+	}
+	return jobs, nil
+}
+
+// GetJob retrieves a single CronJob by ID. Returns ErrNotFound (wrapped) if not present.
+func (s *SQLiteStore) GetJob(ctx context.Context, id string) (CronJob, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, schedule, schedule_human, prompt, channel_id, enabled, created_at, last_run_at, next_run_at
+		 FROM cron_jobs WHERE id = ?`, id,
+	)
+	job, err := scanCronJobRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return CronJob{}, fmt.Errorf("getting cron job %s: %w", id, ErrNotFound)
+		}
+		return CronJob{}, fmt.Errorf("getting cron job %s: %w", id, err)
+	}
+	return job, nil
+}
+
+// DeleteJob removes a CronJob by ID. Returns ErrNotFound (wrapped) if not present.
+func (s *SQLiteStore) DeleteJob(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cron_jobs WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting cron job %s: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected for cron job %s: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("deleting cron job %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// SaveResult persists a CronResult.
+func (s *SQLiteStore) SaveResult(ctx context.Context, result CronResult) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO cron_results (id, job_id, ran_at, output, error_msg) VALUES (?, ?, ?, ?, ?)`,
+		result.ID, result.JobID, result.RanAt.Unix(), result.Output, result.ErrorMsg,
+	)
+	if err != nil {
+		return fmt.Errorf("saving cron result %s: %w", result.ID, err)
+	}
+	return nil
+}
+
+// ListResults returns the most recent results for a given jobID, newest first, limited to limit.
+func (s *SQLiteStore) ListResults(ctx context.Context, jobID string, limit int) ([]CronResult, error) {
+	q := `SELECT id, job_id, ran_at, output, error_msg FROM cron_results WHERE job_id = ? ORDER BY ran_at DESC`
+	args := []any{jobID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing cron results for job %s: %w", jobID, err)
+	}
+	defer rows.Close()
+
+	var results []CronResult
+	for rows.Next() {
+		var r CronResult
+		var ranAtUnix int64
+		if err := rows.Scan(&r.ID, &r.JobID, &ranAtUnix, &r.Output, &r.ErrorMsg); err != nil {
+			return nil, fmt.Errorf("scanning cron result row: %w", err)
+		}
+		r.RanAt = time.Unix(ranAtUnix, 0).UTC()
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cron result rows: %w", err)
+	}
+	if results == nil {
+		results = []CronResult{}
+	}
+	return results, nil
+}
+
+// PruneResults removes cron results older than retentionDays and keeps only the
+// newest maxPerJob results per job. Both limits are applied independently.
+func (s *SQLiteStore) PruneResults(ctx context.Context, retentionDays, maxPerJob int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning prune transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Prune by retention age.
+	if retentionDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM cron_results WHERE ran_at < ?`, cutoff,
+		); err != nil {
+			return fmt.Errorf("pruning cron results by retention: %w", err)
+		}
+	}
+
+	// Prune by maxPerJob: for each job, delete results beyond the newest maxPerJob.
+	if maxPerJob > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM cron_results
+			 WHERE id NOT IN (
+			     SELECT id FROM cron_results r2
+			     WHERE r2.job_id = cron_results.job_id
+			     ORDER BY ran_at DESC
+			     LIMIT ?
+			 )`, maxPerJob,
+		); err != nil {
+			return fmt.Errorf("pruning cron results by max per job: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing prune transaction: %w", err)
+	}
+	return nil
+}
+
+// UpdateJobRunTimes updates last_run_at and next_run_at for a cron job.
+// Best-effort: no error if the job is absent.
+func (s *SQLiteStore) UpdateJobRunTimes(ctx context.Context, id string, lastRunAt, nextRunAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE cron_jobs SET last_run_at = ?, next_run_at = ? WHERE id = ?`,
+		lastRunAt.Unix(), nextRunAt.Unix(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating run times for cron job %s: %w", id, err)
+	}
+	return nil
+}
+
+// ─── CronJob scan helpers ─────────────────────────────────────────────────────
+
+type cronJobScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCronJob(s cronJobScanner) (CronJob, error) {
+	var job CronJob
+	var enabledInt int
+	var createdAtUnix int64
+	var lastRunAtUnix, nextRunAtUnix *int64
+
+	if err := s.Scan(
+		&job.ID, &job.Schedule, &job.ScheduleHuman, &job.Prompt, &job.ChannelID,
+		&enabledInt, &createdAtUnix, &lastRunAtUnix, &nextRunAtUnix,
+	); err != nil {
+		return CronJob{}, err
+	}
+	job.Enabled = enabledInt != 0
+	job.CreatedAt = time.Unix(createdAtUnix, 0).UTC()
+	if lastRunAtUnix != nil {
+		t := time.Unix(*lastRunAtUnix, 0).UTC()
+		job.LastRunAt = &t
+	}
+	if nextRunAtUnix != nil {
+		t := time.Unix(*nextRunAtUnix, 0).UTC()
+		job.NextRunAt = &t
+	}
+	return job, nil
+}
+
+func scanCronJobRow(row *sql.Row) (CronJob, error) {
+	var job CronJob
+	var enabledInt int
+	var createdAtUnix int64
+	var lastRunAtUnix, nextRunAtUnix *int64
+
+	if err := row.Scan(
+		&job.ID, &job.Schedule, &job.ScheduleHuman, &job.Prompt, &job.ChannelID,
+		&enabledInt, &createdAtUnix, &lastRunAtUnix, &nextRunAtUnix,
+	); err != nil {
+		return CronJob{}, err
+	}
+	job.Enabled = enabledInt != 0
+	job.CreatedAt = time.Unix(createdAtUnix, 0).UTC()
+	if lastRunAtUnix != nil {
+		t := time.Unix(*lastRunAtUnix, 0).UTC()
+		job.LastRunAt = &t
+	}
+	if nextRunAtUnix != nil {
+		t := time.Unix(*nextRunAtUnix, 0).UTC()
+		job.NextRunAt = &t
+	}
+	return job, nil
+}
 
 // encryptionKey resolves the AES-256 encryption key from config or environment.
 // Resolution order: StoreConfig.EncryptionKey → MICROAGENT_SECRET_KEY env var.

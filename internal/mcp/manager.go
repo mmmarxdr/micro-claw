@@ -13,6 +13,26 @@ import (
 	"microagent/internal/config"
 )
 
+// envForServer builds the extra environment slice from cfg.Env.
+// Each value is expanded via config.ExpandSafeEnv; on failure the raw value is
+// used and a WARN is logged (fail-soft, consistent with the project's policy).
+func envForServer(cfg config.MCPServerConfig) []string {
+	if len(cfg.Env) == 0 {
+		return nil
+	}
+	env := make([]string, 0, len(cfg.Env))
+	for k, v := range cfg.Env {
+		expanded, err := config.ExpandSafeEnv(v)
+		if err != nil {
+			slog.Warn("mcp: env var expansion failed, using raw value",
+				"server", cfg.Name, "key", k, "error", err)
+			expanded = v
+		}
+		env = append(env, k+"="+expanded)
+	}
+	return env
+}
+
 // managedServer pairs a live MCP client with its config for lifecycle management.
 type managedServer struct {
 	cfg    config.MCPServerConfig
@@ -44,10 +64,13 @@ func (m *Manager) Close() {
 // the exec.Cmd before it starts and call setPdeathsig() for belt-and-suspenders
 // subprocess cleanup on Linux.
 func connectStdio(ctx context.Context, cfg config.MCPServerConfig) (MCPCaller, error) {
+	extraEnv := envForServer(cfg)
+
 	// WithCommandFunc intercepts subprocess creation so we can set Pdeathsig.
 	cmdFuncOpt := transport.WithCommandFunc(func(cmdCtx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 		cmd := exec.CommandContext(cmdCtx, command, args...)
 		cmd.Env = append(cmd.Env, env...)
+		cmd.Env = append(cmd.Env, extraEnv...)
 		setPdeathsig(cmd)
 		return cmd, nil
 	})

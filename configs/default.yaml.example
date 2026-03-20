@@ -154,3 +154,13 @@ limits:
 audit:
   enabled: false
   path: "~/.microagent/audit"
+
+# -----------------------------------------------------------------------------
+# Skills (optional)
+# -----------------------------------------------------------------------------
+# skills:
+#   List of skill files to load at startup. Each file can inject behavioral
+#   instructions into the system prompt and define fixed-command shell tools.
+#   Paths support ~ expansion and ${ENV_VAR} substitution.
+#   - ~/.microagent/skills/git-helper.md
+#   - ~/workspace/.skills/react-patterns.md

@@ -21,6 +21,7 @@ func TestAgent_buildContext(t *testing.T) {
 	a := &Agent{
 		config: cfg.Agent,
 		tools:  map[string]tool.Tool{},
+		skills: nil,
 	}
 
 	conv := &store.Conversation{

@@ -48,17 +48,18 @@ type StoreStats struct {
 // LoadAll queries both databases and returns all dashboard data.
 // If a database file does not exist, the corresponding struct has NoData=true.
 // Other errors (schema mismatch, permission denied) are returned in err.
-func LoadAll(cfg *config.Config) (OverviewData, []AuditEventRow, StoreStats, error) {
+func LoadAll(cfg *config.Config) (OverviewData, []AuditEventRow, StoreStats, MCPTabData, error) {
 	auditDBPath := filepath.Join(cfg.Audit.Path, "audit.db")
 	storeDBPath := filepath.Join(cfg.Store.Path, "microagent.db")
 
 	overview, auditEvents, err1 := loadAuditData(auditDBPath)
 	storeStats, err2 := loadStoreData(storeDBPath)
+	mcpData := loadMCPData(cfg)
 
 	if err1 != nil {
-		return overview, auditEvents, storeStats, err1
+		return overview, auditEvents, storeStats, mcpData, err1
 	}
-	return overview, auditEvents, storeStats, err2
+	return overview, auditEvents, storeStats, mcpData, err2
 }
 
 // loadAuditData queries the audit database at dbPath.

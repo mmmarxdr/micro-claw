@@ -131,7 +131,7 @@ func TestLoadAll_BothDBsMissing(t *testing.T) {
 		},
 	}
 
-	overview, _, storeStats, err := LoadAll(cfg)
+	overview, _, storeStats, _, err := LoadAll(cfg)
 	if err != nil {
 		t.Fatalf("LoadAll: expected no error for missing DBs, got: %v", err)
 	}
