@@ -156,6 +156,17 @@ audit:
   path: "~/.microagent/audit"
 
 # -----------------------------------------------------------------------------
+# Token filter (optional — reduces context tokens by post-processing tool output)
+# -----------------------------------------------------------------------------
+# filter:
+#   enabled: false          # set to true to enable token-saving post-processing
+#   truncation_chars: 8000  # max characters for generic truncation ceiling
+#   levels:
+#     shell: aggressive     # shell formatter aggressiveness: aggressive | minimal | no
+#     file_read: minimal    # file content filter level: no | minimal | aggressive
+#     generic: true         # apply generic truncation to unrecognised / MCP tools
+
+# -----------------------------------------------------------------------------
 # Skills (optional)
 # -----------------------------------------------------------------------------
 # skills:

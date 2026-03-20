@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"microagent/internal/audit"
 	"microagent/internal/channel"
+	"microagent/internal/filter"
 	"microagent/internal/provider"
 	"microagent/internal/store"
 	"microagent/internal/tool"
@@ -180,6 +181,11 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					result = tool.ToolResult{IsError: true, Content: err.Error()}
 				}
 			}
+
+			var filterMetrics filter.Metrics
+			if !result.IsError {
+				result, filterMetrics = filter.Apply(tc.Name, tc.Input, result, a.filterCfg)
+			}
 			toolDuration := time.Since(toolStart)
 
 			status := "success"
@@ -191,6 +197,8 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				ID: uuid.New().String(), ScopeID: msg.ChannelID,
 				EventType: "tool_use", Timestamp: toolStart, DurationMs: toolDuration.Milliseconds(),
 				ToolName: tc.Name, ToolOK: !result.IsError, Details: result.Meta,
+				OriginalBytes: filterMetrics.OriginalBytes, CompressedBytes: filterMetrics.CompressedBytes,
+				FilterName: filterMetrics.FilterName,
 			})
 			conv.Messages = append(conv.Messages, provider.ChatMessage{
 				Role:       "tool",

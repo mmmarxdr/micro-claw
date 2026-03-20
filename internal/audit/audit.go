@@ -24,6 +24,11 @@ type AuditEvent struct {
 	ToolName string            `json:"tool_name,omitempty"`
 	ToolOK   bool              `json:"tool_ok,omitempty"`
 	Details  map[string]string `json:"details,omitempty"` // url, status_code, command, exit_code, etc.
+
+	// Filter metrics (EventType == "tool_use", populated when filter is enabled)
+	OriginalBytes   int    `json:"original_bytes,omitempty"`
+	CompressedBytes int    `json:"compressed_bytes,omitempty"`
+	FilterName      string `json:"filter_name,omitempty"`
 }
 
 // Auditor records audit events. Implementations must be safe for concurrent use.

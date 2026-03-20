@@ -8,6 +8,7 @@ import (
 
 	"microagent/internal/audit"
 	"microagent/internal/channel"
+	"microagent/internal/config"
 	"microagent/internal/provider"
 )
 
@@ -44,7 +45,7 @@ func TestAgent_Semaphore_Capacity(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, blockingProv, st, audit.NoopAuditor{}, nil, nil, maxConcurrent)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, blockingProv, st, audit.NoopAuditor{}, nil, nil, maxConcurrent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

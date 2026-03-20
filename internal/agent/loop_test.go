@@ -156,7 +156,7 @@ func TestAgentLoop(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
 		"mock_tool": &mockTool{name: "mock_tool", result: tool.ToolResult{Content: "mock result"}},
 	}, nil, 4)
 
@@ -191,7 +191,7 @@ func TestAgent_Run_ProcessesMessages(t *testing.T) {
 	}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -237,7 +237,7 @@ func TestAgent_Run_ProcessesMessages(t *testing.T) {
 
 func TestAgent_Shutdown_NilError(t *testing.T) {
 	ch := &mockChannel{stopErr: nil}
-	ag := New(defaultCfg(), defaultLimits(), ch, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
 	if err := ag.Shutdown(); err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
@@ -246,7 +246,7 @@ func TestAgent_Shutdown_NilError(t *testing.T) {
 func TestAgent_Shutdown_PropagatesError(t *testing.T) {
 	stopErr := errors.New("stop failed")
 	ch := &mockChannel{stopErr: stopErr}
-	ag := New(defaultCfg(), defaultLimits(), ch, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
 	if err := ag.Shutdown(); !errors.Is(err, stopErr) {
 		t.Errorf("expected stopErr, got %v", err)
 	}
@@ -257,7 +257,7 @@ func TestAgent_Shutdown_PropagatesError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildContext_NoMemories(t *testing.T) {
-	ag := New(defaultCfg(), defaultLimits(), &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
 	conv := &store.Conversation{}
 	req := ag.buildContext(conv, []store.MemoryEntry{})
 	if strings.Contains(req.SystemPrompt, "## Relevant Context:") {
@@ -266,7 +266,7 @@ func TestBuildContext_NoMemories(t *testing.T) {
 }
 
 func TestBuildContext_WithMemories(t *testing.T) {
-	ag := New(defaultCfg(), defaultLimits(), &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
 	conv := &store.Conversation{}
 	memories := []store.MemoryEntry{
 		{Content: "User likes Go"},
@@ -288,7 +288,7 @@ func TestBuildContext_ToolsIncluded(t *testing.T) {
 	toolA := &mockTool{name: "tool_a"}
 	toolB := &mockTool{name: "tool_b"}
 
-	ag := New(defaultCfg(), defaultLimits(), &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{},
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{},
 		map[string]tool.Tool{"tool_a": toolA, "tool_b": toolB}, nil, 4)
 
 	conv := &store.Conversation{}
@@ -307,7 +307,7 @@ func TestBuildContext_ToolsIncluded(t *testing.T) {
 }
 
 func TestBuildContext_NoTools(t *testing.T) {
-	ag := New(defaultCfg(), defaultLimits(), &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, 4)
 	conv := &store.Conversation{}
 	req := ag.buildContext(conv, nil)
 	if req.Tools == nil {
@@ -341,7 +341,7 @@ func TestProcessMessage_MaxIterations(t *testing.T) {
 	limits := config.LimitsConfig{TotalTimeout: 5 * time.Second, ToolTimeout: 1 * time.Second}
 
 	mt := &mockTool{name: "mock_tool", result: tool.ToolResult{Content: "result"}}
-	ag := New(cfg, limits, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"mock_tool": mt}, nil, 4)
+	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"mock_tool": mt}, nil, 4)
 
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "go"})
 
@@ -375,7 +375,7 @@ func TestProcessMessage_UnknownTool(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{}, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{}, nil, 4)
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
 
 	// The conversation should have a tool-role message with "not found"
@@ -417,7 +417,7 @@ func TestProcessMessage_ToolGoError(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"err_tool": mt}, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"err_tool": mt}, nil, 4)
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
 
 	if st.conv == nil {
@@ -458,7 +458,7 @@ func TestProcessMessage_ToolPanic(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"panic_tool": mt}, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"panic_tool": mt}, nil, 4)
 
 	// Should NOT panic
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "go"})
@@ -502,7 +502,7 @@ func TestProcessMessage_MultipleToolCalls(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
 		"tool_a": toolA,
 		"tool_b": toolB,
 	}, nil, 4)
@@ -536,7 +536,7 @@ func TestProcessMessage_ProviderError(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 
 	// Should not panic
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
@@ -582,7 +582,7 @@ func TestProcessMessage_ExistingHistory(t *testing.T) {
 	// Wrap provider to capture the request
 	capturingProv := &capturingProvider{inner: prov}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, capturingProv, st, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, capturingProv, st, audit.NoopAuditor{}, nil, nil, 4)
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new message"})
 
 	capturedReq = capturingProv.lastReq
@@ -629,7 +629,7 @@ func TestProcessMessage_AppendMemoryCalledOnFinalResponse(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
 
 	if len(st.appendedMems) != 1 {
@@ -692,7 +692,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		ch := &mockChannel{}
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 5}
-		ag := New(cfg, defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new msg"})
 
 		msgs := prov.lastReq.Messages
@@ -741,7 +741,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		ch := &mockChannel{}
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 7}
-		ag := New(cfg, defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new msg"})
 
 		msgs := prov.lastReq.Messages
@@ -780,7 +780,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		ch := &mockChannel{}
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 1}
-		ag := New(cfg, defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "later msg"})
 
 		msgs := prov.lastReq.Messages
@@ -817,7 +817,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		ch := &mockChannel{}
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 3}
-		ag := New(cfg, defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 
 		// Should not panic
 		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "help"})
@@ -841,7 +841,7 @@ func TestProcessMessage_NoMemoryOnEmptyResponse(t *testing.T) {
 	ch := &mockChannel{}
 	st := &mockStore{}
 
-	ag := New(defaultCfg(), defaultLimits(), ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, 4)
 	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
 
 	if len(st.appendedMems) != 0 {

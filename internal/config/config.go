@@ -27,9 +27,25 @@ type Config struct {
 	Limits   LimitsConfig   `yaml:"limits"`
 	Audit    AuditConfig    `yaml:"audit"`
 	Cron     CronConfig     `yaml:"cron"`
+	Filter   FilterConfig   `yaml:"filter"`
 	Skills             []string `yaml:"skills"`
 	SkillsDir          string   `yaml:"skills_dir"`
 	SkillsRegistryURL  string   `yaml:"skills_registry_url"`
+}
+
+// FilterConfig controls post-execution tool output compression.
+// YAML key: filter
+type FilterConfig struct {
+	Enabled         bool         `yaml:"enabled"`          // default: false (opt-in)
+	TruncationChars int          `yaml:"truncation_chars"` // default: 8000
+	Levels          FilterLevels `yaml:"levels"`
+}
+
+// FilterLevels configures per-tool-type filter aggressiveness.
+type FilterLevels struct {
+	Shell    string `yaml:"shell"`     // "aggressive" (default) | "minimal" | "no"
+	FileRead string `yaml:"file_read"` // "minimal" (default) | "aggressive" | "no"
+	Generic  bool   `yaml:"generic"`   // true (default when enabled) — apply generic truncation to unmatched tools
 }
 
 // CronConfig holds configuration for the cron scheduling subsystem.
@@ -225,6 +241,20 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Cron.MaxConcurrent == 0 {
 		c.Cron.MaxConcurrent = 4
+	}
+	if c.Filter.TruncationChars == 0 {
+		c.Filter.TruncationChars = 8000
+	}
+	if c.Filter.Levels.Shell == "" {
+		c.Filter.Levels.Shell = "aggressive"
+	}
+	if c.Filter.Levels.FileRead == "" {
+		c.Filter.Levels.FileRead = "minimal"
+	}
+	// Generic defaults to true only when filter is enabled, since zero-value false
+	// is the correct semantic when filter is disabled.
+	if c.Filter.Enabled && !c.Filter.Levels.Generic {
+		c.Filter.Levels.Generic = true
 	}
 }
 

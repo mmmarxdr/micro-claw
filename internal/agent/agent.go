@@ -15,20 +15,22 @@ import (
 )
 
 type Agent struct {
-	config   config.AgentConfig
-	limits   config.LimitsConfig
-	channel  channel.Channel
-	provider provider.Provider
-	store    store.Store
-	auditor  audit.Auditor
-	tools    map[string]tool.Tool
-	skills   []skill.SkillContent
-	sem      chan struct{} // concurrency semaphore
+	config    config.AgentConfig
+	limits    config.LimitsConfig
+	filterCfg config.FilterConfig
+	channel   channel.Channel
+	provider  provider.Provider
+	store     store.Store
+	auditor   audit.Auditor
+	tools     map[string]tool.Tool
+	skills    []skill.SkillContent
+	sem       chan struct{} // concurrency semaphore
 }
 
 func New(
 	cfg config.AgentConfig,
 	limits config.LimitsConfig,
+	filterCfg config.FilterConfig,
 	ch channel.Channel,
 	prov provider.Provider,
 	st store.Store,
@@ -41,15 +43,16 @@ func New(
 		maxConcurrent = 4
 	}
 	return &Agent{
-		config:   cfg,
-		limits:   limits,
-		channel:  ch,
-		provider: prov,
-		store:    st,
-		auditor:  auditor,
-		tools:    tools,
-		skills:   skills,
-		sem:      make(chan struct{}, maxConcurrent),
+		config:    cfg,
+		limits:    limits,
+		filterCfg: filterCfg,
+		channel:   ch,
+		provider:  prov,
+		store:     st,
+		auditor:   auditor,
+		tools:     tools,
+		skills:    skills,
+		sem:       make(chan struct{}, maxConcurrent),
 	}
 }
 

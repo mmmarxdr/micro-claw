@@ -848,6 +848,40 @@ func TestLoad_WhitespaceOnlyFileReturnsErrNoConfig(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Task 1.4 — FilterConfig defaults
+// ---------------------------------------------------------------------------
+
+func TestApplyDefaults_FilterConfigDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+
+	if cfg.Filter.TruncationChars != 8000 {
+		t.Errorf("Filter.TruncationChars = %d, want 8000", cfg.Filter.TruncationChars)
+	}
+	if cfg.Filter.Levels.Shell != "aggressive" {
+		t.Errorf("Filter.Levels.Shell = %q, want %q", cfg.Filter.Levels.Shell, "aggressive")
+	}
+	if cfg.Filter.Levels.FileRead != "minimal" {
+		t.Errorf("Filter.Levels.FileRead = %q, want %q", cfg.Filter.Levels.FileRead, "minimal")
+	}
+	// When disabled (default), Generic remains false.
+	if cfg.Filter.Levels.Generic {
+		t.Errorf("Filter.Levels.Generic should be false when filter is disabled, got true")
+	}
+}
+
+func TestApplyDefaults_FilterConfig_EnabledSetsGenericTrue(t *testing.T) {
+	cfg := &Config{
+		Filter: FilterConfig{Enabled: true},
+	}
+	cfg.applyDefaults()
+
+	if !cfg.Filter.Levels.Generic {
+		t.Errorf("Filter.Levels.Generic should be true when filter is enabled, got false")
+	}
+}
+
 func createTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "microagent-config-*.yaml")

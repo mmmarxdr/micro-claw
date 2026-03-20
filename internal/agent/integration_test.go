@@ -168,6 +168,7 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 	ag := New(
 		defaultIntegrationAgentConfig(),
 		defaultIntegrationLimitsConfig(),
+		config.FilterConfig{},
 		ch,
 		prov,
 		st,
@@ -245,7 +246,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	var outBuf1 bytes.Buffer
 	ch1 := channel.NewCLIChannel(config.ChannelConfig{}, pr1, &outBuf1)
 
-	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch1, prov1, st1, audit.NoopAuditor{}, nil, nil, 4)
+	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch1, prov1, st1, audit.NoopAuditor{}, nil, nil, 4)
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel1)
@@ -325,7 +326,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	var outBuf2 bytes.Buffer
 	ch2 := channel.NewCLIChannel(config.ChannelConfig{}, pr2, &outBuf2)
 
-	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), ch2, prov2, st2, audit.NoopAuditor{}, nil, nil, 4)
+	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch2, prov2, st2, audit.NoopAuditor{}, nil, nil, 4)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel2)
@@ -418,6 +419,7 @@ func TestIntegration_AddNewTool(t *testing.T) {
 	ag := New(
 		defaultIntegrationAgentConfig(),
 		defaultIntegrationLimitsConfig(),
+		config.FilterConfig{},
 		ch,
 		prov,
 		st,
