@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"microagent/internal/audit"
 	"microagent/internal/channel"
+	"microagent/internal/config"
 	"microagent/internal/filter"
 	"microagent/internal/provider"
 	"microagent/internal/store"
@@ -196,9 +198,19 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				OriginalBytes: filterMetrics.OriginalBytes, CompressedBytes: filterMetrics.CompressedBytes,
 				FilterName: filterMetrics.FilterName,
 			})
+			// Apply injection detection before wrapping, if enabled.
+			resultContent := result.Content
+			if config.BoolVal(a.filterCfg.InjectionDetection) {
+				var injected bool
+				resultContent, injected = filter.ApplyInjectionFilter(result.Content)
+				if injected {
+					slog.Warn("potential prompt injection detected in tool result", "tool", tc.Name)
+				}
+			}
+			safeContent := html.EscapeString(resultContent)
 			conv.Messages = append(conv.Messages, provider.ChatMessage{
 				Role:       "tool",
-				Content:    fmt.Sprintf("<tool_result status=\"%s\">\n%s\n</tool_result>", status, result.Content),
+				Content:    fmt.Sprintf("<tool_result status=\"%s\">\n%s\n</tool_result>", status, safeContent),
 				ToolCallID: tc.ID,
 			})
 		}

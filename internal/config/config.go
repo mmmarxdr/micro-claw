@@ -36,9 +36,10 @@ type Config struct {
 // FilterConfig controls post-execution tool output compression.
 // YAML key: filter
 type FilterConfig struct {
-	Enabled         bool         `yaml:"enabled"`          // default: false (opt-in)
-	TruncationChars int          `yaml:"truncation_chars"` // default: 8000
-	Levels          FilterLevels `yaml:"levels"`
+	Enabled            bool         `yaml:"enabled"`             // default: false (opt-in)
+	TruncationChars    int          `yaml:"truncation_chars"`    // default: 8000
+	Levels             FilterLevels `yaml:"levels"`
+	InjectionDetection *bool        `yaml:"injection_detection"` // default: true — detect prompt injection in tool results
 }
 
 // FilterLevels configures per-tool-type filter aggressiveness.
@@ -269,6 +270,11 @@ func (c *Config) applyDefaults() {
 	// is the correct semantic when filter is disabled.
 	if c.Filter.Enabled && !c.Filter.Levels.Generic {
 		c.Filter.Levels.Generic = true
+	}
+	// InjectionDetection defaults to true (opt-out, not opt-in).
+	if c.Filter.InjectionDetection == nil {
+		t := true
+		c.Filter.InjectionDetection = &t
 	}
 }
 
