@@ -42,45 +42,15 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		Content: msg.Text,
 	})
 
-	if a.config.HistoryLength > 0 && len(conv.Messages) > a.config.HistoryLength {
-		// Find the first user message before trimming
-		firstUserIdx := -1
-		for i, m := range conv.Messages {
-			if m.Role == "user" {
-				firstUserIdx = i
-				break
-			}
-		}
-		trim := len(conv.Messages) - a.config.HistoryLength
-		discarded := conv.Messages[:trim]
-		tail := conv.Messages[trim:]
-
-		var sumText string
-		if len(discarded) > 0 {
-			summarizeCtx, cancelSum := context.WithTimeout(ctx, 30*time.Second)
-			sumReq := provider.ChatRequest{
-				SystemPrompt: "Provide a concise summary of the following conversation segment.",
-				Messages:     discarded,
-				MaxTokens:    500,
-			}
-			sumResp, err := a.provider.Chat(summarizeCtx, sumReq)
-			cancelSum()
-			if err == nil && sumResp != nil && sumResp.Content != "" {
-				sumText = "(Summary of previous conversation):\n" + sumResp.Content
-			}
-		}
-
-		if sumText != "" {
-			summaryMsg := provider.ChatMessage{Role: "assistant", Content: sumText}
-			tail = append([]provider.ChatMessage{summaryMsg}, tail...)
-		}
-
-		// Preserve the first user message if it was trimmed off
-		if firstUserIdx >= 0 && firstUserIdx < trim {
-			preserved := conv.Messages[firstUserIdx]
-			tail = append([]provider.ChatMessage{preserved}, tail...)
-		}
-		conv.Messages = tail
+	// Token-based context management takes precedence when MaxContextTokens > 0.
+	// Falls back to the legacy HistoryLength-based truncation when MaxContextTokens is 0.
+	if a.config.MaxContextTokens > 0 {
+		// Build a preliminary system prompt to estimate its token cost.
+		preliminaryPrompt := a.config.Personality
+		conv.Messages = a.manageContextTokens(ctx, preliminaryPrompt, conv.Messages)
+	} else if a.config.HistoryLength > 0 && len(conv.Messages) > a.config.HistoryLength {
+		// Legacy HistoryLength-based truncation (backward compatible).
+		conv.Messages = a.legacyTruncate(ctx, conv.Messages)
 	}
 
 	memories, _ := a.store.SearchMemory(ctx, msg.ChannelID, msg.Text, a.config.MemoryResults)
@@ -243,6 +213,49 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 	conv.UpdatedAt = time.Now()
 	_ = a.store.SaveConversation(ctx, *conv)
+}
+
+// legacyTruncate performs the original HistoryLength-based truncation with LLM summarization.
+// Preserved for backward compatibility when MaxContextTokens is 0.
+func (a *Agent) legacyTruncate(ctx context.Context, messages []provider.ChatMessage) []provider.ChatMessage {
+	// Find the first user message before trimming
+	firstUserIdx := -1
+	for i, m := range messages {
+		if m.Role == "user" {
+			firstUserIdx = i
+			break
+		}
+	}
+	trim := len(messages) - a.config.HistoryLength
+	discarded := messages[:trim]
+	tail := messages[trim:]
+
+	var sumText string
+	if len(discarded) > 0 {
+		summarizeCtx, cancelSum := context.WithTimeout(ctx, 30*time.Second)
+		sumReq := provider.ChatRequest{
+			SystemPrompt: "Provide a concise summary of the following conversation segment.",
+			Messages:     discarded,
+			MaxTokens:    500,
+		}
+		sumResp, err := a.provider.Chat(summarizeCtx, sumReq)
+		cancelSum()
+		if err == nil && sumResp != nil && sumResp.Content != "" {
+			sumText = "(Summary of previous conversation):\n" + sumResp.Content
+		}
+	}
+
+	if sumText != "" {
+		summaryMsg := provider.ChatMessage{Role: "assistant", Content: sumText}
+		tail = append([]provider.ChatMessage{summaryMsg}, tail...)
+	}
+
+	// Preserve the first user message if it was trimmed off
+	if firstUserIdx >= 0 && firstUserIdx < trim {
+		preserved := messages[firstUserIdx]
+		tail = append([]provider.ChatMessage{preserved}, tail...)
+	}
+	return tail
 }
 
 func executeWithRecover(ctx context.Context, t tool.Tool, params json.RawMessage) (result tool.ToolResult, err error) {

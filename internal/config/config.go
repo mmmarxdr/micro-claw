@@ -64,6 +64,8 @@ type AgentConfig struct {
 	MaxTokensPerTurn int    `yaml:"max_tokens_per_turn"`
 	HistoryLength    int    `yaml:"history_length"`
 	MemoryResults    int    `yaml:"memory_results"`
+	MaxContextTokens int    `yaml:"max_context_tokens"` // token budget for context; 0 = use HistoryLength only
+	SummaryTokens    int    `yaml:"summary_tokens"`     // max tokens for LLM-generated summaries
 }
 
 // FallbackConfig configures an optional secondary provider for resilience.
@@ -192,6 +194,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Agent.MaxTokensPerTurn == 0 {
 		c.Agent.MaxTokensPerTurn = 4096
+	}
+	if c.Agent.MaxContextTokens == 0 {
+		c.Agent.MaxContextTokens = 100000
+	}
+	if c.Agent.SummaryTokens == 0 {
+		c.Agent.SummaryTokens = 1000
 	}
 	if c.Provider.Stream == nil {
 		t := true
