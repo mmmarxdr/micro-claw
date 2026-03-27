@@ -168,15 +168,23 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			if !ok {
 				result = tool.ToolResult{IsError: true, Content: fmt.Sprintf("Tool %s not found", tc.Name)}
 			} else {
-				toolTimeout := a.limits.ToolTimeout
-				if toolTimeout == 0 {
-					toolTimeout = 30 * time.Second
-				}
-				toolCtx, tCancel := context.WithTimeout(loopCtx, toolTimeout)
-				result, err = executeWithRecover(toolCtx, t, tc.Input)
-				tCancel()
-				if err != nil {
-					result = tool.ToolResult{IsError: true, Content: err.Error()}
+				// Validate the LLM-generated input against the tool's JSON schema
+				// before executing. This catches malformed JSON and missing required
+				// fields early, avoiding panics or confusing errors inside tools.
+				if validErr := validateToolInput(tc.Input, t.Schema()); validErr != nil {
+					slog.Warn("tool input validation failed", "tool", tc.Name, "error", validErr)
+					result = tool.ToolResult{IsError: true, Content: "invalid tool input: " + validErr.Error()}
+				} else {
+					toolTimeout := a.limits.ToolTimeout
+					if toolTimeout == 0 {
+						toolTimeout = 30 * time.Second
+					}
+					toolCtx, tCancel := context.WithTimeout(loopCtx, toolTimeout)
+					result, err = executeWithRecover(toolCtx, t, tc.Input)
+					tCancel()
+					if err != nil {
+						result = tool.ToolResult{IsError: true, Content: err.Error()}
+					}
 				}
 			}
 

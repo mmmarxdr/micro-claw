@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,40 +275,9 @@ func (s *SQLiteStore) AppendMemory(ctx context.Context, scopeID string, entry Me
 	return nil
 }
 
-// SearchMemory searches memory entries in scopeID matching query (FTS5 if non-empty, plain SELECT if empty).
-// limit <= 0 means no limit.
-func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error) {
-	var rows *sql.Rows
-	var err error
-
-	if query == "" {
-		// Empty query: return all entries for scope ordered by created_at DESC.
-		q := `SELECT id, scope_id, topic, type, title, content, tags, source, created_at
-		      FROM memory WHERE scope_id = ? ORDER BY created_at DESC`
-		var args []any
-		args = append(args, scopeID)
-		if limit > 0 {
-			q += ` LIMIT ?`
-			args = append(args, limit)
-		}
-		rows, err = s.db.QueryContext(ctx, q, args...)
-	} else {
-		// Non-empty query: use FTS5 join ordered by relevance rank.
-		q := `SELECT m.id, m.scope_id, m.topic, m.type, m.title, m.content, m.tags, m.source, m.created_at
-		      FROM memory m JOIN memory_fts f ON f.rowid = m.rowid
-		      WHERE f.memory_fts MATCH ? AND m.scope_id = ? ORDER BY rank`
-		var args []any
-		args = append(args, query, scopeID)
-		if limit > 0 {
-			q += ` LIMIT ?`
-			args = append(args, limit)
-		}
-		rows, err = s.db.QueryContext(ctx, q, args...)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("searching memory in scope %s: %w", scopeID, err)
-	}
+// scanMemoryRows reads all rows from a memory query result into a slice of MemoryEntry.
+// It closes rows before returning. Returns a non-nil empty slice when there are no rows.
+func scanMemoryRows(rows *sql.Rows) ([]MemoryEntry, error) {
 	defer rows.Close()
 
 	var entries []MemoryEntry
@@ -338,6 +308,100 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 		entries = []MemoryEntry{}
 	}
 	return entries, nil
+}
+
+// SearchMemory searches memory entries in scopeID matching query.
+//
+// Search strategy:
+//  1. Extract meaningful keywords from query, stripping stop words.
+//  2. If keywords found: run FTS5 MATCH with BM25 ranking blended with a
+//     recency penalty (0.1 * days_old), so newer entries are preferred when
+//     relevance is similar.
+//  3. If FTS5 returns no results OR no keywords were found: fall back to a
+//     LIKE-based substring search ordered by created_at DESC.
+//  4. Empty query: return all entries for scope ordered by created_at DESC.
+//
+// limit <= 0 means no limit.
+func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error) {
+	var rows *sql.Rows
+	var err error
+
+	if query == "" {
+		// Empty query: return all entries for scope ordered by created_at DESC.
+		q := `SELECT id, scope_id, topic, type, title, content, tags, source, created_at
+		      FROM memory WHERE scope_id = ? ORDER BY created_at DESC`
+		var args []any
+		args = append(args, scopeID)
+		if limit > 0 {
+			q += ` LIMIT ?`
+			args = append(args, limit)
+		}
+		rows, err = s.db.QueryContext(ctx, q, args...)
+	} else {
+		ftsQuery := BuildFTSQuery(query)
+
+		if ftsQuery != "" {
+			// Primary path: FTS5 with BM25 + recency weighting.
+			// bm25() returns negative values; more negative = worse match.
+			// We subtract a small recency penalty so older entries rank worse
+			// when relevance is comparable. ASC order gives best (least negative) first.
+			//
+			// Note: the Go driver stores time.Time as "YYYY-MM-DD HH:MM:SS +0000 UTC"
+			// which SQLite's julianday() cannot parse. substr(created_at,1,19) trims to
+			// "YYYY-MM-DD HH:MM:SS" which julianday() handles correctly.
+			//
+			// Ranking formula: bm25(memory_fts) + 0.001 * days_old
+			// FTS5 bm25() returns negative values where more-negative = better relevance.
+			// Adding a positive recency penalty (0.001 * days_old) pushes older entries
+			// toward zero (worse), so newer entries with equal relevance rank higher.
+			// MAX(0, ...) prevents future-dated entries from receiving a bonus.
+			// ORDER BY ASC: smallest (most negative) value = best match comes first.
+			q := `SELECT m.id, m.scope_id, m.topic, m.type, m.title, m.content, m.tags, m.source, m.created_at
+			      FROM memory m
+			      JOIN memory_fts ON memory_fts.rowid = m.rowid
+			      WHERE memory_fts MATCH ? AND m.scope_id = ?
+			      ORDER BY (bm25(memory_fts) + 0.001 * MAX(0, julianday('now') - julianday(substr(m.created_at,1,19)))) ASC`
+			args := []any{ftsQuery, scopeID}
+			if limit > 0 {
+				q += ` LIMIT ?`
+				args = append(args, limit)
+			}
+			rows, err = s.db.QueryContext(ctx, q, args...)
+			if err != nil {
+				return nil, fmt.Errorf("searching memory in scope %s: %w", scopeID, err)
+			}
+
+			entries, scanErr := scanMemoryRows(rows)
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			// If FTS5 found results, return them directly.
+			if len(entries) > 0 {
+				return entries, nil
+			}
+			// Fall through to LIKE fallback when FTS5 returned nothing.
+		}
+
+		// Fallback: LIKE-based substring search ordered by recency.
+		// Covers the case where all query tokens were stop words (ftsQuery == "")
+		// or FTS5 returned no rows.
+		likePattern := "%" + strings.ToLower(query) + "%"
+		q := `SELECT id, scope_id, topic, type, title, content, tags, source, created_at
+		      FROM memory
+		      WHERE scope_id = ? AND (lower(content) LIKE ? OR lower(tags) LIKE ?)
+		      ORDER BY created_at DESC`
+		args := []any{scopeID, likePattern, likePattern}
+		if limit > 0 {
+			q += ` LIMIT ?`
+			args = append(args, limit)
+		}
+		rows, err = s.db.QueryContext(ctx, q, args...)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("searching memory in scope %s: %w", scopeID, err)
+	}
+	return scanMemoryRows(rows)
 }
 
 // Compile-time assertions.

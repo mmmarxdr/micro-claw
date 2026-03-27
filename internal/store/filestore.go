@@ -195,36 +195,108 @@ func (s *FileStore) AppendMemory(ctx context.Context, scopeID string, entry Memo
 	return s.saveMemory(scopeID, entries)
 }
 
+// memoryHitCount returns the number of distinct keywords from kws that appear
+// in the lowercased content or tags of entry.
+func memoryHitCount(entry MemoryEntry, kws []string) int {
+	lowerContent := strings.ToLower(entry.Content)
+	lowerTags := make([]string, len(entry.Tags))
+	for i, t := range entry.Tags {
+		lowerTags[i] = strings.ToLower(t)
+	}
+
+	count := 0
+	for _, kw := range kws {
+		if strings.Contains(lowerContent, kw) {
+			count++
+			continue
+		}
+		for _, lt := range lowerTags {
+			if strings.Contains(lt, kw) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+// SearchMemory returns memory entries in scopeID that match the given query.
+//
+// Keywords are extracted from query (stop words removed). Each entry is scored
+// by the number of keywords it contains. Results are sorted by (hit count DESC,
+// created_at DESC) so the most relevant and most recent entries come first.
+// If query is empty, all entries are returned sorted by created_at DESC.
 func (s *FileStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error) {
 	entries, err := s.loadMemory(scopeID)
 	if err != nil {
 		return nil, err
 	}
 
-	query = strings.ToLower(query)
-	var matches []MemoryEntry
+	if query == "" {
+		// No query: return all entries newest-first.
+		result := make([]MemoryEntry, len(entries))
+		copy(result, entries)
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		})
+		if limit > 0 && len(result) > limit {
+			result = result[:limit]
+		}
+		return result, nil
+	}
 
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
-		match := false
-		if strings.Contains(strings.ToLower(e.Content), query) {
-			match = true
-		} else {
-			for _, tag := range e.Tags {
-				if strings.Contains(strings.ToLower(tag), query) {
-					match = true
-					break
+	keywords := ExtractKeywords(query)
+
+	// If all tokens were stop words, fall back to plain substring match with
+	// the original lowercased query so behaviour degrades gracefully.
+	useFallback := len(keywords) == 0
+	lowerQuery := strings.ToLower(query)
+
+	type scored struct {
+		entry MemoryEntry
+		hits  int
+	}
+	var candidates []scored
+
+	for _, e := range entries {
+		var hits int
+		if useFallback {
+			// Substring fallback: treat as 1-hit match if found.
+			lc := strings.ToLower(e.Content)
+			found := strings.Contains(lc, lowerQuery)
+			if !found {
+				for _, tag := range e.Tags {
+					if strings.Contains(strings.ToLower(tag), lowerQuery) {
+						found = true
+						break
+					}
 				}
 			}
-		}
-
-		if match {
-			matches = append(matches, e)
-			if limit > 0 && len(matches) >= limit {
-				break
+			if found {
+				hits = 1
 			}
+		} else {
+			hits = memoryHitCount(e, keywords)
+		}
+		if hits > 0 {
+			candidates = append(candidates, scored{entry: e, hits: hits})
 		}
 	}
 
-	return matches, nil
+	// Sort by: hit count DESC, then created_at DESC.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].hits != candidates[j].hits {
+			return candidates[i].hits > candidates[j].hits
+		}
+		return candidates[i].entry.CreatedAt.After(candidates[j].entry.CreatedAt)
+	})
+
+	result := make([]MemoryEntry, 0, len(candidates))
+	for _, c := range candidates {
+		result = append(result, c.entry)
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
