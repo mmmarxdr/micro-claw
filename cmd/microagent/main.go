@@ -30,6 +30,13 @@ import (
 )
 
 var (
+	// Build-time variables set via -ldflags.
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+var (
 	cfgPath     = flag.String("config", "", "path to config file (searches ~/.microagent/config.yaml and ./config.yaml if empty)")
 	showVersion = flag.Bool("version", false, "print version and exit")
 	dashboard   = flag.Bool("dashboard", false, "open read-only TUI dashboard and exit")
@@ -95,7 +102,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("microagent dev")
+		fmt.Printf("microagent %s (%s, %s)\n", version, commit, date)
 		os.Exit(0)
 	}
 
