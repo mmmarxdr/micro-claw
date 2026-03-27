@@ -260,6 +260,9 @@ func (c *Config) applyDefaults() {
 	if c.SkillsDir == "" {
 		c.SkillsDir = "~/.microagent/skills"
 	}
+	if c.SkillsRegistryURL == "" {
+		c.SkillsRegistryURL = "https://raw.githubusercontent.com/mmmarxdr/micro-claw/main/configs/skills/registry.yaml"
+	}
 	if c.Cron.Timezone == "" {
 		c.Cron.Timezone = "UTC"
 	}

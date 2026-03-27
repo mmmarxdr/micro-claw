@@ -184,16 +184,23 @@ func (s *SkillService) Add(ctx context.Context, src string, force bool) error {
 		}
 
 	default:
-		// Short name — resolve via registry URL.
+		// Short name — resolve via registry index.
 		if s.registryURL == "" {
 			return ErrNoRegistry
 		}
-		registryURL := strings.TrimRight(s.registryURL, "/") + "/" + src + ".md"
+		reg, err := FetchRegistry(ctx, s.registryURL)
+		if err != nil {
+			return fmt.Errorf("fetch registry: %w", err)
+		}
+		entry, ok := reg.Resolve(src)
+		if !ok {
+			return fmt.Errorf("skill %q not found in registry. Available: %s", src, reg.availableNames())
+		}
 		fmt.Fprintf(os.Stderr,
 			"WARNING: Installing a skill from a URL will write a file that executes shell commands\n"+
 				"         with your user privileges. Only install skills from sources you trust.\n"+
-				"         Source: %s\n", registryURL)
-		rawBytes, err = s.fetchURL(ctx, registryURL)
+				"         Source: %s\n", entry.URL)
+		rawBytes, err = s.fetchURL(ctx, entry.URL)
 		if err != nil {
 			return fmt.Errorf("fetch skill %q from registry: %w", src, err)
 		}

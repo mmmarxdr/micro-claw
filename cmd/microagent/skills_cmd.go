@@ -20,7 +20,7 @@ import (
 // cfgPath is the resolved --config value (may be empty → config.FindConfigPath uses default search).
 func runSkillsCommand(args []string, cfgPath string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage: microagent skills <add|list|remove|info>")
+		fmt.Println("Usage: microagent skills <add|list|remove|info|search>")
 		return nil
 	}
 	switch args[0] {
@@ -32,11 +32,13 @@ func runSkillsCommand(args []string, cfgPath string) error {
 		return skillsRemove(args[1:], cfgPath)
 	case "info":
 		return skillsInfo(args[1:], cfgPath)
+	case "search":
+		return skillsSearch(args[1:], cfgPath)
 	case "--help", "-help", "-h":
-		fmt.Println("Usage: microagent skills <add|list|remove|info>")
+		fmt.Println("Usage: microagent skills <add|list|remove|info|search>")
 		return nil
 	default:
-		return fmt.Errorf("unknown skills subcommand: %q\nUsage: microagent skills <add|list|remove|info>", args[0])
+		return fmt.Errorf("unknown skills subcommand: %q\nUsage: microagent skills <add|list|remove|info|search>", args[0])
 	}
 }
 
@@ -326,6 +328,75 @@ func skillsInfo(args []string, cfgPath string) error {
 	}
 	if len(tools) == 0 {
 		fmt.Println("(none)")
+	}
+
+	return nil
+}
+
+// skillsSearch implements `microagent skills search [QUERY]`.
+// It fetches the registry and prints skills matching the query.
+// If no query is given, all available skills are listed.
+func skillsSearch(args []string, cfgPath string) error {
+	fs := flag.NewFlagSet("skills search", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	query := fs.Arg(0) // optional; empty means list all
+
+	resolved, err := resolveCfgPath(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return err
+	}
+
+	cfg, err := config.Load(resolved)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		return err
+	}
+
+	if cfg.SkillsRegistryURL == "" {
+		fmt.Fprintln(os.Stderr, "Error: no registry URL configured (set skills_registry_url in config)")
+		return fmt.Errorf("no registry URL configured")
+	}
+
+	ctx := context.Background()
+	reg, err := skill.FetchRegistry(ctx, cfg.SkillsRegistryURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error fetching registry: %v\n", err)
+		return err
+	}
+
+	results := reg.Search(query)
+	if len(results) == 0 {
+		if query != "" {
+			fmt.Printf("No skills found matching %q.\n", query)
+		} else {
+			fmt.Println("Registry is empty.")
+		}
+		return nil
+	}
+
+	// Determine column widths.
+	nameW, descW, versionW := 4, 11, 7
+	for _, e := range results {
+		if len(e.Name) > nameW {
+			nameW = len(e.Name)
+		}
+		if len(e.Description) > descW {
+			descW = len(e.Description)
+		}
+		if len(e.Version) > versionW {
+			versionW = len(e.Version)
+		}
+	}
+
+	fmtRow := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%s\n", nameW, descW, versionW)
+	fmt.Printf(fmtRow, "NAME", "DESCRIPTION", "VERSION", "TAGS")
+	for _, e := range results {
+		tags := strings.Join(e.Tags, ", ")
+		fmt.Printf(fmtRow, e.Name, e.Description, e.Version, tags)
 	}
 
 	return nil

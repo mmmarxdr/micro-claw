@@ -1,0 +1,11 @@
+skills:
+  - name: git-helper
+    description: Git workflow and status tools for daily development
+    url: https://raw.githubusercontent.com/mmmarxdr/micro-claw/main/configs/skills/git-helper.md
+    version: "1.0.0"
+    tags: [git, development]
+  - name: cron
+    description: Enables the agent to schedule recurring tasks using natural language
+    url: https://raw.githubusercontent.com/mmmarxdr/micro-claw/main/configs/skills/cron.md
+    version: "1.0.0"
+    tags: [scheduling, automation]

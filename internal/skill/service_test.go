@@ -319,18 +319,29 @@ func TestSkillServiceAdd_ShortNameWithRegistry(t *testing.T) {
 	storeDir := filepath.Join(dir, "store")
 	cfgPath := writeTempConfig(t, dir, nil)
 
-	content := skillMD("registry-skill", "From registry")
+	skillContent := skillMD("registry-skill", "From registry")
+
+	// The server must handle two requests:
+	//   GET /registry.yaml  — returns the YAML index
+	//   GET /registry-skill.md — returns the actual skill file
+	var srvURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/registry-skill.md" {
+		switch r.URL.Path {
+		case "/registry.yaml":
+			registryYAML := "skills:\n  - name: registry-skill\n    description: From registry\n    url: " + srvURL + "/registry-skill.md\n    version: \"1.0.0\"\n    tags: [test]\n"
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(content))
-		} else {
+			w.Write([]byte(registryYAML))
+		case "/registry-skill.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(skillContent))
+		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
+	srvURL = srv.URL
 
-	svc := NewSkillService(cfgPath, storeDir, srv.URL)
+	svc := NewSkillService(cfgPath, storeDir, srv.URL+"/registry.yaml")
 	if err := svc.Add(context.Background(), "registry-skill", false); err != nil {
 		t.Fatalf("Add short name with registry returned error: %v", err)
 	}
