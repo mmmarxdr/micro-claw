@@ -681,6 +681,43 @@ func TestFileStore_SaveMemory_AtomicWriteError(t *testing.T) {
 	}
 }
 
+// TestFileStore_UpdateMemory_IsNoOp verifies that UpdateMemory returns nil
+// without writing any file or modifying existing memory entries.
+func TestFileStore_UpdateMemory_IsNoOp(t *testing.T) {
+	tmpDir := t.TempDir()
+	st := NewFileStore(config.StoreConfig{Path: tmpDir})
+	ctx := context.Background()
+
+	// Append a real entry first.
+	entry := MemoryEntry{
+		ID:      "noop-test",
+		Content: "original content",
+		Tags:    []string{"original"},
+	}
+	if err := st.AppendMemory(ctx, "scope1", entry); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// Call UpdateMemory — should return nil with no side effects.
+	entry.Title = "Updated"
+	entry.Tags = []string{"updated"}
+	if err := st.UpdateMemory(ctx, "scope1", entry); err != nil {
+		t.Fatalf("UpdateMemory should return nil for FileStore, got: %v", err)
+	}
+
+	// Verify the entry was NOT modified (FileStore UpdateMemory is a no-op).
+	results, err := st.SearchMemory(ctx, "scope1", "original", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected original entry to still be present")
+	}
+	if results[0].Title == "Updated" {
+		t.Error("UpdateMemory should be a no-op for FileStore but modified the entry")
+	}
+}
+
 func TestFileStore_PersistenceAcrossInstances(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()

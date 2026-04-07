@@ -91,6 +91,7 @@ type mockStore struct {
 	saveErr      error
 	memories     []store.MemoryEntry
 	appendedMems []store.MemoryEntry
+	updateCount  int
 }
 
 func (m *mockStore) SaveConversation(ctx context.Context, conv store.Conversation) error {
@@ -123,7 +124,12 @@ func (m *mockStore) AppendMemory(ctx context.Context, scopeID string, entry stor
 func (m *mockStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]store.MemoryEntry, error) {
 	return m.memories, nil
 }
-func (m *mockStore) Close() error { return nil }
+func (m *mockStore) UpdateMemory(_ context.Context, _ string, _ store.MemoryEntry) error {
+	m.updateCount++
+	return nil
+}
+func (m *mockStore) updateCallCount() int { return m.updateCount }
+func (m *mockStore) Close() error         { return nil }
 
 // ---------------------------------------------------------------------------
 // Helper to build a default agent config.
@@ -847,5 +853,98 @@ func TestProcessMessage_NoMemoryOnEmptyResponse(t *testing.T) {
 
 	if len(st.appendedMems) != 0 {
 		t.Errorf("expected 0 memory entries for empty response, got %d", len(st.appendedMems))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestEnricher wiring in Agent
+// ---------------------------------------------------------------------------
+
+// TestAgent_EnricherNilWhenDisabled verifies no enricher is created when
+// EnrichMemory=false.
+func TestAgent_EnricherNilWhenDisabled(t *testing.T) {
+	prov := &mockProvider{responses: []provider.ChatResponse{{Content: "hello"}}}
+	ch := &mockChannel{}
+	st := &mockStore{}
+	cfg := defaultCfg() // EnrichMemory defaults to false
+
+	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	if ag.enricher != nil {
+		t.Error("expected enricher to be nil when EnrichMemory=false")
+	}
+}
+
+// TestAgent_EnricherCreatedWhenEnabled verifies that when EnrichMemory=true,
+// an enricher is constructed.
+func TestAgent_EnricherCreatedWhenEnabled(t *testing.T) {
+	prov := &mockProvider{responses: []provider.ChatResponse{{Content: "hello"}}}
+	ch := &mockChannel{}
+	st := &mockStore{}
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		EnrichMemory:     true,
+		EnrichRatePerMin: 10,
+	}
+
+	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	if ag.enricher == nil {
+		t.Error("expected enricher to be non-nil when EnrichMemory=true")
+	}
+}
+
+// TestAgent_EnricherEnqueueCalledAfterAppendMemory verifies that after a
+// successful AppendMemory, the enricher's channel receives the entry.
+func TestAgent_EnricherEnqueueCalledAfterAppendMemory(t *testing.T) {
+	enrichProv := &mockProvider{
+		// First response: main LLM response
+		// Second response: enricher LLM call (tags)
+		responses: []provider.ChatResponse{
+			{Content: "the agent response"},
+			{Content: "go, backend, testing"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		EnrichMemory:     true,
+		EnrichRatePerMin: 60,
+	}
+
+	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, enrichProv, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+	if ag.enricher == nil {
+		t.Fatal("enricher must be non-nil for this test")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ag.enricher.Start(ctx)
+	defer func() {
+		cancel()
+		ag.enricher.Stop()
+	}()
+
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+
+	// Verify AppendMemory was called.
+	if len(st.appendedMems) != 1 {
+		t.Fatalf("expected 1 memory entry appended, got %d", len(st.appendedMems))
+	}
+
+	// Wait for the enricher to process the job and call UpdateMemory.
+	deadline := time.After(3 * time.Second)
+	for {
+		updates := st.updateCallCount()
+		if updates >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("enricher did not call UpdateMemory within 3s")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }

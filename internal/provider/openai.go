@@ -281,8 +281,13 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	}
 
 	// Step 3: Marshal request.
+	// Per-request model override takes precedence over the provider's configured model.
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
 	apiReq := openaiRequest{
-		Model:    p.model,
+		Model:    model,
 		Messages: msgs,
 		Tools:    tools,
 	}
@@ -354,3 +359,80 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 
 	return nil, fmt.Errorf("openai: failed after %d attempts: %w", maxRetries+1, lastErr)
 }
+
+// ─── EmbeddingProvider implementation ────────────────────────────────────────
+
+// openaiEmbedRequest is the request body for /v1/embeddings.
+type openaiEmbedRequest struct {
+	Model string `json:"model"`
+	Input string `json:"input"`
+}
+
+// openaiEmbedResponse is the API response for /v1/embeddings.
+type openaiEmbedResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+		Index     int       `json:"index"`
+	} `json:"data"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// Embed generates a text embedding via the OpenAI embeddings API using
+// text-embedding-3-small. Implements EmbeddingProvider.
+// The returned vector length reflects the model output; callers should
+// normalize to the expected storage dimension (256) before persisting.
+func (p *OpenAIProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	reqBody := openaiEmbedRequest{
+		Model: "text-embedding-3-small",
+		Input: text,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("openai embed: marshaling request: %w", err)
+	}
+
+	url := p.baseURL + "/embeddings"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("openai embed: creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai embed: request failed: %w", wrapNetworkError(err))
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, classifyOpenAIError(resp.StatusCode, respBody)
+	}
+
+	var apiResp openaiEmbedResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return nil, fmt.Errorf("openai embed: parsing response: %w", err)
+	}
+	if apiResp.Error != nil {
+		return nil, fmt.Errorf("openai embed api error: %s", apiResp.Error.Message)
+	}
+	if len(apiResp.Data) == 0 {
+		return nil, fmt.Errorf("openai embed: empty data in response")
+	}
+
+	raw := apiResp.Data[0].Embedding
+	vec := make([]float32, len(raw))
+	for i, v := range raw {
+		vec[i] = float32(v)
+	}
+	return vec, nil
+}
+
+// compile-time check: OpenAIProvider implements EmbeddingProvider.
+var _ EmbeddingProvider = (*OpenAIProvider)(nil)

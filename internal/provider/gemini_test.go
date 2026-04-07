@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"microagent/internal/config"
@@ -201,6 +202,75 @@ func TestGeminiProvider_Chat_SystemPromptIncluded(t *testing.T) {
 	}
 	if len(received.SystemInstruction.Parts) == 0 || received.SystemInstruction.Parts[0].Text != "Be concise." {
 		t.Errorf("expected system instruction text 'Be concise.', got %v", received.SystemInstruction)
+	}
+}
+
+// ─── Embed tests ─────────────────────────────────────────────────────────────
+
+func TestGeminiProvider_Embed_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "embedContent") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("key") != "test-key" {
+			t.Errorf("expected key=test-key, got %q", r.URL.Query().Get("key"))
+		}
+
+		// Return a synthetic 256-dim embedding.
+		values := make([]float64, 256)
+		for i := range values {
+			values[i] = float64(i) * 0.001
+		}
+		resp := map[string]any{
+			"embedding": map[string]any{
+				"values": values,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := newTestGeminiProvider(srv.URL)
+	vec, err := p.Embed(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vec) != 256 {
+		t.Errorf("expected 256 dims, got %d", len(vec))
+	}
+}
+
+func TestGeminiProvider_Embed_Error401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"API key invalid"}}`))
+	}))
+	defer srv.Close()
+
+	p := newTestGeminiProvider(srv.URL)
+	_, err := p.Embed(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+}
+
+func TestGeminiProvider_Embed_EmptyValues(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"embedding": map[string]any{
+				"values": []float64{},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := newTestGeminiProvider(srv.URL)
+	_, err := p.Embed(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error for empty values")
 	}
 }
 

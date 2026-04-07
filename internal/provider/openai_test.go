@@ -345,6 +345,101 @@ func TestOpenAIProvider_SupportsTools(t *testing.T) {
 	}
 }
 
+// ─── Embed tests ─────────────────────────────────────────────────────────────
+
+func TestOpenAIProvider_Embed_HappyPath(t *testing.T) {
+	_, cfg := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/embeddings") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		// Verify request body contains correct model and dimensions.
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if body["model"] != "text-embedding-3-small" {
+			t.Errorf("expected model text-embedding-3-small, got %v", body["model"])
+		}
+
+		// Return a synthetic 256-dim embedding.
+		embedding := make([]float64, 256)
+		for i := range embedding {
+			embedding[i] = float64(i) * 0.001
+		}
+		resp := map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"object": "embedding", "index": 0, "embedding": embedding},
+			},
+			"usage": map[string]any{"prompt_tokens": 5, "total_tokens": 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	p, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+
+	vec, err := p.Embed(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vec) != 256 {
+		t.Errorf("expected 256 dims, got %d", len(vec))
+	}
+	// Verify a few values.
+	if vec[0] != 0.0 {
+		t.Errorf("vec[0] = %v, want 0.0", vec[0])
+	}
+}
+
+func TestOpenAIProvider_Embed_Error401(t *testing.T) {
+	_, cfg := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"invalid api key"}}`, http.StatusUnauthorized)
+	})
+
+	p, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+
+	_, err = p.Embed(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error from 401 response")
+	}
+	if !isErr(err, ErrAuth) {
+		t.Errorf("expected ErrAuth, got: %v", err)
+	}
+}
+
+func TestOpenAIProvider_Embed_EmptyData(t *testing.T) {
+	_, cfg := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"object": "list",
+			"data":   []any{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	p, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+
+	_, err = p.Embed(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error for empty data array")
+	}
+}
+
 // isErr is a helper equivalent to errors.Is for sentinel errors.
 func isErr(err, target error) bool {
 	// Use errors.Is via the standard library import.

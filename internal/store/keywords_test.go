@@ -93,15 +93,15 @@ func TestBuildFTSQuery_BasicQuery(t *testing.T) {
 	if q == "" {
 		t.Fatal("expected non-empty FTS query")
 	}
-	// Each keyword should be double-quoted.
-	if !strings.Contains(q, `"golang"`) {
-		t.Errorf("expected 'golang' quoted in FTS query, got %q", q)
+	// All keywords are > 4 chars, so they get prefix matching.
+	if !strings.Contains(q, `"golang"*`) {
+		t.Errorf("expected 'golang'* (prefix) in FTS query, got %q", q)
 	}
-	if !strings.Contains(q, `"memory"`) {
-		t.Errorf("expected 'memory' quoted in FTS query, got %q", q)
+	if !strings.Contains(q, `"memory"*`) {
+		t.Errorf("expected 'memory'* (prefix) in FTS query, got %q", q)
 	}
-	if !strings.Contains(q, `"search"`) {
-		t.Errorf("expected 'search' quoted in FTS query, got %q", q)
+	if !strings.Contains(q, `"search"*`) {
+		t.Errorf("expected 'search'* (prefix) in FTS query, got %q", q)
 	}
 	// Keywords joined with OR.
 	if !strings.Contains(q, " OR ") {
@@ -117,8 +117,9 @@ func TestBuildFTSQuery_AllStopWordsReturnsEmpty(t *testing.T) {
 }
 
 func TestBuildFTSQuery_SingleKeyword(t *testing.T) {
+	// "authentication" is 14 chars > 4, so it gets prefix matching ("authentication"*).
 	q := BuildFTSQuery("authentication")
-	expected := `"authentication"`
+	expected := `"authentication"*`
 	if q != expected {
 		t.Errorf("expected %q, got %q", expected, q)
 	}
@@ -132,9 +133,110 @@ func TestBuildFTSQuery_EmptyInputReturnsEmpty(t *testing.T) {
 }
 
 func TestBuildFTSQuery_CodeIdentifiers(t *testing.T) {
+	// "auth_token" and "config" are both >4 chars, so they get prefix matching.
 	q := BuildFTSQuery("search auth_token config")
-	if !strings.Contains(q, `"auth_token"`) {
-		t.Errorf("expected auth_token in FTS query, got %q", q)
+	if !strings.Contains(q, `"auth_token"*`) {
+		t.Errorf("expected auth_token* (prefix) in FTS query, got %q", q)
+	}
+}
+
+// ─── BuildFTSQuery — prefix matching and synonym expansion ────────────────────
+
+// TestBuildFTSQuery_PrefixMatchingLongKeyword verifies that keywords longer than
+// 4 characters get a trailing * for prefix matching.
+func TestBuildFTSQuery_PrefixMatchingLongKeyword(t *testing.T) {
+	// "config" is 6 chars → should produce "config"*
+	q := BuildFTSQuery("config")
+	if !strings.Contains(q, `"config"*`) {
+		t.Errorf("expected prefix match 'config'*, got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_ShortKeywordNoPrefix verifies that keywords of 4 characters
+// or fewer do NOT get a trailing * (exact match only).
+func TestBuildFTSQuery_ShortKeywordNoPrefix(t *testing.T) {
+	// "auth" is exactly 4 chars → no prefix, but synonym should be expanded.
+	q := BuildFTSQuery("auth")
+	// The original "auth" token (4 chars) should NOT have a trailing *.
+	if strings.Contains(q, `"auth"*`) {
+		t.Errorf("expected no prefix for 4-char keyword 'auth', got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_SynonymExpansion_Auth verifies that "auth" expands to
+// include "authentication" as an additional OR clause.
+func TestBuildFTSQuery_SynonymExpansion_Auth(t *testing.T) {
+	q := BuildFTSQuery("auth")
+	if !strings.Contains(q, `"auth"`) {
+		t.Errorf("expected original 'auth' term in query, got: %q", q)
+	}
+	if !strings.Contains(q, `"authentication"`) {
+		t.Errorf("expected synonym 'authentication' in query, got: %q", q)
+	}
+	if !strings.Contains(q, " OR ") {
+		t.Errorf("expected OR between 'auth' and synonym, got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_SynonymExpansion_DB verifies that "db" expands to include
+// "database" as an additional OR clause.
+func TestBuildFTSQuery_SynonymExpansion_DB(t *testing.T) {
+	q := BuildFTSQuery("db")
+	if !strings.Contains(q, `"db"`) {
+		t.Errorf("expected original 'db' term in query, got: %q", q)
+	}
+	if !strings.Contains(q, `"database"`) {
+		t.Errorf("expected synonym 'database' in query, got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_SynonymExpansion_Cfg verifies that "cfg" expands to "config".
+func TestBuildFTSQuery_SynonymExpansion_Cfg(t *testing.T) {
+	q := BuildFTSQuery("cfg")
+	if !strings.Contains(q, `"config"`) {
+		t.Errorf("expected synonym 'config' for 'cfg' in query, got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_SynonymNotReplacedOnlyAdded verifies that synonym expansion
+// adds an OR clause rather than replacing the original term.
+func TestBuildFTSQuery_SynonymNotReplacedOnlyAdded(t *testing.T) {
+	q := BuildFTSQuery("db connection")
+	// Both "db" AND "database" should appear.
+	if !strings.Contains(q, `"db"`) {
+		t.Errorf("original 'db' should be preserved; got: %q", q)
+	}
+	if !strings.Contains(q, `"database"`) {
+		t.Errorf("synonym 'database' should be added; got: %q", q)
+	}
+}
+
+// TestBuildFTSQuery_PrefixOnlyForLongKeywords verifies the boundary: keywords
+// of exactly 4 chars have no prefix, keywords of 5+ chars do.
+func TestBuildFTSQuery_PrefixBoundary(t *testing.T) {
+	tests := []struct {
+		keyword    string
+		wantPrefix bool
+	}{
+		{"abcd", false}, // 4 chars — exact match
+		{"abcde", true}, // 5 chars — prefix match
+		{"golang", true}, // 6 chars — prefix match
+		{"env", false},   // 3 chars — filtered by ExtractKeywords (len < 3 removed), but "env" == 3 so kept; also a synonym
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.keyword, func(t *testing.T) {
+			q := BuildFTSQuery(tc.keyword)
+			hasPrefix := strings.Contains(q, `"`+tc.keyword+`"*`)
+			if tc.wantPrefix && !hasPrefix {
+				t.Errorf("expected prefix match for %q (len %d), got: %q", tc.keyword, len(tc.keyword), q)
+			}
+			if !tc.wantPrefix && hasPrefix {
+				// env has len 3, ExtractKeywords keeps it (len >= 3), it's also a synonym
+				// The synonym "environment" will have *, but the original "env" should not.
+				t.Errorf("expected NO prefix for %q (len %d), got: %q", tc.keyword, len(tc.keyword), q)
+			}
+		})
 	}
 }
 

@@ -38,7 +38,11 @@ type geminiStreamChunk struct {
 // endpoint with ?alt=sse, then reads SSE events and maps them to StreamEvent values.
 func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (*StreamResult, error) {
 	// 1. Build the same request body as Chat().
-	model := p.config.Model
+	// Per-request model override takes precedence over the provider's configured model.
+	model := req.Model
+	if model == "" {
+		model = p.config.Model
+	}
 	if model == "" {
 		model = "gemini-2.0-flash"
 	}

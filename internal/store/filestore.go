@@ -185,6 +185,12 @@ func (s *FileStore) saveMemory(scopeID string, entries []MemoryEntry) error {
 	return s.atomicWrite(path, data)
 }
 
+// UpdateMemory is a no-op for FileStore. The FileStore does not support
+// post-insert tag enrichment or embedding updates — it returns nil immediately.
+func (s *FileStore) UpdateMemory(_ context.Context, _ string, _ MemoryEntry) error {
+	return nil
+}
+
 func (s *FileStore) AppendMemory(ctx context.Context, scopeID string, entry MemoryEntry) error {
 	entries, err := s.loadMemory(scopeID)
 	if err != nil {

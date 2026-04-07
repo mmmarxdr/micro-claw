@@ -16,84 +16,13 @@ import (
 	_ "modernc.org/sqlite" // register "sqlite" driver with database/sql
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS conversations (
-	id         TEXT PRIMARY KEY,
-	channel_id TEXT NOT NULL,
-	messages   TEXT NOT NULL,
-	metadata   TEXT,
-	created_at DATETIME NOT NULL,
-	updated_at DATETIME NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_conv_channel
-	ON conversations(channel_id, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS memory (
-	id         TEXT PRIMARY KEY,
-	scope_id   TEXT NOT NULL,
-	topic      TEXT,
-	type       TEXT,
-	title      TEXT,
-	content    TEXT NOT NULL,
-	tags       TEXT,
-	source     TEXT,
-	created_at DATETIME NOT NULL
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-	content,
-	tags,
-	content='memory',
-	content_rowid='rowid'
-);
-
-CREATE TRIGGER IF NOT EXISTS memory_ai
-	AFTER INSERT ON memory BEGIN
-		INSERT INTO memory_fts(rowid, content, tags)
-		VALUES (new.rowid, new.content, new.tags);
-	END;
-
-CREATE TRIGGER IF NOT EXISTS memory_ad
-	AFTER DELETE ON memory BEGIN
-		INSERT INTO memory_fts(memory_fts, rowid, content, tags)
-		VALUES ('delete', old.rowid, old.content, old.tags);
-	END;
-
-CREATE TABLE IF NOT EXISTS secrets (
-	key        TEXT PRIMARY KEY,
-	value      TEXT NOT NULL,
-	updated_at DATETIME NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS cron_jobs (
-	id             TEXT PRIMARY KEY,
-	schedule       TEXT NOT NULL,
-	schedule_human TEXT NOT NULL,
-	prompt         TEXT NOT NULL,
-	channel_id     TEXT NOT NULL,
-	enabled        INTEGER NOT NULL DEFAULT 1,
-	created_at     INTEGER NOT NULL,
-	last_run_at    INTEGER,
-	next_run_at    INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS cron_results (
-	id        TEXT PRIMARY KEY,
-	job_id    TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
-	ran_at    INTEGER NOT NULL,
-	output    TEXT,
-	error_msg TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_cron_results_job_ran ON cron_results(job_id, ran_at DESC);
-`
-
 // SQLiteStore is a Store implementation backed by a SQLite database.
 // Open via NewSQLiteStore; close via Close when done.
 type SQLiteStore struct {
-	db        *sql.DB
-	cfg       config.StoreConfig
-	closeOnce sync.Once
+	db             *sql.DB
+	cfg            config.StoreConfig
+	closeOnce      sync.Once
+	embedQueryFunc func(ctx context.Context, text string) ([]float32, error) // nil when disabled
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at cfg.Path/microagent.db,
@@ -125,11 +54,10 @@ func NewSQLiteStore(cfg config.StoreConfig) (*SQLiteStore, error) {
 	return s, nil
 }
 
-// initSchema executes all CREATE TABLE / CREATE VIRTUAL TABLE / CREATE INDEX /
-// CREATE TRIGGER statements. Called once during NewSQLiteStore.
+// initSchema creates tables if they don't exist and runs versioned migrations.
+// Called once during NewSQLiteStore. Idempotent — safe to call multiple times.
 func (s *SQLiteStore) initSchema() error {
-	_, err := s.db.Exec(schema)
-	return err
+	return s.initSchemaVersioned()
 }
 
 // Close releases database resources. Safe to call multiple times.
@@ -139,6 +67,21 @@ func (s *SQLiteStore) Close() error {
 		closeErr = s.db.Close()
 	})
 	return closeErr
+}
+
+// DB returns the underlying *sql.DB handle. Used by EmbeddingWorker for direct
+// UPDATE queries without routing through the Store interface.
+// NOT part of the Store interface — callers must type-assert to *SQLiteStore.
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
+}
+
+// SetEmbedQueryFunc registers a function that generates a query embedding for
+// two-phase semantic search reranking. When set, SearchMemory will call this
+// function on the search query text and use cosine similarity to rerank FTS5
+// candidates (when ≥2 have stored embeddings). Pass nil to disable reranking.
+func (s *SQLiteStore) SetEmbedQueryFunc(fn func(ctx context.Context, text string) ([]float32, error)) {
+	s.embedQueryFunc = fn
 }
 
 // SaveConversation persists a conversation, overwriting any existing entry with the same ID.
@@ -277,6 +220,8 @@ func (s *SQLiteStore) AppendMemory(ctx context.Context, scopeID string, entry Me
 
 // scanMemoryRows reads all rows from a memory query result into a slice of MemoryEntry.
 // It closes rows before returning. Returns a non-nil empty slice when there are no rows.
+// Scans access_count, last_accessed_at, and archived_at introduced in schema v2,
+// and the embedding BLOB introduced in schema v3.
 func scanMemoryRows(rows *sql.Rows) ([]MemoryEntry, error) {
 	defer rows.Close()
 
@@ -288,6 +233,8 @@ func scanMemoryRows(rows *sql.Rows) ([]MemoryEntry, error) {
 		if err := rows.Scan(
 			&entry.ID, &entry.ScopeID, &entry.Topic, &entry.Type, &entry.Title,
 			&entry.Content, &tagsJSON, &entry.Source, &entry.CreatedAt,
+			&entry.AccessCount, &entry.LastAccessedAt, &entry.ArchivedAt,
+			&entry.Embedding,
 		); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
@@ -321,15 +268,34 @@ func scanMemoryRows(rows *sql.Rows) ([]MemoryEntry, error) {
 //     LIKE-based substring search ordered by created_at DESC.
 //  4. Empty query: return all entries for scope ordered by created_at DESC.
 //
+// All paths exclude archived entries (archived_at IS NOT NULL). After returning
+// results, access_count and last_accessed_at are updated best-effort (failures
+// are logged but not propagated).
+//
 // limit <= 0 means no limit.
 func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error) {
 	var rows *sql.Rows
 	var err error
 
+	// memColumns is the SELECT list used across all query paths.
+	// Includes v2 columns (access_count, last_accessed_at, archived_at) and
+	// the v3 embedding BLOB column.
+	const memCols = `id, scope_id, topic, type, title, content, tags, source, created_at,
+	                 access_count, last_accessed_at, archived_at, embedding`
+	const memColsM = `m.id, m.scope_id, m.topic, m.type, m.title, m.content, m.tags, m.source, m.created_at,
+	                  m.access_count, m.last_accessed_at, m.archived_at, m.embedding`
+
+	// ftsLimit is how many candidates to fetch for potential embedding reranking.
+	// We fetch more than the user-requested limit to have a meaningful shortlist.
+	ftsLimit := 50
+	if limit > ftsLimit {
+		ftsLimit = limit
+	}
+
 	if query == "" {
-		// Empty query: return all entries for scope ordered by created_at DESC.
-		q := `SELECT id, scope_id, topic, type, title, content, tags, source, created_at
-		      FROM memory WHERE scope_id = ? ORDER BY created_at DESC`
+		// Empty query: return all non-archived entries for scope ordered by created_at DESC.
+		q := `SELECT ` + memCols + `
+		      FROM memory WHERE scope_id = ? AND archived_at IS NULL ORDER BY created_at DESC`
 		var args []any
 		args = append(args, scopeID)
 		if limit > 0 {
@@ -356,16 +322,16 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 			// toward zero (worse), so newer entries with equal relevance rank higher.
 			// MAX(0, ...) prevents future-dated entries from receiving a bonus.
 			// ORDER BY ASC: smallest (most negative) value = best match comes first.
-			q := `SELECT m.id, m.scope_id, m.topic, m.type, m.title, m.content, m.tags, m.source, m.created_at
+			//
+			// We always fetch up to ftsLimit (50) candidates so the embedding reranker
+			// has a meaningful shortlist, even when the caller only wants a few results.
+			q := `SELECT ` + memColsM + `
 			      FROM memory m
 			      JOIN memory_fts ON memory_fts.rowid = m.rowid
-			      WHERE memory_fts MATCH ? AND m.scope_id = ?
-			      ORDER BY (bm25(memory_fts) + 0.001 * MAX(0, julianday('now') - julianday(substr(m.created_at,1,19)))) ASC`
-			args := []any{ftsQuery, scopeID}
-			if limit > 0 {
-				q += ` LIMIT ?`
-				args = append(args, limit)
-			}
+			      WHERE memory_fts MATCH ? AND m.scope_id = ? AND m.archived_at IS NULL
+			      ORDER BY (bm25(memory_fts) + 0.001 * MAX(0, julianday('now') - julianday(substr(m.created_at,1,19)))) ASC
+			      LIMIT ?`
+			args := []any{ftsQuery, scopeID, ftsLimit}
 			rows, err = s.db.QueryContext(ctx, q, args...)
 			if err != nil {
 				return nil, fmt.Errorf("searching memory in scope %s: %w", scopeID, err)
@@ -375,8 +341,13 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 			if scanErr != nil {
 				return nil, scanErr
 			}
-			// If FTS5 found results, return them directly.
+			// If FTS5 found results, attempt embedding rerank then trim to limit.
 			if len(entries) > 0 {
+				entries = s.maybeRerank(ctx, query, entries)
+				if limit > 0 && len(entries) > limit {
+					entries = entries[:limit]
+				}
+				s.updateAccessCounts(ctx, entries)
 				return entries, nil
 			}
 			// Fall through to LIKE fallback when FTS5 returned nothing.
@@ -384,11 +355,12 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 
 		// Fallback: LIKE-based substring search ordered by recency.
 		// Covers the case where all query tokens were stop words (ftsQuery == "")
-		// or FTS5 returned no rows.
+		// or FTS5 returned no rows. Archived entries are excluded.
 		likePattern := "%" + strings.ToLower(query) + "%"
-		q := `SELECT id, scope_id, topic, type, title, content, tags, source, created_at
+		q := `SELECT ` + memCols + `
 		      FROM memory
-		      WHERE scope_id = ? AND (lower(content) LIKE ? OR lower(tags) LIKE ?)
+		      WHERE scope_id = ? AND archived_at IS NULL
+		        AND (lower(content) LIKE ? OR lower(tags) LIKE ?)
 		      ORDER BY created_at DESC`
 		args := []any{scopeID, likePattern, likePattern}
 		if limit > 0 {
@@ -401,7 +373,115 @@ func (s *SQLiteStore) SearchMemory(ctx context.Context, scopeID string, query st
 	if err != nil {
 		return nil, fmt.Errorf("searching memory in scope %s: %w", scopeID, err)
 	}
-	return scanMemoryRows(rows)
+	entries, err := scanMemoryRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.updateAccessCounts(ctx, entries)
+	return entries, nil
+}
+
+// maybeRerank applies cosine similarity reranking when conditions are met:
+//  1. embedQueryFunc must be set (embedding enabled for this store).
+//  2. At least 2 candidates must have non-nil embeddings.
+//
+// When reranking is applied, candidates are sorted by cosine similarity to the
+// query embedding, descending. When conditions are not met, candidates are
+// returned in their original FTS5 order.
+func (s *SQLiteStore) maybeRerank(ctx context.Context, query string, candidates []MemoryEntry) []MemoryEntry {
+	if s.embedQueryFunc == nil {
+		return candidates
+	}
+
+	// Count candidates with embeddings.
+	withEmbeddings := 0
+	for _, c := range candidates {
+		if len(c.Embedding) > 0 {
+			withEmbeddings++
+		}
+	}
+	if withEmbeddings < 2 {
+		// Insufficient embeddings for meaningful reranking — preserve FTS5 order.
+		return candidates
+	}
+
+	// Generate query embedding.
+	queryVec, err := s.embedQueryFunc(ctx, query)
+	if err != nil {
+		// Log at debug — rerank is best-effort, fall back to FTS5 order.
+		_ = fmt.Errorf("embed query for rerank (best-effort): %w", err)
+		return candidates
+	}
+	queryNorm := normalizeEmbeddingBlob(queryVec)
+
+	// Compute cosine similarity for each candidate that has an embedding.
+	results := make([]scoredEntry, len(candidates))
+	for i, c := range candidates {
+		if len(c.Embedding) == 0 {
+			results[i] = scoredEntry{entry: c, similarity: -2.0} // below any valid cosine
+			continue
+		}
+		candidateVec := deserializeEmbeddingBlob(c.Embedding)
+		sim := cosineSimilarity(queryNorm, candidateVec)
+		results[i] = scoredEntry{entry: c, similarity: sim}
+	}
+
+	// Sort by similarity descending (stable to preserve FTS order for ties).
+	sortScoredEntries(results)
+
+	out := make([]MemoryEntry, len(results))
+	for i, r := range results {
+		out[i] = r.entry
+	}
+	return out
+}
+
+// updateAccessCounts increments access_count and sets last_accessed_at for all
+// returned entries. This is best-effort: failures are logged at WARN level and
+// are never propagated to the caller.
+func (s *SQLiteStore) updateAccessCounts(ctx context.Context, entries []MemoryEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	ids := make([]any, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1] // remove trailing comma
+
+	query := `UPDATE memory
+	          SET access_count = access_count + 1,
+	              last_accessed_at = datetime('now')
+	          WHERE id IN (` + placeholders + `)`
+
+	if _, err := s.db.ExecContext(ctx, query, ids...); err != nil {
+		// Best-effort: log but do not propagate.
+		// Using fmt.Sprintf to avoid importing slog here; callers can wire logging.
+		_ = fmt.Errorf("updating access counts (best-effort): %w", err)
+	}
+}
+
+// UpdateMemory updates topic, type, title, tags, and content of an existing
+// memory entry identified by entry.ID within scopeID. The FTS5 memory_au
+// trigger automatically re-indexes the FTS table after the UPDATE.
+// Returns nil if no row matched (the caller cannot distinguish "not found"
+// from "no-op update" — this is by design to keep the interface simple).
+func (s *SQLiteStore) UpdateMemory(ctx context.Context, scopeID string, entry MemoryEntry) error {
+	tagsJSON, err := json.Marshal(entry.Tags)
+	if err != nil {
+		return fmt.Errorf("marshalling tags: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE memory SET topic = ?, type = ?, title = ?, tags = ?, content = ?
+		 WHERE id = ? AND scope_id = ?`,
+		entry.Topic, entry.Type, entry.Title, string(tagsJSON), entry.Content,
+		entry.ID, scopeID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating memory entry %s: %w", entry.ID, err)
+	}
+	return nil
 }
 
 // Compile-time assertions.

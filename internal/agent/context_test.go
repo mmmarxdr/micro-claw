@@ -118,6 +118,97 @@ func TestBuildMemorySection_ZeroMaxContext_NoCapApplied(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TestFormatMemoryLine — topic/title/tag rendering
+// ---------------------------------------------------------------------------
+
+func TestFormatMemoryLine_WithTitleAndTags(t *testing.T) {
+	m := store.MemoryEntry{
+		Title:   "OAuth Setup",
+		Content: "The user authenticated successfully",
+		Tags:    []string{"auth", "oauth", "security"},
+	}
+	got := formatMemoryLine(m)
+	if !strings.Contains(got, "[OAuth Setup]") {
+		t.Errorf("expected [OAuth Setup] in line, got: %q", got)
+	}
+	if !strings.Contains(got, "The user authenticated successfully") {
+		t.Errorf("expected content in line, got: %q", got)
+	}
+	if !strings.Contains(got, "[tags: auth, oauth, security]") {
+		t.Errorf("expected tags in line, got: %q", got)
+	}
+	// Title takes precedence over topic — verify topic is NOT shown when title present.
+	mWithBoth := store.MemoryEntry{
+		Title:   "My Title",
+		Topic:   "my-topic",
+		Content: "some content",
+		Tags:    []string{"a"},
+	}
+	gotBoth := formatMemoryLine(mWithBoth)
+	if strings.Contains(gotBoth, "[my-topic]") {
+		t.Errorf("topic should not appear when title is set, got: %q", gotBoth)
+	}
+	if !strings.Contains(gotBoth, "[My Title]") {
+		t.Errorf("title should appear, got: %q", gotBoth)
+	}
+}
+
+func TestFormatMemoryLine_TopicOnly(t *testing.T) {
+	m := store.MemoryEntry{
+		Topic:   "database",
+		Content: "connection pool exhausted",
+	}
+	got := formatMemoryLine(m)
+	if !strings.Contains(got, "[database]") {
+		t.Errorf("expected [database] in line, got: %q", got)
+	}
+	if !strings.Contains(got, "connection pool exhausted") {
+		t.Errorf("expected content in line, got: %q", got)
+	}
+	if strings.Contains(got, "[tags:") {
+		t.Errorf("should not have tags section when tags empty, got: %q", got)
+	}
+}
+
+func TestFormatMemoryLine_NoTitleNoTopic(t *testing.T) {
+	// Backward compatibility: entries without title or topic render as "- content\n".
+	m := store.MemoryEntry{
+		Content: "plain content",
+	}
+	got := formatMemoryLine(m)
+	expected := "- plain content\n"
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestFormatMemoryLine_EmptyTags_NotRendered(t *testing.T) {
+	m := store.MemoryEntry{
+		Title:   "Some Title",
+		Content: "content",
+		Tags:    []string{}, // empty
+	}
+	got := formatMemoryLine(m)
+	if strings.Contains(got, "[tags:") {
+		t.Errorf("should not render empty tags, got: %q", got)
+	}
+}
+
+func TestBuildMemorySection_UsesFormatMemoryLine(t *testing.T) {
+	// buildMemorySection should use formatMemoryLine, so title+tags appear in output.
+	entries := []store.MemoryEntry{
+		{Title: "My Title", Content: "enriched content", Tags: []string{"tag1", "tag2"}},
+	}
+	result := buildMemorySection(entries, 100000)
+	if !strings.Contains(result, "[My Title]") {
+		t.Errorf("expected [My Title] in memory section, got: %s", result)
+	}
+	if !strings.Contains(result, "[tags: tag1, tag2]") {
+		t.Errorf("expected [tags: tag1, tag2] in memory section, got: %s", result)
+	}
+}
+
 func TestBuildContext_MemoryBudgetCap_IntegratedViaBuildContext(t *testing.T) {
 	// Verify that buildContext uses the budget cap via integration:
 	// large MaxContextTokens but tiny entries should all be included.

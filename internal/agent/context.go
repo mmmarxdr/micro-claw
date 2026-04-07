@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"microagent/internal/provider"
 	"microagent/internal/store"
@@ -60,6 +61,30 @@ func (a *Agent) buildContext(
 	return req
 }
 
+// formatMemoryLine renders a single MemoryEntry as a bullet-point string.
+//
+// Rendering rules (in priority order):
+//   - If Title is set: "- [title] content [tags: a, b]\n"
+//   - Else if Topic is set: "- [topic] content [tags: a, b]\n"
+//   - Else: "- content\n"
+//
+// Tags are only rendered when the Tags slice is non-empty.
+func formatMemoryLine(m store.MemoryEntry) string {
+	var b strings.Builder
+	b.WriteString("- ")
+	if m.Title != "" {
+		b.WriteString("[" + m.Title + "] ")
+	} else if m.Topic != "" {
+		b.WriteString("[" + m.Topic + "] ")
+	}
+	b.WriteString(m.Content)
+	if len(m.Tags) > 0 {
+		b.WriteString(" [tags: " + strings.Join(m.Tags, ", ") + "]")
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
 // buildMemorySection formats memory entries into the "## Relevant Context:" block,
 // capping at 15% of maxContextTokens when maxContextTokens > 0.
 // If maxContextTokens == 0 (legacy / test mode), all entries are included.
@@ -78,7 +103,7 @@ func buildMemorySection(memories []store.MemoryEntry, maxContextTokens int) stri
 	included := 0
 
 	for _, m := range memories {
-		line := "- " + m.Content + "\n"
+		line := formatMemoryLine(m)
 		lineTokens := EstimateTokens(line)
 
 		// When budget > 0 and adding this entry would exceed it, stop.

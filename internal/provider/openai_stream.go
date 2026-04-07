@@ -102,12 +102,17 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (*Stre
 	}
 
 	// Step 3: Marshal request with stream: true.
+	// Per-request model override takes precedence over the provider's configured model.
+	streamModel := req.Model
+	if streamModel == "" {
+		streamModel = p.model
+	}
 	apiReq := struct {
 		openaiRequest
 		Stream bool `json:"stream"`
 	}{
 		openaiRequest: openaiRequest{
-			Model:    p.model,
+			Model:    streamModel,
 			Messages: msgs,
 			Tools:    tools,
 		},

@@ -882,6 +882,184 @@ func TestApplyDefaults_FilterConfig_EnabledSetsGenericTrue(t *testing.T) {
 	}
 }
 
+// ─── Task 1.5 — New config fields for native-memory ──────────────────────────
+
+func TestApplyDefaults_NativeMemoryDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+
+	// Enrichment defaults.
+	if cfg.Agent.EnrichMemory != false {
+		t.Errorf("Agent.EnrichMemory default should be false, got %v", cfg.Agent.EnrichMemory)
+	}
+	if cfg.Agent.EnrichRatePerMin != 10 {
+		t.Errorf("Agent.EnrichRatePerMin default should be 10, got %d", cfg.Agent.EnrichRatePerMin)
+	}
+
+	// Pruning defaults.
+	const wantPruneInterval = 24 * time.Hour
+	if cfg.Agent.PruneInterval != wantPruneInterval {
+		t.Errorf("Agent.PruneInterval default should be 24h, got %v", cfg.Agent.PruneInterval)
+	}
+	if cfg.Agent.PruneRetentionDays != 30 {
+		t.Errorf("Agent.PruneRetentionDays default should be 30, got %d", cfg.Agent.PruneRetentionDays)
+	}
+	if cfg.Agent.PruneThreshold != 0.1 {
+		t.Errorf("Agent.PruneThreshold default should be 0.1, got %f", cfg.Agent.PruneThreshold)
+	}
+
+	// Embeddings default.
+	if cfg.Store.Embeddings != false {
+		t.Errorf("Store.Embeddings default should be false, got %v", cfg.Store.Embeddings)
+	}
+}
+
+func TestValidate_NativeMemory_EnrichRatePerMinInvalid(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent: AgentConfig{
+			MaxIterations:    10,
+			EnrichMemory:     true,
+			EnrichRatePerMin: -1, // invalid
+		},
+	}
+	cfg.applyDefaults()
+	cfg.Agent.EnrichRatePerMin = -1 // override applied default
+	cfg.Agent.EnrichMemory = true
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative enrich_rate_per_minute, got nil")
+	}
+	if !strings.Contains(err.Error(), "enrich_rate_per_minute") {
+		t.Errorf("error should mention 'enrich_rate_per_minute', got: %v", err)
+	}
+}
+
+func TestValidate_NativeMemory_EmbeddingsRequiresSQLite(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent:    AgentConfig{MaxIterations: 10},
+		Store: StoreConfig{
+			Type:       "file",
+			Embeddings: true,
+		},
+	}
+	cfg.applyDefaults()
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error when embeddings=true with non-sqlite store, got nil")
+	}
+	if !strings.Contains(err.Error(), "embeddings") {
+		t.Errorf("error should mention 'embeddings', got: %v", err)
+	}
+}
+
+func TestValidate_NativeMemory_EmbeddingsWithSQLiteAllowed(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent:    AgentConfig{MaxIterations: 10},
+		Store: StoreConfig{
+			Type:       "sqlite",
+			Embeddings: true,
+		},
+	}
+	cfg.applyDefaults()
+
+	if err := cfg.validate(); err != nil {
+		t.Errorf("expected no error for embeddings=true with sqlite, got: %v", err)
+	}
+}
+
+func TestValidate_NativeMemory_PruneIntervalZeroInvalid(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent: AgentConfig{
+			MaxIterations: 10,
+			PruneInterval: -1,
+		},
+	}
+	cfg.applyDefaults()
+	cfg.Agent.PruneInterval = -1 // override default
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative prune_interval, got nil")
+	}
+	if !strings.Contains(err.Error(), "prune_interval") {
+		t.Errorf("error should mention 'prune_interval', got: %v", err)
+	}
+}
+
+func TestValidate_NativeMemory_PruneRetentionDaysNegativeInvalid(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent: AgentConfig{
+			MaxIterations:      10,
+			PruneRetentionDays: -5,
+		},
+	}
+	cfg.applyDefaults()
+	cfg.Agent.PruneRetentionDays = -5 // override default
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative prune_retention_days, got nil")
+	}
+	if !strings.Contains(err.Error(), "prune_retention_days") {
+		t.Errorf("error should mention 'prune_retention_days', got: %v", err)
+	}
+}
+
+func TestValidate_NativeMemory_PruneThresholdOutOfRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold float64
+	}{
+		{"negative threshold", -0.1},
+		{"threshold > 1.0", 1.5},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Provider: ProviderConfig{APIKey: "test-key"},
+				Agent: AgentConfig{
+					MaxIterations:  10,
+					PruneThreshold: tc.threshold,
+				},
+			}
+			cfg.applyDefaults()
+			cfg.Agent.PruneThreshold = tc.threshold // override default
+
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("expected validation error for prune_threshold=%v, got nil", tc.threshold)
+			}
+			if !strings.Contains(err.Error(), "prune_threshold") {
+				t.Errorf("error should mention 'prune_threshold', got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_NativeMemory_ValidThreshold(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{APIKey: "test-key"},
+		Agent: AgentConfig{
+			MaxIterations:  10,
+			PruneThreshold: 0.5,
+		},
+	}
+	cfg.applyDefaults()
+	cfg.Agent.PruneThreshold = 0.5
+
+	if err := cfg.validate(); err != nil {
+		t.Errorf("expected no error for prune_threshold=0.5, got: %v", err)
+	}
+}
+
 func createTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "microagent-config-*.yaml")

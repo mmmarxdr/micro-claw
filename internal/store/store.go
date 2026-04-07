@@ -24,6 +24,7 @@ type Conversation struct {
 	UpdatedAt time.Time              `json:"updated_at"`
 }
 
+// MemoryEntry represents a single persisted memory item.
 type MemoryEntry struct {
 	ID        string    `json:"id"`
 	ScopeID   string    `json:"scope_id"`
@@ -34,14 +35,32 @@ type MemoryEntry struct {
 	Tags      []string  `json:"tags,omitempty"`
 	Source    string    `json:"source"` // conversation ID
 	CreatedAt time.Time `json:"created_at"`
+
+	// Fields added in schema v2 (Layer 1 migration).
+	// Zero values are valid defaults for entries created before this migration.
+	AccessCount    int        `json:"access_count,omitempty"`
+	LastAccessedAt *time.Time `json:"last_accessed_at,omitempty"`
+	ArchivedAt     *time.Time `json:"archived_at,omitempty"`
+
+	// Embedding stores a 256-dimensional float32 vector serialized as
+	// little-endian binary (1,024 bytes). Added in schema v3.
+	// Not serialized to JSON — internal transport only.
+	Embedding []byte `json:"-"`
 }
 
+// Store is the primary persistence interface for conversations and memory.
 type Store interface {
 	SaveConversation(ctx context.Context, conv Conversation) error
 	LoadConversation(ctx context.Context, id string) (*Conversation, error)
 	ListConversations(ctx context.Context, channelID string, limit int) ([]Conversation, error)
 	AppendMemory(ctx context.Context, scopeID string, entry MemoryEntry) error
 	SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]MemoryEntry, error)
+
+	// UpdateMemory updates the topic, type, title, tags, and content of an
+	// existing memory entry identified by entry.ID within scopeID.
+	// FileStore implements this as a no-op (returns nil).
+	UpdateMemory(ctx context.Context, scopeID string, entry MemoryEntry) error
+
 	Close() error
 }
 

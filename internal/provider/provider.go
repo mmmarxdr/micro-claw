@@ -46,6 +46,7 @@ type ToolDefinition struct {
 }
 
 type ChatRequest struct {
+	Model        string // optional per-request model override; empty = use provider default
 	SystemPrompt string
 	Messages     []ChatMessage
 	Tools        []ToolDefinition
@@ -70,4 +71,12 @@ type Provider interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	SupportsTools() bool
 	HealthCheck(ctx context.Context) (string, error)
+}
+
+// EmbeddingProvider is an optional interface for providers that support
+// text embedding generation. Callers type-assert: ep, ok := prov.(EmbeddingProvider)
+type EmbeddingProvider interface {
+	// Embed generates a dense vector embedding for the given text.
+	// The returned slice length depends on the provider's model.
+	Embed(ctx context.Context, text string) ([]float32, error)
 }

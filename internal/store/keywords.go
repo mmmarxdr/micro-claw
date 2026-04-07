@@ -2,6 +2,23 @@ package store
 
 import "strings"
 
+// synonyms maps common abbreviations and short forms to their expanded terms.
+// Used by BuildFTSQuery to broaden recall by adding OR clauses for the
+// expanded form. The original token is always preserved alongside the expansion.
+//
+// Design note: 2-char entries (e.g. "db") are also used by ExtractKeywords to
+// decide whether to keep short tokens — any 2-char token in this map survives
+// the minimum-length filter so that its synonym expansion can fire.
+var synonyms = map[string]string{
+	"auth": "authentication",
+	"db":   "database",
+	"cfg":  "config",
+	"pwd":  "password",
+	"env":  "environment",
+	"repo": "repository",
+	"msg":  "message",
+}
+
 // stopWords contains common English words that carry little semantic meaning
 // and should be excluded from search keyword extraction.
 var stopWords = map[string]bool{
@@ -33,7 +50,13 @@ func ExtractKeywords(query string) []string {
 	seen := make(map[string]bool)
 	var keywords []string
 	for _, t := range tokens {
-		if len(t) < 3 || stopWords[t] || seen[t] {
+		// Allow 2-char tokens if they appear in the synonym map (e.g. "db"),
+		// otherwise keep the minimum length at 3 to filter noise.
+		if len(t) < 2 || stopWords[t] || seen[t] {
+			continue
+		}
+		if len(t) == 2 && synonyms[t] == "" {
+			// 2-char token not in synonym map — filter out.
 			continue
 		}
 		seen[t] = true
@@ -43,18 +66,46 @@ func ExtractKeywords(query string) []string {
 }
 
 // BuildFTSQuery builds an FTS5 MATCH query from keywords extracted from query.
-// Each keyword is double-quoted to avoid FTS5 operator interpretation.
-// Keywords are joined with OR so partial matches (any keyword) are returned.
+//
+// Each keyword is double-quoted to avoid FTS5 operator interpretation. Keywords
+// are joined with OR so partial matches (any keyword) are returned.
+//
+// Two enhancements are applied:
+//   - Prefix matching: keywords longer than 4 characters get a trailing * so
+//     that "config" matches "configuration", "configured", etc.
+//   - Synonym expansion: known abbreviations (e.g. "db") add the expanded form
+//     as an additional OR clause (e.g. "database"*) without replacing the original.
+//
 // Returns empty string if no meaningful keywords are found (e.g. all stop words).
 func BuildFTSQuery(query string) string {
 	keywords := ExtractKeywords(query)
 	if len(keywords) == 0 {
 		return ""
 	}
-	parts := make([]string, len(keywords))
-	for i, kw := range keywords {
+
+	var parts []string
+	seen := make(map[string]bool)
+
+	for _, kw := range keywords {
 		// Escape any embedded double-quotes by doubling them (FTS5 quoting rules).
-		parts[i] = `"` + strings.ReplaceAll(kw, `"`, `""`) + `"`
+		escaped := strings.ReplaceAll(kw, `"`, `""`)
+
+		// Prefix matching: keywords longer than 4 characters use "term"* syntax.
+		if len(kw) > 4 {
+			parts = append(parts, `"`+escaped+`"*`)
+		} else {
+			parts = append(parts, `"`+escaped+`"`)
+		}
+		seen[kw] = true
+
+		// Synonym expansion: add the expanded form as an additional OR clause.
+		// Synonyms are always prefix-matched (expanded terms tend to be long).
+		if expanded, ok := synonyms[kw]; ok && !seen[expanded] {
+			seen[expanded] = true
+			expandedEscaped := strings.ReplaceAll(expanded, `"`, `""`)
+			parts = append(parts, `"`+expandedEscaped+`"*`)
+		}
 	}
+
 	return strings.Join(parts, " OR ")
 }

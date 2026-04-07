@@ -147,6 +147,13 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					slog.Warn("failed to append memory", "error", err)
 				} else {
 					slog.Debug("memory appended", "scope_id", msg.ChannelID)
+					if a.enricher != nil {
+						a.enricher.Enqueue(entry)
+					}
+					// Async embedding — fire and forget.
+					if a.embeddingWorker != nil {
+						a.embeddingWorker.Enqueue(entry.ID, msg.ChannelID, entry.Content)
+					}
 				}
 			}
 			break

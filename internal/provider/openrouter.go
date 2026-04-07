@@ -272,8 +272,13 @@ func (p *OpenRouterProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRe
 	}
 
 	// Step 3: Marshal request.
+	// Per-request model override takes precedence over the provider's configured model.
+	model := req.Model
+	if model == "" {
+		model = p.config.Model
+	}
 	apiReq := openrouterRequest{
-		Model:    p.config.Model,
+		Model:    model,
 		Messages: msgs,
 		Tools:    tools,
 	}

@@ -117,7 +117,11 @@ type geminiErrorResponse struct {
 // --------------------------------------------------------------------------
 
 func (p *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	model := p.config.Model
+	// Per-request model override takes precedence over the provider's configured model.
+	model := req.Model
+	if model == "" {
+		model = p.config.Model
+	}
 	if model == "" {
 		model = "gemini-2.0-flash"
 	}
@@ -322,6 +326,94 @@ func normalizeGeminiFinishReason(reason string) string {
 		return reason
 	}
 }
+
+// ─── EmbeddingProvider implementation ────────────────────────────────────────
+
+// geminiEmbedRequest is the request body for the embedContent endpoint.
+type geminiEmbedRequest struct {
+	Model   string           `json:"model"`
+	Content geminiEmbedPart  `json:"content"`
+}
+
+type geminiEmbedPart struct {
+	Parts []struct {
+		Text string `json:"text"`
+	} `json:"parts"`
+}
+
+// geminiEmbedResponse is the response from the embedContent endpoint.
+type geminiEmbedResponse struct {
+	Embedding struct {
+		Values []float64 `json:"values"`
+	} `json:"embedding"`
+	Error *geminiErrorBody `json:"error,omitempty"`
+}
+
+// Embed generates a text embedding via the Gemini embedding API using
+// text-embedding-004. Implements EmbeddingProvider.
+// The returned vector length reflects the model output; callers should
+// normalize to the expected storage dimension (256) before persisting.
+func (p *GeminiProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	model := "text-embedding-004"
+
+	reqBody := geminiEmbedRequest{
+		Model: "models/" + model,
+		Content: geminiEmbedPart{
+			Parts: []struct {
+				Text string `json:"text"`
+			}{{Text: text}},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gemini embed: marshaling request: %w", err)
+	}
+
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:embedContent?key=%s", baseURL, model, p.config.APIKey)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gemini embed: creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini embed: request failed: %w", wrapNetworkError(err))
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, classifyGeminiError(resp.StatusCode, respBody)
+	}
+
+	var apiResp geminiEmbedResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return nil, fmt.Errorf("gemini embed: parsing response: %w", err)
+	}
+	if apiResp.Error != nil {
+		return nil, fmt.Errorf("gemini embed api error %d: %s", apiResp.Error.Code, apiResp.Error.Message)
+	}
+	if len(apiResp.Embedding.Values) == 0 {
+		return nil, fmt.Errorf("gemini embed: empty values in response")
+	}
+
+	raw := apiResp.Embedding.Values
+	vec := make([]float32, len(raw))
+	for i, v := range raw {
+		vec[i] = float32(v)
+	}
+	return vec, nil
+}
+
+// compile-time check: GeminiProvider implements EmbeddingProvider.
+var _ EmbeddingProvider = (*GeminiProvider)(nil)
 
 // geminiAllowedSchemaKeys is the documented subset of JSON Schema keywords Gemini accepts
 // in function declarations. Everything else is stripped to avoid 400 errors.

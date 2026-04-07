@@ -228,8 +228,14 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 // buildAnthropicRequest constructs the API request body from a ChatRequest.
 // Shared by Chat() and ChatStream().
 func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequest {
+	// Per-request model override takes precedence over the provider's configured model.
+	model := req.Model
+	if model == "" {
+		model = p.config.Model
+	}
+
 	apiReq := anthropicRequest{
-		Model:     p.config.Model,
+		Model:     model,
 		MaxTokens: req.MaxTokens,
 		System:    req.SystemPrompt,
 	}

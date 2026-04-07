@@ -58,6 +58,7 @@ type CronConfig struct {
 	MaxConcurrent    int    `yaml:"max_concurrent"`
 }
 
+// AgentConfig holds all agent-level configuration.
 type AgentConfig struct {
 	Name             string `yaml:"name"`
 	Personality      string `yaml:"personality"`
@@ -67,6 +68,16 @@ type AgentConfig struct {
 	MemoryResults    int    `yaml:"memory_results"`
 	MaxContextTokens int    `yaml:"max_context_tokens"` // token budget for context; 0 = use HistoryLength only
 	SummaryTokens    int    `yaml:"summary_tokens"`     // max tokens for LLM-generated summaries
+
+	// Native memory — Layer 2: LLM tag enrichment.
+	EnrichMemory     bool   `yaml:"enrich_memory"`          // default: false — enables async tag enrichment
+	EnrichModel      string `yaml:"enrich_model"`           // optional override for auto-selected cheap model
+	EnrichRatePerMin int    `yaml:"enrich_rate_per_minute"` // default: 10 — enrichment calls per minute cap
+
+	// Native memory — pruning.
+	PruneInterval      time.Duration `yaml:"prune_interval"`       // default: 24h — how often to prune
+	PruneRetentionDays int           `yaml:"prune_retention_days"` // default: 30 — days before archived entries are hard-deleted
+	PruneThreshold     float64       `yaml:"prune_threshold"`      // default: 0.1 — minimum decay score to keep a memory
 }
 
 // FallbackConfig configures an optional secondary provider for resilience.
@@ -172,10 +183,16 @@ type HTTPToolConfig struct {
 	BlockedDomains  []string      `yaml:"blocked_domains"`
 }
 
+// StoreConfig holds persistence layer configuration.
 type StoreConfig struct {
 	Type          string `yaml:"type"`
 	Path          string `yaml:"path"`
 	EncryptionKey string `yaml:"encryption_key,omitempty"` // hex-encoded 32-byte key; also read from MICROAGENT_SECRET_KEY env var
+
+	// Native memory — Layer 3: optional API embeddings.
+	// Requires store.type = "sqlite". When false (default), the embedding column
+	// is still created by the migration but remains NULL for all rows.
+	Embeddings bool `yaml:"embeddings"` // default: false
 }
 
 type LoggingConfig struct {
@@ -280,6 +297,19 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Channel.WebhookPath == "" {
 		c.Channel.WebhookPath = "/webhook"
+	}
+	// Native memory defaults.
+	if c.Agent.EnrichRatePerMin == 0 {
+		c.Agent.EnrichRatePerMin = 10
+	}
+	if c.Agent.PruneInterval == 0 {
+		c.Agent.PruneInterval = 24 * time.Hour
+	}
+	if c.Agent.PruneRetentionDays == 0 {
+		c.Agent.PruneRetentionDays = 30
+	}
+	if c.Agent.PruneThreshold == 0 {
+		c.Agent.PruneThreshold = 0.1
 	}
 	if c.Filter.TruncationChars == 0 {
 		c.Filter.TruncationChars = 8000
@@ -408,6 +438,23 @@ func (c *Config) validate() error {
 		if _, err := time.LoadLocation(c.Cron.Timezone); err != nil {
 			return fmt.Errorf("cron.timezone %q is invalid: %w", c.Cron.Timezone, err)
 		}
+	}
+
+	// Native memory validation.
+	if c.Agent.EnrichMemory && c.Agent.EnrichRatePerMin <= 0 {
+		return fmt.Errorf("agent.enrich_rate_per_minute must be positive when enrich_memory is true")
+	}
+	if c.Store.Embeddings && c.Store.Type != "sqlite" {
+		return fmt.Errorf("store.embeddings requires store.type = 'sqlite'")
+	}
+	if c.Agent.PruneInterval <= 0 {
+		return fmt.Errorf("agent.prune_interval must be positive")
+	}
+	if c.Agent.PruneRetentionDays <= 0 {
+		return fmt.Errorf("agent.prune_retention_days must be positive")
+	}
+	if c.Agent.PruneThreshold < 0 || c.Agent.PruneThreshold > 1.0 {
+		return fmt.Errorf("agent.prune_threshold must be between 0 and 1.0")
 	}
 
 	return nil

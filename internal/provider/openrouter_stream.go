@@ -106,12 +106,17 @@ func (p *OpenRouterProvider) ChatStream(ctx context.Context, req ChatRequest) (*
 	}
 
 	// Step 3: Marshal request with stream: true.
+	// Per-request model override takes precedence over the provider's configured model.
+	streamModel := req.Model
+	if streamModel == "" {
+		streamModel = p.config.Model
+	}
 	apiReq := struct {
 		openrouterRequest
 		Stream bool `json:"stream"`
 	}{
 		openrouterRequest: openrouterRequest{
-			Model:    p.config.Model,
+			Model:    streamModel,
 			Messages: msgs,
 			Tools:    tools,
 		},

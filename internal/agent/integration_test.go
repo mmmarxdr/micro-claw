@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -490,6 +491,146 @@ func (e *echoTestTool) Execute(_ context.Context, params json.RawMessage) (tool.
 		return tool.ToolResult{IsError: true, Content: err.Error()}, nil
 	}
 	return tool.ToolResult{Content: p.Message}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Test 4 (Scenario 25): TestIntegration_GracefulShutdown_AllWorkersExit
+// ---------------------------------------------------------------------------
+//
+// Starts an Agent with EnrichMemory=true and Embeddings=true (mock provider
+// that implements both Provider and EmbeddingProvider). Sends one message to
+// trigger AppendMemory and dispatch jobs to the enricher and embedding worker.
+// Cancels the context and verifies that all background goroutines (enricher,
+// embedding worker, pruning ticker) exit within 3 seconds.
+
+// mockFullProvider implements both provider.Provider and provider.EmbeddingProvider.
+// It returns a static text response for Chat and a zero embedding for Embed.
+type mockFullProvider struct{}
+
+func (m *mockFullProvider) Name() string { return "mock" }
+func (m *mockFullProvider) SupportsTools() bool { return false }
+func (m *mockFullProvider) HealthCheck(_ context.Context) (string, error) {
+	return "ok", nil
+}
+func (m *mockFullProvider) Chat(_ context.Context, _ provider.ChatRequest) (*provider.ChatResponse, error) {
+	return &provider.ChatResponse{
+		Content:    "Shutdown test response",
+		StopReason: "end_turn",
+	}, nil
+}
+func (m *mockFullProvider) Embed(_ context.Context, _ string) ([]float32, error) {
+	return make([]float32, 256), nil
+}
+
+func TestIntegration_GracefulShutdown_AllWorkersExit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Use a SQLiteStore so the pruning loop actually starts.
+	sqlSt, err := store.NewSQLiteStore(config.StoreConfig{
+		Type: "sqlite",
+		Path: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlSt.Close() })
+
+	prov := &mockFullProvider{}
+
+	pr, pw := newLinePipe()
+	var outBuf bytes.Buffer
+	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
+
+	agentCfg := config.AgentConfig{
+		MaxIterations:      5,
+		MaxTokensPerTurn:   1024,
+		MemoryResults:      5,
+		HistoryLength:      20,
+		EnrichMemory:       true,
+		EnrichRatePerMin:   10,
+		PruneInterval:      24 * time.Hour, // long interval — ticker loop should exit quickly
+		PruneRetentionDays: 30,
+		PruneThreshold:     0.1,
+	}
+	storeCfg := config.StoreConfig{
+		Type:       "sqlite",
+		Embeddings: true,
+	}
+
+	// Measure goroutine count before agent starts.
+	// We give the runtime a moment to settle.
+	time.Sleep(10 * time.Millisecond)
+	baseline := goroutineCount()
+
+	ag := New(
+		agentCfg,
+		config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 5 * time.Second},
+		config.FilterConfig{},
+		ch,
+		prov,
+		sqlSt,
+		audit.NoopAuditor{},
+		nil,
+		nil,
+		skill.SkillIndex{},
+		4,
+		false,
+		storeCfg,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- ag.Run(ctx) }()
+
+	// Send one message so workers get a job dispatched.
+	fmt.Fprintln(pw, "hello")
+	output := collectOutput(&outBuf, "Shutdown test response", 4*time.Second)
+	if !strings.Contains(output, "Shutdown test response") {
+		t.Errorf("expected response in output, got: %s", output)
+	}
+
+	// Let the workers pick up the jobs (they run async).
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context — this should stop all worker goroutines.
+	cancel()
+
+	// Wait for Run to return.
+	select {
+	case <-runDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ag.Run did not return within 3s after context cancel")
+	}
+
+	// Shutdown drains enricher and embedding workers.
+	if err := ag.Shutdown(); err != nil {
+		// Channel stop may fail in test (pipe closed) — that's fine.
+		_ = err
+	}
+
+	// Wait up to 3 seconds for all goroutines to settle back near baseline.
+	// We allow baseline+3 as slack for Go runtime goroutines that may fluctuate.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		current := goroutineCount()
+		// Allow baseline + 3 goroutines of slack for runtime background goroutines.
+		if current <= baseline+3 {
+			return // success
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	current := goroutineCount()
+	if current > baseline+3 {
+		t.Errorf("goroutine leak: baseline=%d, current=%d after shutdown (expected ≤ baseline+3)",
+			baseline, current)
+	}
+}
+
+// goroutineCount returns the current number of live goroutines.
+func goroutineCount() int {
+	return runtime.NumGoroutine()
 }
 
 // ---------------------------------------------------------------------------

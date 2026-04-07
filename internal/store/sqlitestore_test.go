@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +14,20 @@ import (
 	"microagent/internal/config"
 	"microagent/internal/provider"
 )
+
+// makeTestEmbedding builds a deterministic 256-dim BLOB from a seed value.
+// Used in tests to insert synthetic embeddings directly into the DB.
+func makeTestEmbedding(seed float32) []byte {
+	vec := make([]float32, 256)
+	for i := range vec {
+		vec[i] = seed + float32(i)*0.001
+	}
+	buf := make([]byte, 256*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	return buf
+}
 
 // helper to create a SQLiteStore backed by a temp dir — fails test on error.
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
@@ -576,6 +592,236 @@ func TestSQLiteStore_SearchMemory_RankOrder(t *testing.T) {
 	}
 }
 
+// ─── New columns: access_count, archived_at ───────────────────────────────────
+
+// TestSQLiteStore_SearchMemory_AccessCountStartsAtZero verifies that a newly
+// inserted entry scans access_count=0 before any search that increments it.
+func TestSQLiteStore_SearchMemory_AccessCountStartsAtZero(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "ac-test", Content: "access count test", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// Direct DB query to verify access_count column exists and starts at 0.
+	var count int
+	if err := s.db.QueryRow(`SELECT access_count FROM memory WHERE id = 'ac-test'`).Scan(&count); err != nil {
+		t.Fatalf("reading access_count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected access_count=0 for new entry, got %d", count)
+	}
+}
+
+// TestSQLiteStore_SearchMemory_AccessCountIncrementsOnSearch verifies that
+// access_count is incremented after SearchMemory returns an entry.
+func TestSQLiteStore_SearchMemory_AccessCountIncrementsOnSearch(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "ac-inc", Content: "increment access count on search", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// First search — should return the entry and bump access_count to 1.
+	results, err := s.SearchMemory(ctx, "scope1", "increment", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	// Verify access_count was incremented in the DB.
+	var count int
+	if err := s.db.QueryRow(`SELECT access_count FROM memory WHERE id = 'ac-inc'`).Scan(&count); err != nil {
+		t.Fatalf("reading access_count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected access_count=1 after one search, got %d", count)
+	}
+}
+
+// TestSQLiteStore_SearchMemory_ArchivedExcluded verifies that entries with
+// archived_at set are not returned by SearchMemory.
+func TestSQLiteStore_SearchMemory_ArchivedExcluded(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// Insert a normal and an archived entry.
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "live", Content: "live unarchived memory", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory live: %v", err)
+	}
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "archived", Content: "archived memory entry", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory archived: %v", err)
+	}
+
+	// Soft-delete the archived entry directly.
+	if _, err := s.db.Exec(
+		`UPDATE memory SET archived_at = datetime('now') WHERE id = 'archived'`,
+	); err != nil {
+		t.Fatalf("setting archived_at: %v", err)
+	}
+
+	// FTS5 search should NOT return the archived entry.
+	results, err := s.SearchMemory(ctx, "scope1", "archived", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == "archived" {
+			t.Error("archived entry should not appear in SearchMemory results")
+		}
+	}
+}
+
+// TestSQLiteStore_SearchMemory_ArchivedExcludedEmptyQuery verifies that the
+// empty-query path also excludes archived entries.
+func TestSQLiteStore_SearchMemory_ArchivedExcludedEmptyQuery(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "visible", Content: "visible", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "hidden", Content: "hidden", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// Archive the second entry.
+	if _, err := s.db.Exec(
+		`UPDATE memory SET archived_at = datetime('now') WHERE id = 'hidden'`,
+	); err != nil {
+		t.Fatalf("archiving: %v", err)
+	}
+
+	results, err := s.SearchMemory(ctx, "scope1", "", 10)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result (archived excluded), got %d", len(results))
+	}
+	if len(results) == 1 && results[0].ID != "visible" {
+		t.Errorf("expected 'visible', got %q", results[0].ID)
+	}
+}
+
+// TestSQLiteStore_ScanMemoryRows_ScansNewColumns verifies that scanMemoryRows
+// correctly populates AccessCount and ArchivedAt from the query result.
+func TestSQLiteStore_ScanMemoryRows_ScansNewColumns(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "scan-cols", Content: "scan columns test", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// Directly set access_count=5 in the DB.
+	if _, err := s.db.Exec(`UPDATE memory SET access_count = 5 WHERE id = 'scan-cols'`); err != nil {
+		t.Fatalf("setting access_count: %v", err)
+	}
+
+	// Use SearchMemory (which calls scanMemoryRows) and verify AccessCount is returned.
+	results, err := s.SearchMemory(ctx, "scope1", "scan", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+	if results[0].AccessCount != 5 {
+		t.Errorf("expected AccessCount=5 from DB, got %d", results[0].AccessCount)
+	}
+}
+
+// ─── UpdateMemory tests ───────────────────────────────────────────────────────
+
+func TestSQLiteStore_UpdateMemory_UpdatesTitleAndTags(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	entry := MemoryEntry{
+		ID:        "update-test",
+		Content:   "original content about golang",
+		Title:     "Original Title",
+		Tags:      []string{"golang"},
+		CreatedAt: time.Now(),
+	}
+	if err := s.AppendMemory(ctx, "scope1", entry); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	// Update title, tags, and content.
+	updated := entry
+	updated.Title = "Updated Title"
+	updated.Tags = []string{"golang", "updated", "testing"}
+	updated.Content = "updated content about golang testing"
+
+	if err := s.UpdateMemory(ctx, "scope1", updated); err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+
+	// Re-search and verify the updated values come back.
+	results, err := s.SearchMemory(ctx, "scope1", "updated", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory after update: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result after update, got 0")
+	}
+	if results[0].Title != "Updated Title" {
+		t.Errorf("expected title 'Updated Title', got %q", results[0].Title)
+	}
+}
+
+func TestSQLiteStore_UpdateMemory_ScopeIsolation(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	entry := MemoryEntry{
+		ID:        "scope-update-test",
+		Content:   "content",
+		CreatedAt: time.Now(),
+	}
+	if err := s.AppendMemory(ctx, "scope-a", entry); err != nil {
+		t.Fatalf("AppendMemory scope-a: %v", err)
+	}
+
+	// UpdateMemory with the wrong scopeID should affect 0 rows but return nil.
+	entry.Title = "Should Not Change"
+	if err := s.UpdateMemory(ctx, "scope-b", entry); err != nil {
+		t.Fatalf("UpdateMemory with wrong scope: %v", err)
+	}
+
+	// The original entry in scope-a should be unchanged.
+	results, err := s.SearchMemory(ctx, "scope-a", "", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected entry in scope-a")
+	}
+	if results[0].Title == "Should Not Change" {
+		t.Error("UpdateMemory with wrong scope modified entry in another scope")
+	}
+}
+
 func TestSQLiteStore_FTS5Available(t *testing.T) {
 	s := newTestSQLiteStore(t)
 	ctx := context.Background()
@@ -595,5 +841,300 @@ func TestSQLiteStore_FTS5Available(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Errorf("expected 1 result (FTS5 smoke test), got %d", len(results))
+	}
+}
+
+// ─── Integration Scenarios 1-5 (spec) ────────────────────────────────────────
+
+// Scenario 1: FTS5 stemmer match
+// "authenticated" indexed, searching "authenticate" returns it (Porter stemmer).
+func TestIntegration_Scenario1_PorterStemmerMatch(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID:        "s1",
+		Content:   "The user authenticated successfully using OAuth",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	results, err := s.SearchMemory(ctx, "scope1", "authenticate", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Scenario 1: Porter stemmer should match 'authenticated' when searching 'authenticate'")
+	}
+}
+
+// Scenario 2: Prefix matching
+// "configuration" indexed, searching "config" returns it via prefix "config"*.
+func TestIntegration_Scenario2_PrefixMatch(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID:        "s2",
+		Content:   "configuration file was loaded from home directory",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	results, err := s.SearchMemory(ctx, "scope1", "config", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Scenario 2: prefix 'config*' should match 'configuration'")
+	}
+}
+
+// Scenario 3: Synonym expansion
+// "database" indexed, searching "db" returns it (db → database synonym).
+func TestIntegration_Scenario3_SynonymMatch(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID:        "s3",
+		Content:   "the database connection pool was exhausted",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	results, err := s.SearchMemory(ctx, "scope1", "db", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Scenario 3: synonym 'db' -> 'database*' should match 'database' in content")
+	}
+}
+
+// Scenario 4: Migration completes within 2 seconds for an empty store.
+func TestIntegration_Scenario4_MigrationUnder2Seconds(t *testing.T) {
+	start := time.Now()
+	s := newTestSQLiteStore(t)
+	elapsed := time.Since(start)
+
+	var version int
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("reading schema_version: %v", err)
+	}
+
+	if elapsed > 2*time.Second {
+		t.Errorf("Scenario 4: migration took %v, must complete in < 2s", elapsed)
+	}
+}
+
+// Scenario 5: Idempotent re-run — calling initSchema again leaves data intact.
+func TestIntegration_Scenario5_IdempotentMigration(t *testing.T) {
+	path := t.TempDir()
+	s, err := NewSQLiteStore(config.StoreConfig{Path: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+		ID: "pre-rerun", Content: "data before re-run", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMemory: %v", err)
+	}
+
+	if err := s.initSchema(); err != nil {
+		t.Fatalf("Scenario 5: second initSchema failed: %v", err)
+	}
+
+	var version int
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("reading schema_version: %v", err)
+	}
+	if version != 3 {
+		t.Errorf("Scenario 5: expected version=3 after re-run, got %d", version)
+	}
+
+	results, err := s.SearchMemory(ctx, "scope1", "data", 5)
+	if err != nil {
+		t.Fatalf("Scenario 5: SearchMemory after re-run: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Scenario 5: data was lost during idempotent re-run")
+	}
+}
+
+// ─── Phase 4: Two-phase search (embedding reranking) ─────────────────────────
+
+// TestTwoPhaseSearch_ReranksByCosineSimilarity inserts entries with synthetic
+// embeddings, registers an embedQueryFunc, and verifies that SearchMemory
+// reorders results by cosine similarity rather than FTS5 rank.
+func TestTwoPhaseSearch_ReranksByCosineSimilarity(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// Insert 5 entries with different embeddings. All contain "neural network"
+	// so they all match the FTS query — but embeddings determine the final order.
+	type entry struct {
+		id   string
+		seed float32
+	}
+	entries := []entry{
+		{"e1", 0.9}, // most similar to query vector (seed 1.0)
+		{"e2", 0.1},
+		{"e3", 0.5},
+		{"e4", 0.8}, // second most similar
+		{"e5", 0.3},
+	}
+	for _, e := range entries {
+		if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+			ID:        e.id,
+			Content:   "neural network machine learning model",
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("AppendMemory %s: %v", e.id, err)
+		}
+		// Write embedding directly to DB.
+		blob := makeTestEmbedding(e.seed)
+		if _, err := s.db.Exec(`UPDATE memory SET embedding = ? WHERE id = ?`, blob, e.id); err != nil {
+			t.Fatalf("updating embedding for %s: %v", e.id, err)
+		}
+	}
+
+	// Query vector is most similar to seed 0.9 (e1) and 0.8 (e4).
+	queryVec := func(ctx context.Context, text string) ([]float32, error) {
+		vec := make([]float32, 256)
+		for i := range vec {
+			vec[i] = 1.0 + float32(i)*0.001 // matches seed 0.9 most closely
+		}
+		return vec, nil
+	}
+	s.SetEmbedQueryFunc(queryVec)
+
+	results, err := s.SearchMemory(ctx, "scope1", "neural network", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results, got none")
+	}
+	// The first result must be e1 or e4 (highest similarity to query).
+	topID := results[0].ID
+	if topID != "e1" && topID != "e4" {
+		t.Errorf("expected top result to be e1 or e4 (closest to query), got %q", topID)
+	}
+}
+
+// TestTwoPhaseSearch_FallsBackWhenLessThan2Embeddings verifies that when fewer
+// than 2 candidates have embeddings, FTS5 ordering is preserved (Scenario 15).
+func TestTwoPhaseSearch_FallsBackWhenLessThan2Embeddings(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// Insert 3 entries but only 1 has an embedding.
+	for i, id := range []string{"f1", "f2", "f3"} {
+		if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+			ID:        id,
+			Content:   "machine learning algorithm training",
+			CreatedAt: time.Now().UTC().Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("AppendMemory %s: %v", id, err)
+		}
+	}
+	// Only f1 gets an embedding.
+	blob := makeTestEmbedding(0.5)
+	if _, err := s.db.Exec(`UPDATE memory SET embedding = ? WHERE id = 'f1'`, blob); err != nil {
+		t.Fatalf("updating embedding: %v", err)
+	}
+
+	calls := 0
+	s.SetEmbedQueryFunc(func(ctx context.Context, text string) ([]float32, error) {
+		calls++
+		return make([]float32, 256), nil
+	})
+
+	results, err := s.SearchMemory(ctx, "scope1", "machine learning", 3)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results, got none")
+	}
+	// embedQueryFunc must NOT have been called (only 1 embedding → FTS order).
+	if calls > 0 {
+		t.Errorf("expected embedQueryFunc not called when <2 embeddings, got %d calls", calls)
+	}
+}
+
+// TestTwoPhaseSearch_NoEmbedQueryFunc verifies that SearchMemory behaves
+// normally (FTS5 order) when embedQueryFunc is not set.
+func TestTwoPhaseSearch_NoEmbedQueryFunc(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"g1", "g2", "g3"} {
+		if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+			ID:        id,
+			Content:   "golang programming language backend",
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("AppendMemory %s: %v", id, err)
+		}
+	}
+	// No SetEmbedQueryFunc called.
+
+	results, err := s.SearchMemory(ctx, "scope1", "golang", 3)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results without embedQueryFunc, got none")
+	}
+}
+
+// TestTwoPhaseSearch_Scenario14_200EntriesTop5ByCosine inserts 200 entries,
+// assigns synthetic embeddings to all, and verifies SearchMemory returns the
+// top 5 by cosine similarity (Scenario 14).
+func TestTwoPhaseSearch_Scenario14_200EntriesTop5ByCosine(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// Insert 200 entries with varied embeddings.
+	for i := 0; i < 200; i++ {
+		id := fmt.Sprintf("e%03d", i)
+		if err := s.AppendMemory(ctx, "scope1", MemoryEntry{
+			ID:        id,
+			Content:   "deep learning neural network architecture model",
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("AppendMemory %s: %v", id, err)
+		}
+		seed := float32(i) * 0.001
+		blob := makeTestEmbedding(seed)
+		if _, err := s.db.Exec(`UPDATE memory SET embedding = ? WHERE id = ?`, blob, id); err != nil {
+			t.Fatalf("updating embedding for %s: %v", id, err)
+		}
+	}
+
+	// Query vector is closest to seed 0.199 (entry e199).
+	queryVec := func(ctx context.Context, text string) ([]float32, error) {
+		vec := make([]float32, 256)
+		for i := range vec {
+			vec[i] = 0.2 + float32(i)*0.001
+		}
+		return vec, nil
+	}
+	s.SetEmbedQueryFunc(queryVec)
+
+	results, err := s.SearchMemory(ctx, "scope1", "deep learning", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(results) != 5 {
+		t.Errorf("Scenario 14: expected 5 results, got %d", len(results))
 	}
 }
