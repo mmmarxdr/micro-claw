@@ -19,6 +19,13 @@ import (
 	"microagent/internal/tool"
 )
 
+func userScope(channelID, senderID string) string {
+	if senderID == "" {
+		return channelID
+	}
+	return channelID + ":" + senderID
+}
+
 func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage) {
 	slog.Debug("processing message",
 		"channel_id", msg.ChannelID,
@@ -26,7 +33,8 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		"text_len", len(msg.Text),
 	)
 
-	convID := "conv_" + msg.ChannelID
+	scope := userScope(msg.ChannelID, msg.SenderID)
+	convID := "conv_" + scope
 	conv, err := a.store.LoadConversation(ctx, convID)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
@@ -55,7 +63,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		conv.Messages = a.legacyTruncate(ctx, conv.Messages)
 	}
 
-	memories, _ := a.store.SearchMemory(ctx, msg.ChannelID, msg.Text, a.config.MemoryResults)
+	memories, _ := a.store.SearchMemory(ctx, scope, msg.Text, a.config.MemoryResults)
 
 	maxIters := a.config.MaxIterations
 	if maxIters <= 0 {
@@ -103,7 +111,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		llmDuration := time.Since(llmStart)
 		if err != nil {
 			_ = a.auditor.Emit(ctx, audit.AuditEvent{
-				ID: uuid.New().String(), ScopeID: msg.ChannelID,
+				ID: uuid.New().String(), ScopeID: scope,
 				EventType: "llm_call", Timestamp: llmStart, DurationMs: llmDuration.Milliseconds(),
 				Iteration: i, StopReason: "error",
 			})
@@ -115,7 +123,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			return
 		}
 		_ = a.auditor.Emit(ctx, audit.AuditEvent{
-			ID: uuid.New().String(), ScopeID: msg.ChannelID,
+			ID: uuid.New().String(), ScopeID: scope,
 			EventType: "llm_call", Timestamp: llmStart, DurationMs: llmDuration.Milliseconds(),
 			Model: a.config.Name, InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
 			StopReason: resp.StopReason, Iteration: i,
@@ -138,21 +146,21 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			if resp.Content != "" {
 				entry := store.MemoryEntry{
 					ID:        uuid.New().String(),
-					ScopeID:   msg.ChannelID,
+					ScopeID:   scope,
 					Content:   resp.Content,
 					Source:    convID,
 					CreatedAt: time.Now(),
 				}
-				if err := a.store.AppendMemory(ctx, msg.ChannelID, entry); err != nil {
+				if err := a.store.AppendMemory(ctx, scope, entry); err != nil {
 					slog.Warn("failed to append memory", "error", err)
 				} else {
-					slog.Debug("memory appended", "scope_id", msg.ChannelID)
+					slog.Debug("memory appended", "scope_id", scope)
 					if a.enricher != nil {
 						a.enricher.Enqueue(entry)
 					}
 					// Async embedding — fire and forget.
 					if a.embeddingWorker != nil {
-						a.embeddingWorker.Enqueue(entry.ID, msg.ChannelID, entry.Content)
+						a.embeddingWorker.Enqueue(entry.ID, scope, entry.Content)
 					}
 				}
 			}
@@ -207,7 +215,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			}
 			slog.Debug("tool execution complete", "name", tc.Name, "status", status, "result_len", len(result.Content))
 			_ = a.auditor.Emit(ctx, audit.AuditEvent{
-				ID: uuid.New().String(), ScopeID: msg.ChannelID,
+				ID: uuid.New().String(), ScopeID: scope,
 				EventType: "tool_use", Timestamp: toolStart, DurationMs: toolDuration.Milliseconds(),
 				ToolName: tc.Name, ToolOK: !result.IsError, Details: result.Meta,
 				OriginalBytes: filterMetrics.OriginalBytes, CompressedBytes: filterMetrics.CompressedBytes,

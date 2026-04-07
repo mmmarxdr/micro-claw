@@ -294,7 +294,8 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	<-runDone1
 
 	// Verify the conversation was persisted to disk.
-	convID := "conv_cli"
+	// With user isolation, conversation ID includes sender ID
+	convID := "conv_cli:local_user"
 	savedConv, err := st1.LoadConversation(context.Background(), convID)
 	if err != nil {
 		t.Fatalf("Turn 1: conversation not persisted: %v", err)
@@ -304,7 +305,8 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	}
 
 	// Verify AppendMemory was called — search for a word from the reply.
-	memories, err := st1.SearchMemory(context.Background(), "cli", "remember", 10)
+	// With user isolation, scope includes sender ID
+	memories, err := st1.SearchMemory(context.Background(), "cli:local_user", "remember", 10)
 	if err != nil {
 		t.Fatalf("Turn 1: SearchMemory error: %v", err)
 	}
@@ -529,7 +531,7 @@ func (e *echoTestTool) Execute(_ context.Context, params json.RawMessage) (tool.
 // It returns a static text response for Chat and a zero embedding for Embed.
 type mockFullProvider struct{}
 
-func (m *mockFullProvider) Name() string { return "mock" }
+func (m *mockFullProvider) Name() string        { return "mock" }
 func (m *mockFullProvider) SupportsTools() bool { return false }
 func (m *mockFullProvider) HealthCheck(_ context.Context) (string, error) {
 	return "ok", nil

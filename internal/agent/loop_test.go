@@ -56,7 +56,6 @@ func (m *mockProvider) callCount() int {
 	return m.calls
 }
 
-
 type mockChannel struct {
 	mu       sync.Mutex
 	sent     []channel.OutgoingMessage
@@ -172,7 +171,7 @@ func (m *mockStore) updateCallCount() int {
 	defer m.mu.Unlock()
 	return m.updateCount
 }
-func (m *mockStore) Close() error         { return nil }
+func (m *mockStore) Close() error { return nil }
 
 // ---------------------------------------------------------------------------
 // Helper to build a default agent config.
@@ -573,6 +572,7 @@ func TestProcessMessage_MultipleToolCalls(t *testing.T) {
 			}
 		}
 	}
+
 }
 
 // ---------------------------------------------------------------------------
@@ -991,4 +991,253 @@ func TestAgent_EnricherEnqueueCalledAfterAppendMemory(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUserScope
+// ---------------------------------------------------------------------------
+
+func TestUserScope(t *testing.T) {
+	tests := []struct {
+		name      string
+		channelID string
+		senderID  string
+		expected  string
+	}{
+		{
+			name:      "empty senderID returns channelID",
+			channelID: "channel123",
+			senderID:  "",
+			expected:  "channel123",
+		},
+		{
+			name:      "non-empty senderID returns channelID:senderID",
+			channelID: "channel123",
+			senderID:  "user456",
+			expected:  "channel123:user456",
+		},
+		{
+			name:      "channel with special characters",
+			channelID: "telegram:-1001234567890",
+			senderID:  "user789",
+			expected:  "telegram:-1001234567890:user789",
+		},
+		{
+			name:      "senderID with colon",
+			channelID: "channel123",
+			senderID:  "user:with:colons",
+			expected:  "channel123:user:with:colons",
+		},
+		{
+			name:      "empty channelID and empty senderID",
+			channelID: "",
+			senderID:  "",
+			expected:  "",
+		},
+		{
+			name:      "empty channelID with senderID",
+			channelID: "",
+			senderID:  "user456",
+			expected:  ":user456",
+		},
+		{
+			name:      "channelID with empty senderID",
+			channelID: "discord:987654321",
+			senderID:  "",
+			expected:  "discord:987654321",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := userScope(tt.channelID, tt.senderID)
+			if result != tt.expected {
+				t.Errorf("userScope(%q, %q) = %q, want %q", tt.channelID, tt.senderID, result, tt.expected)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUserIsolation_Integration
+// ---------------------------------------------------------------------------
+
+func TestUserIsolation_Integration(t *testing.T) {
+	// Test that two messages with different SenderID on same ChannelID
+	// produce different convIDs and pass different scopeIDs to AppendMemory
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{Content: "response to user1"},
+			{Content: "response to user2"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	// First message from user1
+	ag.processMessage(context.Background(), channel.IncomingMessage{
+		ChannelID: "test_channel",
+		SenderID:  "user1",
+		Text:      "hello from user1",
+	})
+
+	// Second message from user2 in same channel
+	ag.processMessage(context.Background(), channel.IncomingMessage{
+		ChannelID: "test_channel",
+		SenderID:  "user2",
+		Text:      "hello from user2",
+	})
+
+	// Verify we have 2 memory entries
+	if len(st.appendedMems) != 2 {
+		t.Fatalf("expected 2 memory entries, got %d", len(st.appendedMems))
+	}
+
+	// Verify they have different scope IDs
+	scope1 := st.appendedMems[0].ScopeID
+	scope2 := st.appendedMems[1].ScopeID
+	if scope1 == scope2 {
+		t.Errorf("expected different scope IDs for different users, got %q for both", scope1)
+	}
+
+	// Verify scope IDs are correct
+	expectedScope1 := "test_channel:user1"
+	expectedScope2 := "test_channel:user2"
+	if scope1 != expectedScope1 {
+		t.Errorf("scope1 = %q, want %q", scope1, expectedScope1)
+	}
+	if scope2 != expectedScope2 {
+		t.Errorf("scope2 = %q, want %q", scope2, expectedScope2)
+	}
+
+	// Verify conversation IDs are different
+	// The conversation ID is stored in MemoryEntry.Source (convID)
+	convID1 := st.appendedMems[0].Source
+	convID2 := st.appendedMems[1].Source
+	if convID1 == convID2 {
+		t.Errorf("expected different conversation IDs for different users, got %q for both", convID1)
+	}
+
+	// Verify conversation IDs are correct
+	expectedConvID1 := "conv_test_channel:user1"
+	expectedConvID2 := "conv_test_channel:user2"
+	if convID1 != expectedConvID1 {
+		t.Errorf("convID1 = %q, want %q", convID1, expectedConvID1)
+	}
+	if convID2 != expectedConvID2 {
+		t.Errorf("convID2 = %q, want %q", convID2, expectedConvID2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUserIsolation_BackwardCompat
+// ---------------------------------------------------------------------------
+
+func TestUserIsolation_BackwardCompat(t *testing.T) {
+	// Test that message with empty SenderID falls back to channel-only convID
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{Content: "response"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	// Message with empty SenderID (backward compatibility)
+	ag.processMessage(context.Background(), channel.IncomingMessage{
+		ChannelID: "test_channel",
+		SenderID:  "", // Empty sender ID
+		Text:      "hello",
+	})
+
+	// Should not panic and should create memory with channel-only scope
+	if len(st.appendedMems) != 1 {
+		t.Fatalf("expected 1 memory entry, got %d", len(st.appendedMems))
+	}
+
+	scope := st.appendedMems[0].ScopeID
+	expectedScope := "test_channel"
+	if scope != expectedScope {
+		t.Errorf("scope = %q, want %q (channel-only for empty sender)", scope, expectedScope)
+	}
+
+	convID := st.appendedMems[0].Source
+	expectedConvID := "conv_test_channel"
+	if convID != expectedConvID {
+		t.Errorf("convID = %q, want %q (channel-only for empty sender)", convID, expectedConvID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUserIsolation_AsyncWorkers
+// ---------------------------------------------------------------------------
+
+func TestUserIsolation_AsyncWorkers(t *testing.T) {
+	// Test that enricher receives correct user-scoped scopeID
+	enrichProv := &mockProvider{
+		responses: []provider.ChatResponse{
+			{Content: "agent response"},
+			{Content: "go, test"}, // enricher response
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		EnrichMemory:     true,
+		EnrichRatePerMin: 60,
+	}
+
+	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, enrichProv, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+	if ag.enricher == nil {
+		t.Fatal("enricher must be non-nil for this test")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ag.enricher.Start(ctx)
+	defer func() {
+		cancel()
+		ag.enricher.Stop()
+	}()
+
+	// Process message with specific user
+	ag.processMessage(context.Background(), channel.IncomingMessage{
+		ChannelID: "test_channel",
+		SenderID:  "test_user",
+		Text:      "hello",
+	})
+
+	// Verify AppendMemory was called with correct scope
+	if len(st.appendedMems) != 1 {
+		t.Fatalf("expected 1 memory entry, got %d", len(st.appendedMems))
+	}
+
+	expectedScope := "test_channel:test_user"
+	memScope := st.appendedMems[0].ScopeID
+	if memScope != expectedScope {
+		t.Errorf("memory scope = %q, want %q", memScope, expectedScope)
+	}
+
+	// Wait for enricher to process and call UpdateMemory
+	deadline := time.After(3 * time.Second)
+	for {
+		updates := st.updateCallCount()
+		if updates >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("enricher did not call UpdateMemory within 3s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// The enricher calls UpdateMemory with the entry which includes the scope ID
+	// If it reaches UpdateMemory, it means the scope was passed correctly through the system
+	// (We can't easily intercept the embedding worker since it's a private field)
 }
