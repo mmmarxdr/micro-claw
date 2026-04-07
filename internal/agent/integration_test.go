@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,9 +101,30 @@ func defaultIntegrationLimitsConfig() config.LimitsConfig {
 	}
 }
 
+// syncBuffer is a thread-safe wrapper around bytes.Buffer that implements
+// io.Writer and provides a safe String() method. This is needed because
+// CLIChannel writes from its own goroutine while tests read from the test
+// goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 // collectOutput reads all bytes written to buf until the sentinel appears or
-// the deadline fires.  It returns the accumulated output.
-func collectOutput(buf *bytes.Buffer, sentinel string, deadline time.Duration) string {
+// the deadline fires. It returns the accumulated output.
+func collectOutput(buf *syncBuffer, sentinel string, deadline time.Duration) string {
 	timeout := time.After(deadline)
 	for {
 		select {
@@ -164,7 +186,7 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 
 	// CLIChannel wired to io.Pipe so we can inject input and capture output.
 	pr, pw := newLinePipe()
-	var outBuf bytes.Buffer
+	var outBuf syncBuffer
 	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
 
 	ag := New(
@@ -247,7 +269,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	prov1 := newIntegrationProvider(ts1)
 
 	pr1, pw1 := newLinePipe()
-	var outBuf1 bytes.Buffer
+	var outBuf1 syncBuffer
 	ch1 := channel.NewCLIChannel(config.ChannelConfig{}, pr1, &outBuf1)
 
 	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch1, prov1, st1, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
@@ -327,7 +349,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	prov2 := newIntegrationProvider(ts2)
 
 	pr2, pw2 := newLinePipe()
-	var outBuf2 bytes.Buffer
+	var outBuf2 syncBuffer
 	ch2 := channel.NewCLIChannel(config.ChannelConfig{}, pr2, &outBuf2)
 
 	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch2, prov2, st2, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
@@ -417,7 +439,7 @@ func TestIntegration_AddNewTool(t *testing.T) {
 	}
 
 	pr, pw := newLinePipe()
-	var outBuf bytes.Buffer
+	var outBuf syncBuffer
 	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
 
 	ag := New(
@@ -538,7 +560,7 @@ func TestIntegration_GracefulShutdown_AllWorkersExit(t *testing.T) {
 	prov := &mockFullProvider{}
 
 	pr, pw := newLinePipe()
-	var outBuf bytes.Buffer
+	var outBuf syncBuffer
 	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
 
 	agentCfg := config.AgentConfig{

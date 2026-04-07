@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockProvider struct {
+	mu        sync.Mutex
 	responses []provider.ChatResponse
 	errs      []error // parallel to responses; nil entry = no error for that call
 	calls     int
@@ -33,6 +35,8 @@ func (m *mockProvider) Name() string                                    { return
 func (m *mockProvider) SupportsTools() bool                             { return true }
 func (m *mockProvider) HealthCheck(ctx context.Context) (string, error) { return "mock", nil }
 func (m *mockProvider) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.lastReq = req
 	idx := m.calls
 	m.calls++
@@ -46,7 +50,20 @@ func (m *mockProvider) Chat(ctx context.Context, req provider.ChatRequest) (*pro
 	return &provider.ChatResponse{Content: "default"}, nil
 }
 
+func (m *mockProvider) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+func (m *mockProvider) lastRequest() provider.ChatRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastReq
+}
+
 type mockChannel struct {
+	mu       sync.Mutex
 	sent     []channel.OutgoingMessage
 	stopErr  error
 	messages []channel.IncomingMessage // pre-filled inbox for Run tests
@@ -61,10 +78,20 @@ func (m *mockChannel) Start(ctx context.Context, inbox chan<- channel.IncomingMe
 }
 
 func (m *mockChannel) Send(ctx context.Context, msg channel.OutgoingMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sent = append(m.sent, msg)
 	return nil
 }
 func (m *mockChannel) Stop() error { return m.stopErr }
+
+func (m *mockChannel) sentMessages() []channel.OutgoingMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]channel.OutgoingMessage, len(m.sent))
+	copy(cp, m.sent)
+	return cp
+}
 
 type mockTool struct {
 	name        string
@@ -86,6 +113,7 @@ func (m *mockTool) Execute(ctx context.Context, params json.RawMessage) (tool.To
 }
 
 type mockStore struct {
+	mu           sync.Mutex
 	conv         *store.Conversation // nil means "not found" → creates new
 	loadErr      error
 	saveErr      error
@@ -95,6 +123,8 @@ type mockStore struct {
 }
 
 func (m *mockStore) SaveConversation(ctx context.Context, conv store.Conversation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.saveErr != nil {
 		return m.saveErr
 	}
@@ -103,6 +133,8 @@ func (m *mockStore) SaveConversation(ctx context.Context, conv store.Conversatio
 }
 
 func (m *mockStore) LoadConversation(ctx context.Context, id string) (*store.Conversation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.loadErr != nil {
 		return nil, m.loadErr
 	}
@@ -117,18 +149,28 @@ func (m *mockStore) ListConversations(ctx context.Context, channelID string, lim
 }
 
 func (m *mockStore) AppendMemory(ctx context.Context, scopeID string, entry store.MemoryEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.appendedMems = append(m.appendedMems, entry)
 	return nil
 }
 
 func (m *mockStore) SearchMemory(ctx context.Context, scopeID string, query string, limit int) ([]store.MemoryEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.memories, nil
 }
 func (m *mockStore) UpdateMemory(_ context.Context, _ string, _ store.MemoryEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.updateCount++
 	return nil
 }
-func (m *mockStore) updateCallCount() int { return m.updateCount }
+func (m *mockStore) updateCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.updateCount
+}
 func (m *mockStore) Close() error         { return nil }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +253,7 @@ func TestAgent_Run_ProcessesMessages(t *testing.T) {
 	// Wait until the provider is called, then cancel.
 	deadline := time.After(3 * time.Second)
 	for {
-		if prov.calls >= 1 {
+		if prov.callCount() >= 1 {
 			cancel()
 			break
 		}
@@ -231,10 +273,11 @@ func TestAgent_Run_ProcessesMessages(t *testing.T) {
 		t.Fatal("Run did not return after context cancel")
 	}
 
-	if len(ch.sent) == 0 {
+	sent := ch.sentMessages()
+	if len(sent) == 0 {
 		t.Error("expected channel.Send to be called with provider response")
-	} else if ch.sent[0].Text != "hi there" {
-		t.Errorf("expected 'hi there', got %q", ch.sent[0].Text)
+	} else if sent[0].Text != "hi there" {
+		t.Errorf("expected 'hi there', got %q", sent[0].Text)
 	}
 }
 
