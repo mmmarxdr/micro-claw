@@ -2,6 +2,8 @@
 
 **Delegator use only.** Any agent that launches sub-agents reads this registry to resolve compact rules, then injects them directly into sub-agent prompts. Sub-agents do NOT read this registry or individual SKILL.md files.
 
+**ALWAYS INJECT**: `context-mode` rules are injected into EVERY sub-agent launch regardless of task context. They are not skill-matched — they protect context window from flooding.
+
 See `_shared/skill-resolver.md` for the full resolution protocol.
 
 ## User Skills
@@ -46,6 +48,15 @@ See `_shared/skill-resolver.md` for the full resolution protocol.
 ### judgment-day
 - Review targets independently with blind judge sub-agents
 - Apply fixes and re-judge until both pass or escalate
+
+### context-mode (ALWAYS INJECT — not skill-matched)
+- Think in Code: write JS/shell to process data via `ctx_execute`, never read raw data into context
+- Primary tool: `ctx_batch_execute(commands, queries)` — one call replaces 30+ tool calls
+- Blocked: curl, wget, inline HTTP, direct web fetching — use `ctx_fetch_and_index` + `ctx_search`
+- Shell output >20 lines → use `ctx_execute(language: "shell", code: "...")`
+- File reading for analysis → use `ctx_execute_file(path, language, code)`
+- Write artifacts to FILES, never return inline — keep responses under 500 words
+- Full rules: `.atl/_shared/context-mode.md`
 
 ## Project Conventions
 

@@ -18,26 +18,26 @@ import (
 var ErrNoConfig = errors.New("no config file found")
 
 type Config struct {
-	Agent    AgentConfig    `yaml:"agent"`
-	Provider ProviderConfig `yaml:"provider"`
-	Channel  ChannelConfig  `yaml:"channel"`
-	Tools    ToolsConfig    `yaml:"tools"`
-	Store    StoreConfig    `yaml:"store"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	Limits   LimitsConfig   `yaml:"limits"`
-	Audit    AuditConfig    `yaml:"audit"`
-	Cron     CronConfig     `yaml:"cron"`
-	Filter   FilterConfig   `yaml:"filter"`
-	Skills             []string `yaml:"skills"`
-	SkillsDir          string   `yaml:"skills_dir"`
-	SkillsRegistryURL  string   `yaml:"skills_registry_url"`
+	Agent             AgentConfig    `yaml:"agent"`
+	Provider          ProviderConfig `yaml:"provider"`
+	Channel           ChannelConfig  `yaml:"channel"`
+	Tools             ToolsConfig    `yaml:"tools"`
+	Store             StoreConfig    `yaml:"store"`
+	Logging           LoggingConfig  `yaml:"logging"`
+	Limits            LimitsConfig   `yaml:"limits"`
+	Audit             AuditConfig    `yaml:"audit"`
+	Cron              CronConfig     `yaml:"cron"`
+	Filter            FilterConfig   `yaml:"filter"`
+	Skills            []string       `yaml:"skills"`
+	SkillsDir         string         `yaml:"skills_dir"`
+	SkillsRegistryURL string         `yaml:"skills_registry_url"`
 }
 
 // FilterConfig controls post-execution tool output compression.
 // YAML key: filter
 type FilterConfig struct {
-	Enabled            bool         `yaml:"enabled"`             // default: false (opt-in)
-	TruncationChars    int          `yaml:"truncation_chars"`    // default: 8000
+	Enabled            bool         `yaml:"enabled"`          // default: false (opt-in)
+	TruncationChars    int          `yaml:"truncation_chars"` // default: 8000
 	Levels             FilterLevels `yaml:"levels"`
 	InjectionDetection *bool        `yaml:"injection_detection"` // default: true — detect prompt injection in tool results
 }
@@ -47,6 +47,26 @@ type FilterLevels struct {
 	Shell    string `yaml:"shell"`     // "aggressive" (default) | "minimal" | "no"
 	FileRead string `yaml:"file_read"` // "minimal" (default) | "aggressive" | "no"
 	Generic  bool   `yaml:"generic"`   // true (default when enabled) — apply generic truncation to unmatched tools
+}
+
+// ContextMode controls the native context-mode behavior.
+type ContextMode string
+
+const (
+	ContextModeOff          ContextMode = "off"
+	ContextModeConservative ContextMode = "conservative"
+	ContextModeAuto         ContextMode = "auto"
+)
+
+// ContextModeConfig configures context-mode behavior.
+type ContextModeConfig struct {
+	Mode             ContextMode   `yaml:"mode"`               // default: "off"
+	ShellMaxOutput   int           `yaml:"shell_max_output"`   // bytes, default 4096 (auto), 8192 (conservative)
+	FileChunkSize    int           `yaml:"file_chunk_size"`    // bytes, default 2000 (auto), 4000 (conservative)
+	SandboxTimeout   time.Duration `yaml:"sandbox_timeout"`    // default 30s
+	AutoIndexOutputs *bool         `yaml:"auto_index_outputs"` // default true in auto mode, false otherwise
+	SandboxKeepFirst int           `yaml:"sandbox_keep_first"` // default 20 lines
+	SandboxKeepLast  int           `yaml:"sandbox_keep_last"`  // default 10 lines
 }
 
 // CronConfig holds configuration for the cron scheduling subsystem.
@@ -78,6 +98,9 @@ type AgentConfig struct {
 	PruneInterval      time.Duration `yaml:"prune_interval"`       // default: 24h — how often to prune
 	PruneRetentionDays int           `yaml:"prune_retention_days"` // default: 30 — days before archived entries are hard-deleted
 	PruneThreshold     float64       `yaml:"prune_threshold"`      // default: 0.1 — minimum decay score to keep a memory
+
+	// Native context-mode — token optimization for tool outputs.
+	ContextMode ContextModeConfig `yaml:"context_mode"`
 }
 
 // FallbackConfig configures an optional secondary provider for resilience.
@@ -138,10 +161,10 @@ type MCPConfig struct {
 // MCPServerConfig describes one MCP server connection.
 type MCPServerConfig struct {
 	Name        string            `yaml:"name"`
-	Transport   string            `yaml:"transport"`    // "stdio" | "http"
-	Command     []string          `yaml:"command"`      // stdio only: [executable, args...]
-	URL         string            `yaml:"url"`          // http only
-	PrefixTools bool              `yaml:"prefix_tools"` // prefix tool names with server name
+	Transport   string            `yaml:"transport"`     // "stdio" | "http"
+	Command     []string          `yaml:"command"`       // stdio only: [executable, args...]
+	URL         string            `yaml:"url"`           // http only
+	PrefixTools bool              `yaml:"prefix_tools"`  // prefix tool names with server name
 	Env         map[string]string `yaml:"env,omitempty"` // extra env vars injected into the subprocess (stdio) or passed to HTTP headers (future)
 }
 
@@ -329,6 +352,49 @@ func (c *Config) applyDefaults() {
 	if c.Filter.InjectionDetection == nil {
 		t := true
 		c.Filter.InjectionDetection = &t
+	}
+
+	// Context-mode defaults.
+	if c.Agent.ContextMode.Mode == "" {
+		c.Agent.ContextMode.Mode = ContextModeOff
+	}
+
+	// Set mode-specific defaults
+	switch c.Agent.ContextMode.Mode {
+	case ContextModeAuto:
+		if c.Agent.ContextMode.ShellMaxOutput == 0 {
+			c.Agent.ContextMode.ShellMaxOutput = 4096
+		}
+		if c.Agent.ContextMode.FileChunkSize == 0 {
+			c.Agent.ContextMode.FileChunkSize = 2000
+		}
+		// AutoIndexOutputs defaults to true in auto mode
+		if c.Agent.ContextMode.AutoIndexOutputs == nil {
+			t := true
+			c.Agent.ContextMode.AutoIndexOutputs = &t
+		}
+	case ContextModeConservative:
+		if c.Agent.ContextMode.ShellMaxOutput == 0 {
+			c.Agent.ContextMode.ShellMaxOutput = 8192
+		}
+		if c.Agent.ContextMode.FileChunkSize == 0 {
+			c.Agent.ContextMode.FileChunkSize = 4000
+		}
+		// AutoIndexOutputs defaults to false for conservative (zero-value)
+	case ContextModeOff:
+		// Off mode doesn't need specific defaults for ShellMaxOutput/FileChunkSize
+		// They remain at zero values
+	}
+
+	// Common defaults for all modes
+	if c.Agent.ContextMode.SandboxTimeout == 0 {
+		c.Agent.ContextMode.SandboxTimeout = 30 * time.Second
+	}
+	if c.Agent.ContextMode.SandboxKeepFirst == 0 {
+		c.Agent.ContextMode.SandboxKeepFirst = 20
+	}
+	if c.Agent.ContextMode.SandboxKeepLast == 0 {
+		c.Agent.ContextMode.SandboxKeepLast = 10
 	}
 }
 

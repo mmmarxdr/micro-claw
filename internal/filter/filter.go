@@ -12,6 +12,86 @@ import (
 // return a new value. The string return is the FilterName for metrics.
 type FilterFunc func(input json.RawMessage, result tool.ToolResult, cfg config.FilterConfig) (tool.ToolResult, string)
 
+// PreExecuteFunc is a hook that can run before tool execution.
+// When context‑mode is enabled, it can inspect the input and configuration
+// to decide whether to short‑circuit execution.
+// Returns (result, true) to skip execution, (_, false) to proceed.
+type PreExecuteFunc func(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool)
+
+// PreApply runs before tool execution.
+// When context‑mode is enabled (auto|conservative), it can intercept the call
+// and return (result, true) to skip the actual tool execution.
+// Returns (result, false) to let execution proceed normally.
+func PreApply(toolName string, input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
+	// If context-mode is off, never intercept
+	if cfg.Mode == config.ContextModeOff {
+		return tool.ToolResult{}, false
+	}
+
+	// Handle supported tools
+	switch toolName {
+	case "shell_exec":
+		return preApplyShell(input, cfg)
+	case "read_file":
+		return preApplyFileRead(input, cfg)
+	default:
+		// Unsupported tool - continue execution
+		return tool.ToolResult{}, false
+	}
+}
+
+// preApplyShell handles shell_exec tool pre-execution.
+// Phase 2: extracts command and validates config, but doesn't intercept yet.
+// Phase 3+: will return synthetic execution with byte limiting.
+func preApplyShell(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
+	// Extract command from JSON
+	var params struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		// Invalid JSON - can't intercept, let execution handle the error
+		return tool.ToolResult{}, false
+	}
+
+	if params.Command == "" {
+		// Empty command - let execution handle the validation
+		return tool.ToolResult{}, false
+	}
+
+	// Phase 2: We have the command and config (cfg.ShellMaxOutput),
+	// but we don't intercept yet. Sandbox implementation comes in Phase 3.
+	// For now, just return false to continue normal execution.
+
+	// TODO: In Phase 3, create synthetic execution with byte limiting
+	// based on cfg.ShellMaxOutput
+
+	return tool.ToolResult{}, false
+}
+
+// preApplyFileRead handles read_file tool pre-execution.
+// Phase 2: extracts path and validates config, but doesn't intercept yet.
+// Phase 3+: will apply chunk size limiting.
+func preApplyFileRead(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
+	// Extract path from JSON
+	var params struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		// Invalid JSON - can't intercept
+		return tool.ToolResult{}, false
+	}
+
+	if params.Path == "" {
+		// Empty path - let execution handle validation
+		return tool.ToolResult{}, false
+	}
+
+	// Phase 2: We have the path and config (cfg.FileChunkSize),
+	// but we don't intercept yet. Chunking implementation comes later.
+
+	return tool.ToolResult{}, false
+}
+
 // Apply post-processes a tool result before it enters the conversation context.
 // It is a zero-allocation no-op when cfg.Enabled is false.
 // Error results (result.IsError == true) are never filtered.
