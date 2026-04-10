@@ -25,7 +25,9 @@ type PreExecuteFunc func(input json.RawMessage, cfg config.ContextModeConfig) (t
 // When context‑mode is enabled (auto|conservative), it can intercept the call
 // and return (result, true) to skip the actual tool execution.
 // Returns (result, false) to let execution proceed normally.
-func PreApply(toolName string, input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
+// The ctx parameter is propagated to any sandboxed sub-process so that
+// parent cancellation/timeout reaches commands started here.
+func PreApply(ctx context.Context, toolName string, input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
 	// If context-mode is off, never intercept
 	if cfg.Mode == config.ContextModeOff {
 		return tool.ToolResult{}, false
@@ -34,7 +36,7 @@ func PreApply(toolName string, input json.RawMessage, cfg config.ContextModeConf
 	// Handle supported tools
 	switch toolName {
 	case "shell_exec":
-		return preApplyShell(input, cfg)
+		return preApplyShell(ctx, input, cfg)
 	case "read_file":
 		return preApplyFileRead(input, cfg)
 	default:
@@ -45,7 +47,7 @@ func PreApply(toolName string, input json.RawMessage, cfg config.ContextModeConf
 
 // preApplyShell handles shell_exec tool pre-execution.
 // When context-mode is enabled, intercepts and runs via Sandbox with byte limiting.
-func preApplyShell(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
+func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
 	var params struct {
 		Command string `json:"command"`
 	}
@@ -65,7 +67,7 @@ func preApplyShell(input json.RawMessage, cfg config.ContextModeConfig) (tool.To
 		KeepLastN:      cfg.SandboxKeepLast,
 	}
 
-	result, err := sb.Run(context.Background(), "sh", "-c", params.Command)
+	result, err := sb.Run(ctx, "sh", "-c", params.Command)
 	if err != nil {
 		// Sandbox error (e.g. timeout) — return as error result, skip execution
 		return tool.ToolResult{

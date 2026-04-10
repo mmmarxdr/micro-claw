@@ -187,7 +187,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				// Task 1: PreApply hook - call before tool execution when context_mode is enabled
 				// If PreApply returns (result, true), skip execution and use the result directly
 				if a.ctxModeCfg.Mode != config.ContextModeOff {
-					if preResult, shouldSkip := filter.PreApply(tc.Name, tc.Input, a.ctxModeCfg); shouldSkip {
+					if preResult, shouldSkip := filter.PreApply(loopCtx, tc.Name, tc.Input, a.ctxModeCfg); shouldSkip {
 						result = preResult
 						skippedByPreApply = true
 						slog.Debug("tool execution skipped by PreApply", "tool", tc.Name)

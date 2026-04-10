@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -768,7 +769,7 @@ func TestPreApply_ContextModeOff_ReturnsFalse(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo hello"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if shouldSkip {
 		t.Errorf("PreApply with Mode=off returned shouldSkip=true, want false")
@@ -789,7 +790,7 @@ func TestPreApply_ShellToolWithMaxOutputHint(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo hello"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if !shouldSkip {
 		t.Errorf("PreApply should intercept shell_exec in auto mode, got shouldSkip=false")
@@ -810,7 +811,7 @@ func TestPreApply_FileReadToolWithChunkSize(t *testing.T) {
 	}
 	input := json.RawMessage(`{"path": "/tmp/test.txt"}`)
 
-	result, shouldSkip := PreApply("read_file", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "read_file", input, cfg)
 
 	// For Phase 2, PreApply doesn't actually intercept yet - returns false
 	if shouldSkip {
@@ -826,7 +827,7 @@ func TestPreApply_UnsupportedToolReturnsFalse(t *testing.T) {
 	}
 	input := json.RawMessage(`{}`)
 
-	result, shouldSkip := PreApply("unknown_tool", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "unknown_tool", input, cfg)
 
 	if shouldSkip {
 		t.Errorf("PreApply for unknown tool returned shouldSkip=true, want false")
@@ -847,7 +848,7 @@ func TestPreApply_ConservativeModeReturnsTrue(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo test"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if !shouldSkip {
 		t.Errorf("PreApply with conservative mode should intercept, got shouldSkip=false")
@@ -868,7 +869,7 @@ func TestPreApply_AutoModeIntercepts(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo test"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if !shouldSkip {
 		t.Errorf("PreApply with auto mode should intercept, got shouldSkip=false")
@@ -889,7 +890,7 @@ func TestPreApply_ShellTool_AutoMode_ExecutesCommand(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo hello world"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if !shouldSkip {
 		t.Errorf("PreApply for shell_exec in auto mode should intercept (Phase 3)")
@@ -909,7 +910,7 @@ func TestPreApply_ShellTool_ConservativeMode_HigherLimit(t *testing.T) {
 	}
 	input := json.RawMessage(`{"command": "echo found"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if !shouldSkip {
 		t.Errorf("PreApply for shell_exec in conservative mode should intercept")
@@ -926,7 +927,7 @@ func TestPreApply_ShellTool_InvalidJSON_ReturnsFalse(t *testing.T) {
 	// Invalid JSON - missing command field
 	input := json.RawMessage(`{"not_command": "test"}`)
 
-	result, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
 
 	if shouldSkip {
 		t.Errorf("PreApply with invalid JSON should return false, got true")

@@ -67,7 +67,7 @@ func TestBatchExecTool_StopOnError(t *testing.T) {
 
 	// Should have error in result due to failed command
 	if !result.IsError {
-		t.Logf("Result content: %s", result.Content)
+		t.Errorf("Expected IsError=true after failed command with stop_on_error, got false. Content: %s", result.Content)
 	}
 
 	// Only first two commands should have been attempted

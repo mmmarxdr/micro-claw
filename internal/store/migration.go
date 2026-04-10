@@ -242,22 +242,27 @@ func (s *SQLiteStore) migrateV3() error {
 // searching tool execution outputs. The table uses the porter tokenizer for
 // improved full-text search. Advances schema_version to 4.
 func (s *SQLiteStore) migrateV4() error {
-	 tx, err := s.db.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// Create the tool_outputs FTS5 virtual table with porter tokenizer
+	// Create the tool_outputs FTS5 virtual table with porter tokenizer.
+	// Metadata columns (id, truncated, exit_code, timestamp) are marked
+	// UNINDEXED — they are stored and retrievable but not part of the FTS
+	// index, which keeps disk usage down and prevents IDs/timestamps from
+	// polluting MATCH search results. Searchable columns are tool_name,
+	// command, and content.
 	if _, err := tx.Exec(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS tool_outputs USING fts5(
-			id,
+			id UNINDEXED,
 			tool_name,
 			command,
 			content,
-			truncated,
-			exit_code,
-			timestamp,
+			truncated UNINDEXED,
+			exit_code UNINDEXED,
+			timestamp UNINDEXED,
 			tokenize="porter unicode61"
 		)
 	`); err != nil {

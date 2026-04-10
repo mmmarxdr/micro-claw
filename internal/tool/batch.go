@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -121,8 +122,7 @@ func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (To
 				Timestamp: time.Now().UTC(),
 			})
 			if indexErr != nil {
-				// Log but don't fail
-				_ = fmt.Errorf("indexing output: %w", indexErr)
+				slog.Warn("batch_exec: failed to index output", "error", indexErr, "command_index", i)
 			}
 
 			if input.StopOnError {
