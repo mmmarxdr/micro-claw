@@ -104,6 +104,11 @@ func (s *SQLiteStore) initSchemaVersioned() error {
 			return fmt.Errorf("migration v3: %w", err)
 		}
 	}
+	if version < 4 {
+		if err := s.migrateV4(); err != nil {
+			return fmt.Errorf("migration v4: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -228,6 +233,39 @@ func (s *SQLiteStore) migrateV3() error {
 
 	if _, err := tx.Exec("UPDATE schema_version SET version = 3"); err != nil {
 		return fmt.Errorf("updating schema version to 3: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// migrateV4 creates the tool_outputs FTS5 virtual table for indexing and
+// searching tool execution outputs. The table uses the porter tokenizer for
+// improved full-text search. Advances schema_version to 4.
+func (s *SQLiteStore) migrateV4() error {
+	 tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Create the tool_outputs FTS5 virtual table with porter tokenizer
+	if _, err := tx.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS tool_outputs USING fts5(
+			id,
+			tool_name,
+			command,
+			content,
+			truncated,
+			exit_code,
+			timestamp,
+			tokenize="porter unicode61"
+		)
+	`); err != nil {
+		return fmt.Errorf("creating tool_outputs FTS5 table: %w", err)
+	}
+
+	if _, err := tx.Exec("UPDATE schema_version SET version = 4"); err != nil {
+		return fmt.Errorf("updating schema version to 4: %w", err)
 	}
 
 	return tx.Commit()

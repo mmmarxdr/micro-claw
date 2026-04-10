@@ -523,6 +523,30 @@ func (c *Config) validate() error {
 		return fmt.Errorf("agent.prune_threshold must be between 0 and 1.0")
 	}
 
+	// Context-mode validation.
+	if c.Agent.ContextMode.Mode != ContextModeOff &&
+		c.Agent.ContextMode.Mode != ContextModeConservative &&
+		c.Agent.ContextMode.Mode != ContextModeAuto {
+		return fmt.Errorf("agent.context_mode.mode must be 'off', 'conservative', or 'auto', got %q", c.Agent.ContextMode.Mode)
+	}
+	if c.Agent.ContextMode.Mode != ContextModeOff {
+		if c.Agent.ContextMode.ShellMaxOutput < 0 {
+			return fmt.Errorf("agent.context_mode.shell_max_output must not be negative")
+		}
+		if c.Agent.ContextMode.FileChunkSize < 0 {
+			return fmt.Errorf("agent.context_mode.file_chunk_size must not be negative")
+		}
+		if c.Agent.ContextMode.SandboxTimeout <= 0 {
+			return fmt.Errorf("agent.context_mode.sandbox_timeout must be positive")
+		}
+		if c.Agent.ContextMode.SandboxKeepFirst < 0 {
+			return fmt.Errorf("agent.context_mode.sandbox_keep_first must not be negative")
+		}
+		if c.Agent.ContextMode.SandboxKeepLast < 0 {
+			return fmt.Errorf("agent.context_mode.sandbox_keep_last must not be negative")
+		}
+	}
+
 	return nil
 }
 

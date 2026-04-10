@@ -128,7 +128,7 @@ func (s *Sandbox) Run(ctx context.Context, name string, args ...string) (Sandbox
 	cmd.Stderr = stderrWriter
 
 	start := time.Now()
-	cmd.Run() // Error handled below via ProcessState
+	_ = cmd.Run() // Error handled below via ProcessState
 	duration := time.Since(start)
 
 	// Extract metrics

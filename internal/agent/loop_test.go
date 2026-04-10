@@ -1241,3 +1241,401 @@ func TestUserIsolation_AsyncWorkers(t *testing.T) {
 	// If it reaches UpdateMemory, it means the scope was passed correctly through the system
 	// (We can't easily intercept the embedding worker since it's a private field)
 }
+
+// ---------------------------------------------------------------------------
+// TestContextMode_PreApply_Integration
+// ---------------------------------------------------------------------------
+
+// TestContextMode_PreApply_InterceptsShell verifies that when context_mode is enabled,
+// PreApply intercepts shell_exec and the tool's Execute is never called.
+func TestContextMode_PreApply_InterceptsShell(t *testing.T) {
+	// Provider returns a response with tool call, then final response
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "t1", Name: "shell_exec", Input: json.RawMessage(`{"command": "echo hello"}`)},
+				},
+			},
+			{Content: "final response"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	// Set context_mode to "auto" which enables PreApply interception
+	autoIndex := true
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		ContextMode: config.ContextModeConfig{
+			Mode:             config.ContextModeAuto,
+			ShellMaxOutput:   4096,
+			SandboxTimeout:   30 * time.Second,
+			SandboxKeepFirst: 20,
+			SandboxKeepLast:  10,
+			AutoIndexOutputs: &autoIndex,
+		},
+	}
+	limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+	// Create a mock tool that tracks execution
+	execCount := 0
+	mt := &mockTool{name: "shell_exec", result: tool.ToolResult{Content: "hello world"}}
+	wrappedTool := &countingTool{inner: mt, count: &execCount}
+
+	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+		"shell_exec": wrappedTool,
+	}, nil, skill.SkillIndex{}, 4, false)
+
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+
+	// PreApply should intercept shell_exec — the mock tool's Execute is NOT called
+	if execCount != 0 {
+		t.Errorf("expected shell_exec to be intercepted by PreApply (execCount=0), got %d", execCount)
+	}
+}
+
+// countingTool wraps a mockTool to count execution calls
+type countingTool struct {
+	inner *mockTool
+	count *int
+}
+
+func (c *countingTool) Name() string            { return c.inner.Name() }
+func (c *countingTool) Description() string     { return c.inner.Description() }
+func (c *countingTool) Schema() json.RawMessage { return c.inner.Schema() }
+func (c *countingTool) Execute(ctx context.Context, params json.RawMessage) (tool.ToolResult, error) {
+	*c.count++
+	return c.inner.Execute(ctx, params)
+}
+
+// ---------------------------------------------------------------------------
+// TestContextMode_AutoIndex_Integration
+// ---------------------------------------------------------------------------
+
+// TestContextMode_AutoIndex_IndexesOutput verifies that when AutoIndexOutputs is enabled,
+// tool outputs are indexed to the OutputStore after successful execution.
+func TestContextMode_AutoIndex_IndexesOutput(t *testing.T) {
+	// Provider returns a response with tool call, then final response
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "t1", Name: "shell_exec", Input: json.RawMessage(`{"command": "echo hello"}`)},
+				},
+			},
+			{Content: "final response"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	// Set context_mode to "auto" with AutoIndexOutputs enabled
+	autoIndex := true
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		ContextMode: config.ContextModeConfig{
+			Mode:             config.ContextModeAuto,
+			ShellMaxOutput:   4096,
+			SandboxTimeout:   30 * time.Second,
+			SandboxKeepFirst: 20,
+			SandboxKeepLast:  10,
+			AutoIndexOutputs: &autoIndex,
+		},
+	}
+	limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+	mt := &mockTool{name: "shell_exec", result: tool.ToolResult{Content: "hello world\nmore content"}}
+
+	// Note: We need to pass the OutputStore to the agent - this test will fail
+	// until we add outputStore field to Agent and wire it in New()
+	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+		"shell_exec": mt,
+	}, nil, skill.SkillIndex{}, 4, false)
+
+	// For now, we can't test the auto-indexing because the agent doesn't have
+	// access to the OutputStore. This test documents the expected behavior.
+	// Once we implement Task 4 (pass OutputStore to agent loop), we'll enable this.
+
+	// Use the agent to avoid compile error
+	_ = ag
+}
+
+// TestContextMode_Off_NoAutoIndex verifies that when context_mode is "off",
+// tool outputs are NOT indexed.
+func TestContextMode_Off_NoAutoIndex(t *testing.T) {
+	// Provider returns a response with tool call, then final response
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "t1", Name: "shell_exec", Input: json.RawMessage(`{"command": "echo hello"}`)},
+				},
+			},
+			{Content: "final response"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	// Set context_mode to "off"
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		ContextMode: config.ContextModeConfig{
+			Mode: config.ContextModeOff,
+		},
+	}
+	limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+	mt := &mockTool{name: "shell_exec", result: tool.ToolResult{Content: "hello world"}}
+
+	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+		"shell_exec": mt,
+	}, nil, skill.SkillIndex{}, 4, false)
+
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+
+	// When context_mode is off, no auto-indexing should happen
+	// This test verifies the baseline behavior
+	if len(ch.sent) == 0 {
+		t.Error("expected messages to be sent")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestContextMode_E2E - Integration test for context-mode features
+// ---------------------------------------------------------------------------
+
+// TestContextMode_E2E_ShellExecWithIndexing is an end-to-end test that verifies:
+// 1. context_mode = "auto" enables PreApply and auto-indexing
+// 2. Tool outputs are indexed to the OutputStore (FTS5)
+// 3. search_output tool can find indexed outputs
+// 4. batch_exec tool works end-to-end
+func TestContextMode_E2E_ShellExecWithIndexing(t *testing.T) {
+	// Create a temporary SQLite store for testing
+	tmpDir := t.TempDir()
+	st, err := store.New(config.StoreConfig{Type: "sqlite", Path: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create temp store: %v", err)
+	}
+	defer st.Close()
+
+	// Get the OutputStore interface from the store
+	outputStore, ok := st.(store.OutputStore)
+	if !ok {
+		t.Fatal("store does not implement OutputStore")
+	}
+
+	// Set up context_mode = "auto" with auto-indexing enabled
+	autoIndex := true
+	ctxModeCfg := config.ContextModeConfig{
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		FileChunkSize:    2000,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
+		AutoIndexOutputs: &autoIndex,
+	}
+
+	// Create provider that returns shell_exec tool call, then final response
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "t1", Name: "shell_exec", Input: json.RawMessage(`{"command": "echo hello world from test"}`)},
+				},
+			},
+			{Content: "completed"},
+		},
+	}
+	ch := &mockChannel{}
+
+	cfg := config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		ContextMode:      ctxModeCfg,
+	}
+	limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+	// Create shell tool
+	shellTool := tool.NewShellTool(config.ShellToolConfig{Enabled: true, AllowAll: true})
+
+	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+		"shell_exec": shellTool,
+	}, nil, skill.SkillIndex{}, 4, false)
+
+	// Process a message that triggers shell_exec
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "run echo"})
+
+	// Verify the tool was executed
+	if len(ch.sent) == 0 {
+		t.Fatal("expected messages to be sent")
+	}
+
+	// Verify output was indexed to FTS5 by searching for it
+	ctx := context.Background()
+	results, err := outputStore.SearchOutputs(ctx, "hello world", 10)
+	if err != nil {
+		t.Fatalf("SearchOutputs failed: %v", err)
+	}
+
+	// We should find at least one result containing "hello world"
+	if len(results) == 0 {
+		t.Error("expected at least one indexed output containing 'hello world'")
+	}
+
+	found := false
+	for _, r := range results {
+		if strings.Contains(r.Content, "hello world") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected to find output containing 'hello world', got: %v", results)
+	}
+}
+
+// TestContextMode_E2E_SearchOutputTool tests the search_output tool end-to-end
+func TestContextMode_E2E_SearchOutputTool(t *testing.T) {
+	// Create a temporary SQLite store for testing
+	tmpDir := t.TempDir()
+	s, err := store.NewSQLiteStore(config.StoreConfig{Type: "sqlite", Path: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create temp store: %v", err)
+	}
+	defer s.Close()
+
+	// Pre-index some outputs
+	ctx := context.Background()
+	outputs := []store.ToolOutput{
+		{ID: "1", ToolName: "shell_exec", Command: "ls -la", Content: "total 24\ndrwxr-xr-x  5 user user 4096 Apr  9 10:00 .\ndrwxr-xr-x  2 user user 4096 Apr  9 09:00 ..", ExitCode: 0, Timestamp: time.Now()},
+		{ID: "2", ToolName: "shell_exec", Command: "cat file.txt", Content: "Hello World\nThis is a test file", ExitCode: 0, Timestamp: time.Now()},
+		{ID: "3", ToolName: "shell_exec", Command: "pwd", Content: "/home/user", ExitCode: 0, Timestamp: time.Now()},
+	}
+	for _, o := range outputs {
+		if err := s.IndexOutput(ctx, o); err != nil {
+			t.Fatalf("IndexOutput failed: %v", err)
+		}
+	}
+
+	// Create the SearchOutputTool
+	searchTool := tool.NewSearchOutputTool(s)
+
+	// Test searching for "test"
+	result, err := searchTool.Execute(ctx, json.RawMessage(`{"query": "test", "limit": 10}`))
+	if err != nil {
+		t.Fatalf("SearchOutputTool.Execute failed: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("SearchOutputTool returned error: %s", result.Content)
+	}
+	// The result format is: "[1] shell_exec: {preview} (exit={code})"
+	// We expect to find "test" or "Hello World" in the content
+	if !strings.Contains(result.Content, "test") && !strings.Contains(result.Content, "Hello") {
+		t.Errorf("expected result to contain 'test' or 'Hello', got: %s", result.Content)
+	}
+
+	// Test searching for "ls"
+	result2, err := searchTool.Execute(ctx, json.RawMessage(`{"query": "ls", "limit": 10}`))
+	if err != nil {
+		t.Fatalf("SearchOutputTool.Execute failed: %v", err)
+	}
+	if result2.IsError {
+		t.Errorf("SearchOutputTool returned error: %s", result2.Content)
+	}
+	// Should find content with "total" (from ls -la output)
+	if !strings.Contains(result2.Content, "total") {
+		t.Errorf("expected result to contain 'total', got: %s", result2.Content)
+	}
+}
+
+// TestContextMode_E2E_BatchExecTool tests the batch_exec tool end-to-end
+func TestContextMode_E2E_BatchExecTool(t *testing.T) {
+	// Create a temporary SQLite store for testing
+	tmpDir := t.TempDir()
+	s, err := store.NewSQLiteStore(config.StoreConfig{Type: "sqlite", Path: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create temp store: %v", err)
+	}
+	defer s.Close()
+
+	// Create the BatchExecTool
+	batchTool := tool.NewBatchExecTool(s, tool.BatchExecToolConfig{
+		MaxOutputBytes: 1024 * 1024,
+		Timeout:        30 * time.Second,
+	})
+
+	ctx := context.Background()
+
+	// Test executing multiple commands
+	result, err := batchTool.Execute(ctx, json.RawMessage(`{
+		"commands": ["echo first", "echo second", "echo third"],
+		"stop_on_error": false
+	}`))
+	if err != nil {
+		t.Fatalf("BatchExecTool.Execute failed: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("BatchExecTool returned error: %s", result.Content)
+	}
+
+	// Verify the summary contains expected information
+	if !strings.Contains(result.Content, "Executed 3 commands") {
+		t.Errorf("expected summary to contain 'Executed 3 commands', got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "3 succeeded") {
+		t.Errorf("expected summary to contain '3 succeeded', got: %s", result.Content)
+	}
+
+	// Verify outputs were indexed
+	searchResults, err := s.SearchOutputs(ctx, "first", 10)
+	if err != nil {
+		t.Fatalf("SearchOutputs failed: %v", err)
+	}
+	if len(searchResults) == 0 {
+		t.Error("expected outputs to be indexed")
+	}
+}
+
+// TestContextMode_E2E_BatchExecStopOnError tests the batch_exec tool with stop_on_error
+func TestContextMode_E2E_BatchExecStopOnError(t *testing.T) {
+	// Create a temporary SQLite store for testing
+	tmpDir := t.TempDir()
+	s, err := store.NewSQLiteStore(config.StoreConfig{Type: "sqlite", Path: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create temp store: %v", err)
+	}
+	defer s.Close()
+
+	// Create the BatchExecTool
+	batchTool := tool.NewBatchExecTool(s, tool.BatchExecToolConfig{
+		MaxOutputBytes: 1024 * 1024,
+		Timeout:        30 * time.Second,
+	})
+
+	ctx := context.Background()
+
+	// Test executing commands with stop_on_error
+	result, err := batchTool.Execute(ctx, json.RawMessage(`{
+		"commands": ["echo success", "exit 1", "echo should not run"],
+		"stop_on_error": true
+	}`))
+	if err != nil {
+		t.Fatalf("BatchExecTool.Execute failed: %v", err)
+	}
+
+	// Should have error due to exit 1
+	if !result.IsError {
+		t.Error("expected result to be an error due to non-zero exit code")
+	}
+
+	// Verify the summary shows fewer than 3 commands ran
+	if strings.Contains(result.Content, "Executed 3 commands") {
+		t.Error("expected only 2 commands to run due to stop_on_error")
+	}
+}

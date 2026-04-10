@@ -484,9 +484,114 @@ func (s *SQLiteStore) UpdateMemory(ctx context.Context, scopeID string, entry Me
 	return nil
 }
 
+// ─── OutputStore implementation ───────────────────────────────────────────────
+
+// IndexOutput stores a tool output in the FTS5 table for later search.
+func (s *SQLiteStore) IndexOutput(ctx context.Context, output ToolOutput) error {
+	// Store timestamp as Unix epoch for reliable storage/retrieval
+	timestampUnix := output.Timestamp.Unix()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tool_outputs (id, tool_name, command, content, truncated, exit_code, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		output.ID,
+		output.ToolName,
+		output.Command,
+		output.Content,
+		output.Truncated,
+		output.ExitCode,
+		timestampUnix,
+	)
+	if err != nil {
+		return fmt.Errorf("indexing output %s: %w", output.ID, err)
+	}
+	return nil
+}
+
+// SearchOutputs searches indexed tool outputs using FTS5.
+// Returns matching outputs sorted by relevance (BM25), limited to limit results.
+func (s *SQLiteStore) SearchOutputs(ctx context.Context, query string, limit int) ([]ToolOutput, error) {
+	var rows *sql.Rows
+	var err error
+
+	const cols = `id, tool_name, command, content, truncated, exit_code, timestamp`
+
+	if query == "" || query == "*" {
+		// Return all outputs ordered by timestamp descending
+		q := `SELECT ` + cols + ` FROM tool_outputs ORDER BY timestamp DESC`
+		var args []any
+		if limit > 0 {
+			q += ` LIMIT ?`
+			args = append(args, limit)
+		}
+		rows, err = s.db.QueryContext(ctx, q, args...)
+	} else {
+		// Build FTS5 query and search
+		ftsQuery := BuildFTSQuery(query)
+		if ftsQuery == "" {
+			// Fallback to LIKE search if no keywords
+			likePattern := "%" + strings.ToLower(query) + "%"
+			q := `SELECT ` + cols + `
+			      FROM tool_outputs
+			      WHERE lower(content) LIKE ? OR lower(tool_name) LIKE ? OR lower(command) LIKE ?
+			      ORDER BY timestamp DESC`
+			args := []any{likePattern, likePattern, likePattern}
+			if limit > 0 {
+				q += ` LIMIT ?`
+				args = append(args, limit)
+			}
+			rows, err = s.db.QueryContext(ctx, q, args...)
+		} else {
+			q := `SELECT ` + cols + `
+			      FROM tool_outputs
+			      WHERE tool_outputs MATCH ?
+			      ORDER BY bm25(tool_outputs) ASC`
+			args := []any{ftsQuery}
+			if limit > 0 {
+				q += ` LIMIT ?`
+				args = append(args, limit)
+			}
+			rows, err = s.db.QueryContext(ctx, q, args...)
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("searching outputs: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ToolOutput
+	for rows.Next() {
+		var output ToolOutput
+		var timestampUnix int64
+		if err := rows.Scan(
+			&output.ID,
+			&output.ToolName,
+			&output.Command,
+			&output.Content,
+			&output.Truncated,
+			&output.ExitCode,
+			&timestampUnix,
+		); err != nil {
+			return nil, fmt.Errorf("scanning output row: %w", err)
+		}
+		// Convert Unix epoch to time.Time
+		output.Timestamp = time.Unix(timestampUnix, 0).UTC()
+		results = append(results, output)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating output rows: %w", err)
+	}
+
+	if results == nil {
+		results = []ToolOutput{}
+	}
+	return results, nil
+}
+
 // Compile-time assertions.
 var _ SecretsStore = (*SQLiteStore)(nil)
 var _ CronStore = (*SQLiteStore)(nil)
+var _ OutputStore = (*SQLiteStore)(nil)
 
 // ─── CronStore implementation ─────────────────────────────────────────────────
 

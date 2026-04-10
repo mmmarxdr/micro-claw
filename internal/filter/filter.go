@@ -1,7 +1,10 @@
 package filter
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"microagent/internal/config"
 	"microagent/internal/tool"
@@ -41,31 +44,62 @@ func PreApply(toolName string, input json.RawMessage, cfg config.ContextModeConf
 }
 
 // preApplyShell handles shell_exec tool pre-execution.
-// Phase 2: extracts command and validates config, but doesn't intercept yet.
-// Phase 3+: will return synthetic execution with byte limiting.
+// When context-mode is enabled, intercepts and runs via Sandbox with byte limiting.
 func preApplyShell(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
-	// Extract command from JSON
 	var params struct {
 		Command string `json:"command"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
-		// Invalid JSON - can't intercept, let execution handle the error
 		return tool.ToolResult{}, false
 	}
 
 	if params.Command == "" {
-		// Empty command - let execution handle the validation
 		return tool.ToolResult{}, false
 	}
 
-	// Phase 2: We have the command and config (cfg.ShellMaxOutput),
-	// but we don't intercept yet. Sandbox implementation comes in Phase 3.
-	// For now, just return false to continue normal execution.
+	// Create sandbox with context-mode limits
+	sb := &tool.Sandbox{
+		MaxOutputBytes: cfg.ShellMaxOutput,
+		Timeout:        cfg.SandboxTimeout,
+		KeepFirstN:     cfg.SandboxKeepFirst,
+		KeepLastN:      cfg.SandboxKeepLast,
+	}
 
-	// TODO: In Phase 3, create synthetic execution with byte limiting
-	// based on cfg.ShellMaxOutput
+	result, err := sb.Run(context.Background(), "sh", "-c", params.Command)
+	if err != nil {
+		// Sandbox error (e.g. timeout) — return as error result, skip execution
+		return tool.ToolResult{
+			IsError: true,
+			Content: fmt.Sprintf("sandbox execution failed: %v", err),
+			Meta: map[string]string{
+				"command":   params.Command,
+				"exit_code": "-1",
+			},
+		}, true
+	}
 
-	return tool.ToolResult{}, false
+	// Build result from sandbox output
+	exitCode := fmt.Sprintf("%d", result.Metrics.ExitCode)
+	meta := map[string]string{
+		"command":   params.Command,
+		"exit_code": exitCode,
+	}
+
+	content := result.Summary
+	if len(strings.TrimSpace(content)) == 0 {
+		content = "(command successful, no output)"
+	}
+
+	isError := result.Metrics.ExitCode != 0
+	if isError {
+		content = fmt.Sprintf("Command failed (exit %d)\nOutput: %s", result.Metrics.ExitCode, content)
+	}
+
+	return tool.ToolResult{
+		Content: content,
+		IsError: isError,
+		Meta:    meta,
+	}, true // true = skip normal execution
 }
 
 // preApplyFileRead handles read_file tool pre-execution.

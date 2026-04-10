@@ -191,7 +191,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	toolsRegistry := tool.BuildRegistry(cfg.Tools)
+	toolsRegistry := tool.BuildRegistrySimple(cfg.Tools)
 
 	// Load skill files — non-fatal, warn+skip per file.
 	// Skills are merged before MCP so that user-authored skill tools win on collision.
@@ -279,6 +279,29 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+
+	// Register context-mode tools (BatchExecTool, SearchOutputTool) if enabled
+	if cfg.Agent.ContextMode.Mode != config.ContextModeOff {
+		if outputStore, ok := st.(store.OutputStore); ok {
+			batchTool := tool.NewBatchExecTool(outputStore, tool.BatchExecToolConfig{
+				MaxOutputBytes: cfg.Agent.ContextMode.ShellMaxOutput * 2,
+				Timeout:        cfg.Agent.ContextMode.SandboxTimeout,
+			})
+			searchTool := tool.NewSearchOutputTool(outputStore)
+
+			// Add to registry (won't overwrite existing tools)
+			if _, exists := toolsRegistry[batchTool.Name()]; !exists {
+				toolsRegistry[batchTool.Name()] = batchTool
+				slog.Info("context-mode: registered batch_exec tool")
+			}
+			if _, exists := toolsRegistry[searchTool.Name()]; !exists {
+				toolsRegistry[searchTool.Name()] = searchTool
+				slog.Info("context-mode: registered search_output tool")
+			}
+		} else {
+			slog.Warn("context-mode: store does not implement OutputStore, context-mode tools not available")
+		}
+	}
 
 	// Type-assert CronStore when cron is enabled.
 	var cronSt store.CronStore

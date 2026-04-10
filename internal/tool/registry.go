@@ -2,12 +2,15 @@ package tool
 
 import (
 	"microagent/internal/config"
+	"microagent/internal/store"
 )
 
 // BuildRegistry constructs the built-in tool map from config.
 // MCP tools are merged in by the caller (main.go) via MergeTools,
 // which avoids an import cycle between internal/tool and internal/mcp.
-func BuildRegistry(cfg config.ToolsConfig) map[string]Tool {
+// When ctxModeCfg.Mode is not "off" and outputStore is provided, it also
+// registers BatchExecTool and SearchOutputTool for context-mode features.
+func BuildRegistry(cfg config.ToolsConfig, ctxModeCfg config.ContextModeConfig, outputStore store.OutputStore) map[string]Tool {
 	registry := make(map[string]Tool)
 
 	if cfg.Shell.Enabled {
@@ -29,7 +32,29 @@ func BuildRegistry(cfg config.ToolsConfig) map[string]Tool {
 		registry[ht.Name()] = ht
 	}
 
+	// Register context-mode tools when enabled
+	if ctxModeCfg.Mode != config.ContextModeOff && outputStore != nil {
+		// Register BatchExecTool
+		batchCfg := BatchExecToolConfig{
+			MaxOutputBytes: ctxModeCfg.ShellMaxOutput * 2, // Allow some buffer
+			Timeout:        ctxModeCfg.SandboxTimeout,
+		}
+		batchTool := NewBatchExecTool(outputStore, batchCfg)
+		registry[batchTool.Name()] = batchTool
+
+		// Register SearchOutputTool
+		searchTool := NewSearchOutputTool(outputStore)
+		registry[searchTool.Name()] = searchTool
+	}
+
 	return registry
+}
+
+// BuildRegistrySimple constructs the built-in tool map from config without
+// context-mode tools. This is a convenience function for callers that don't
+// need context-mode features.
+func BuildRegistrySimple(cfg config.ToolsConfig) map[string]Tool {
+	return BuildRegistry(cfg, config.ContextModeConfig{}, nil)
 }
 
 // MergeTools merges external tools (e.g. from MCP) into an existing registry.

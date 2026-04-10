@@ -71,7 +71,7 @@ func TestBuildRegistry(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := BuildRegistry(tc.cfg)
+			reg := BuildRegistrySimple(tc.cfg)
 			if len(reg) != tc.wantLen {
 				t.Errorf("got %d tools, want %d", len(reg), tc.wantLen)
 			}
@@ -998,7 +998,7 @@ func TestBuildRegistry_MCPDisabled(t *testing.T) {
 			File:  config.FileToolConfig{Enabled: true},
 			MCP:   config.MCPConfig{Enabled: false},
 		}
-		reg := BuildRegistry(cfg)
+		reg := BuildRegistrySimple(cfg)
 		// Expect 4 built-in tools: shell_exec, read_file, write_file, list_files
 		if len(reg) != 4 {
 			t.Errorf("expected 4 tools with MCP disabled, got %d", len(reg))

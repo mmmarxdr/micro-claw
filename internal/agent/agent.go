@@ -74,16 +74,18 @@ type Agent struct {
 	config          config.AgentConfig
 	limits          config.LimitsConfig
 	filterCfg       config.FilterConfig
+	ctxModeCfg      config.ContextModeConfig // context-mode configuration
 	channel         channel.Channel
 	provider        provider.Provider
 	store           store.Store
+	outputStore     store.OutputStore // for auto-indexing tool outputs
 	auditor         audit.Auditor
 	tools           map[string]tool.Tool
 	skills          []skill.SkillContent
 	skillIndex      skill.SkillIndex
-	sem             chan struct{} // concurrency semaphore
-	stream          bool         // true when streaming is enabled and provider supports it
-	enricher        *Enricher    // async tag enrichment worker; nil when disabled
+	sem             chan struct{}    // concurrency semaphore
+	stream          bool             // true when streaming is enabled and provider supports it
+	enricher        *Enricher        // async tag enrichment worker; nil when disabled
 	embeddingWorker *EmbeddingWorker // async embedding worker; nil when disabled
 }
 
@@ -134,13 +136,21 @@ func New(
 		}
 	}
 
+	// Extract OutputStore if available (for auto-indexing)
+	var outputStore store.OutputStore
+	if sqlStore, ok := st.(store.OutputStore); ok {
+		outputStore = sqlStore
+	}
+
 	return &Agent{
 		config:          cfg,
 		limits:          limits,
 		filterCfg:       filterCfg,
+		ctxModeCfg:      cfg.ContextMode,
 		channel:         ch,
 		provider:        prov,
 		store:           st,
+		outputStore:     outputStore,
 		auditor:         auditor,
 		tools:           tools,
 		skills:          skills,

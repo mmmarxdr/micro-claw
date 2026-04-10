@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"microagent/internal/config"
 	"microagent/internal/tool"
@@ -778,21 +779,27 @@ func TestPreApply_ContextModeOff_ReturnsFalse(t *testing.T) {
 }
 
 func TestPreApply_ShellToolWithMaxOutputHint(t *testing.T) {
-	// When context mode is "auto", PreApply should return a hint for shell tool
+	// When context mode is "auto", PreApply intercepts shell_exec and runs via sandbox
 	cfg := config.ContextModeConfig{
-		Mode:           config.ContextModeAuto,
-		ShellMaxOutput: 4096,
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
 	}
-	input := json.RawMessage(`{"command": "ls -la"}`)
+	input := json.RawMessage(`{"command": "echo hello"}`)
 
 	result, shouldSkip := PreApply("shell_exec", input, cfg)
 
-	// For Phase 2, PreApply doesn't actually intercept yet - returns false
-	// This test will fail initially (RED), then we implement in Task 2.2
-	if shouldSkip {
-		t.Errorf("Phase 2: PreApply should return false (not yet implemented), got true")
+	if !shouldSkip {
+		t.Errorf("PreApply should intercept shell_exec in auto mode, got shouldSkip=false")
 	}
-	_ = result // Mark as used for now
+	if result.Content == "" {
+		t.Errorf("PreApply returned empty content")
+	}
+	if strings.TrimSpace(result.Content) != "hello" {
+		t.Errorf("PreApply returned %q, want %q", result.Content, "hello")
+	}
 }
 
 func TestPreApply_FileReadToolWithChunkSize(t *testing.T) {
@@ -829,74 +836,86 @@ func TestPreApply_UnsupportedToolReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestPreApply_ConservativeModeReturnsFalse(t *testing.T) {
-	// Conservative mode should also return false in Phase 2
+func TestPreApply_ConservativeModeReturnsTrue(t *testing.T) {
+	// Conservative mode should intercept shell_exec via sandbox
 	cfg := config.ContextModeConfig{
-		Mode:           config.ContextModeConservative,
-		ShellMaxOutput: 8192,
+		Mode:             config.ContextModeConservative,
+		ShellMaxOutput:   8192,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
 	}
 	input := json.RawMessage(`{"command": "echo test"}`)
 
 	result, shouldSkip := PreApply("shell_exec", input, cfg)
 
-	if shouldSkip {
-		t.Errorf("PreApply with conservative mode returned shouldSkip=true, want false")
+	if !shouldSkip {
+		t.Errorf("PreApply with conservative mode should intercept, got shouldSkip=false")
 	}
-	if result.Content != "" {
-		t.Errorf("PreApply with conservative mode returned non-empty content: %q", result.Content)
+	if strings.TrimSpace(result.Content) != "test" {
+		t.Errorf("PreApply returned %q, want %q", result.Content, "test")
 	}
 }
 
-func TestPreApply_AutoModeReturnsFalse(t *testing.T) {
-	// Auto mode should also return false in Phase 2
+func TestPreApply_AutoModeIntercepts(t *testing.T) {
+	// Auto mode should intercept shell_exec via sandbox
 	cfg := config.ContextModeConfig{
-		Mode:           config.ContextModeAuto,
-		ShellMaxOutput: 4096,
-		FileChunkSize:  2000,
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
 	}
 	input := json.RawMessage(`{"command": "echo test"}`)
 
 	result, shouldSkip := PreApply("shell_exec", input, cfg)
 
-	if shouldSkip {
-		t.Errorf("PreApply with auto mode returned shouldSkip=true, want false (Phase 2)")
+	if !shouldSkip {
+		t.Errorf("PreApply with auto mode should intercept, got shouldSkip=false")
 	}
-	if result.Content != "" {
-		t.Errorf("PreApply with auto mode returned non-empty content: %q", result.Content)
+	if strings.TrimSpace(result.Content) != "test" {
+		t.Errorf("PreApply returned %q, want %q", result.Content, "test")
 	}
 }
 
 // Task 2.3: Tests for shell tool PreExecute behavior
-func TestPreApply_ShellTool_AutoMode_ExtractsCommand(t *testing.T) {
+func TestPreApply_ShellTool_AutoMode_ExecutesCommand(t *testing.T) {
 	cfg := config.ContextModeConfig{
-		Mode:           config.ContextModeAuto,
-		ShellMaxOutput: 4096,
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
 	}
-	input := json.RawMessage(`{"command": "ls -la /tmp"}`)
+	input := json.RawMessage(`{"command": "echo hello world"}`)
 
-	_, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply("shell_exec", input, cfg)
 
-	// Phase 2: PreApply should extract command but not intercept yet
-	// The test should verify the command is parsed correctly
-	// For now, just check it doesn't skip
-	if shouldSkip {
-		t.Errorf("Phase 2: PreApply for shell_exec should return false (not yet implemented)")
+	if !shouldSkip {
+		t.Errorf("PreApply for shell_exec in auto mode should intercept (Phase 3)")
 	}
-
-	// TODO: In Phase 3+, verify command extraction and MaxOutputBytes hint
+	if strings.TrimSpace(result.Content) != "hello world" {
+		t.Errorf("PreApply returned %q, want %q", result.Content, "hello world")
+	}
 }
 
 func TestPreApply_ShellTool_ConservativeMode_HigherLimit(t *testing.T) {
 	cfg := config.ContextModeConfig{
-		Mode:           config.ContextModeConservative,
-		ShellMaxOutput: 8192, // Higher limit for conservative
+		Mode:             config.ContextModeConservative,
+		ShellMaxOutput:   8192,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
 	}
-	input := json.RawMessage(`{"command": "find / -name '*.go' 2>/dev/null | head -20"}`)
+	input := json.RawMessage(`{"command": "echo found"}`)
 
-	_, shouldSkip := PreApply("shell_exec", input, cfg)
+	result, shouldSkip := PreApply("shell_exec", input, cfg)
 
-	if shouldSkip {
-		t.Errorf("Phase 2: PreApply for shell_exec should return false")
+	if !shouldSkip {
+		t.Errorf("PreApply for shell_exec in conservative mode should intercept")
+	}
+	if strings.TrimSpace(result.Content) != "found" {
+		t.Errorf("PreApply returned %q, want %q", result.Content, "found")
 	}
 }
 

@@ -180,25 +180,39 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 			var result tool.ToolResult
 			toolStart := time.Now()
+			skippedByPreApply := false
 			if !ok {
 				result = tool.ToolResult{IsError: true, Content: fmt.Sprintf("Tool %s not found", tc.Name)}
 			} else {
-				// Validate the LLM-generated input against the tool's JSON schema
-				// before executing. This catches malformed JSON and missing required
-				// fields early, avoiding panics or confusing errors inside tools.
-				if validErr := validateToolInput(tc.Input, t.Schema()); validErr != nil {
-					slog.Warn("tool input validation failed", "tool", tc.Name, "error", validErr)
-					result = tool.ToolResult{IsError: true, Content: "invalid tool input: " + validErr.Error()}
-				} else {
-					toolTimeout := a.limits.ToolTimeout
-					if toolTimeout == 0 {
-						toolTimeout = 30 * time.Second
+				// Task 1: PreApply hook - call before tool execution when context_mode is enabled
+				// If PreApply returns (result, true), skip execution and use the result directly
+				if a.ctxModeCfg.Mode != config.ContextModeOff {
+					if preResult, shouldSkip := filter.PreApply(tc.Name, tc.Input, a.ctxModeCfg); shouldSkip {
+						result = preResult
+						skippedByPreApply = true
+						slog.Debug("tool execution skipped by PreApply", "tool", tc.Name)
 					}
-					toolCtx, tCancel := context.WithTimeout(loopCtx, toolTimeout)
-					result, err = executeWithRecover(toolCtx, t, tc.Input)
-					tCancel()
-					if err != nil {
-						result = tool.ToolResult{IsError: true, Content: err.Error()}
+				}
+
+				// Only execute if not skipped by PreApply
+				if !skippedByPreApply {
+					// Validate the LLM-generated input against the tool's JSON schema
+					// before executing. This catches malformed JSON and missing required
+					// fields early, avoiding panics or confusing errors inside tools.
+					if validErr := validateToolInput(tc.Input, t.Schema()); validErr != nil {
+						slog.Warn("tool input validation failed", "tool", tc.Name, "error", validErr)
+						result = tool.ToolResult{IsError: true, Content: "invalid tool input: " + validErr.Error()}
+					} else {
+						toolTimeout := a.limits.ToolTimeout
+						if toolTimeout == 0 {
+							toolTimeout = 30 * time.Second
+						}
+						toolCtx, tCancel := context.WithTimeout(loopCtx, toolTimeout)
+						result, err = executeWithRecover(toolCtx, t, tc.Input)
+						tCancel()
+						if err != nil {
+							result = tool.ToolResult{IsError: true, Content: err.Error()}
+						}
 					}
 				}
 			}
@@ -207,6 +221,36 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			if !result.IsError {
 				result, filterMetrics = filter.Apply(tc.Name, tc.Input, result, a.filterCfg)
 			}
+
+			// Task 2: Auto-Index after execution - if enabled and result is not an error
+			// Works for both normal execution and PreApply-intercepted execution
+			if a.outputStore != nil && config.BoolVal(a.ctxModeCfg.AutoIndexOutputs) && !result.IsError {
+				// Extract command from input for shell_exec tool
+				var cmd string
+				if tc.Name == "shell_exec" {
+					var params struct {
+						Command string `json:"command"`
+					}
+					if err := json.Unmarshal(tc.Input, &params); err == nil {
+						cmd = params.Command
+					}
+				}
+
+				// Index the output
+				output := store.ToolOutput{
+					ID:        tc.ID,
+					ToolName:  tc.Name,
+					Command:   cmd,
+					Content:   result.Content,
+					Truncated: filterMetrics.CompressedBytes < filterMetrics.OriginalBytes,
+					ExitCode:  0, // No way to get actual exit code without changing tool interface
+					Timestamp: time.Now().UTC(),
+				}
+				if err := a.outputStore.IndexOutput(ctx, output); err != nil {
+					slog.Warn("failed to index tool output", "tool", tc.Name, "error", err)
+				}
+			}
+
 			toolDuration := time.Since(toolStart)
 
 			status := "success"

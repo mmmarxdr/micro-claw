@@ -177,7 +177,7 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 	st := newIntegrationStore(tmpDir)
 
 	// list_files tool needs a valid base_path so it can execute.
-	toolRegistry := tool.BuildRegistry(config.ToolsConfig{
+	toolRegistry := tool.BuildRegistrySimple(config.ToolsConfig{
 		File: config.FileToolConfig{
 			Enabled:  true,
 			BasePath: tmpDir,

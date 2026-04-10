@@ -306,3 +306,20 @@ func (s *FileStore) SearchMemory(ctx context.Context, scopeID string, query stri
 	}
 	return result, nil
 }
+
+// ─── OutputStore implementation ───────────────────────────────────────────────
+
+// IndexOutput is a no-op for FileStore. The FileStore does not support
+// indexing tool outputs.
+func (s *FileStore) IndexOutput(_ context.Context, _ ToolOutput) error {
+	return nil
+}
+
+// SearchOutputs returns an empty slice for FileStore. The FileStore does not
+// support searching tool outputs.
+func (s *FileStore) SearchOutputs(_ context.Context, _ string, _ int) ([]ToolOutput, error) {
+	return []ToolOutput{}, nil
+}
+
+// Compile-time assertion.
+var _ OutputStore = (*FileStore)(nil)
