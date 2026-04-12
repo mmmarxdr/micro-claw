@@ -148,6 +148,9 @@ func TestDetectConfigPath_FallsBackToDefaultWhenNoLocalConfig(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 
+	// Clear XDG_CONFIG_HOME so the function falls through to DefaultConfigPath
+	t.Setenv("XDG_CONFIG_HOME", "")
+
 	// Change to temp directory
 	if err := os.Chdir(tmpDir); err != nil {
 		t.Fatalf("chdir to temp dir: %v", err)
