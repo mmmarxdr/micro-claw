@@ -42,6 +42,24 @@ func (f *FallbackProvider) SupportsTools() bool {
 	return f.primary.SupportsTools() && f.fallback.SupportsTools()
 }
 
+// SupportsMultimodal returns true only if BOTH providers support multimodal input.
+// Conservative AND: if the fallback is activated mid-conversation and doesn't
+// support multimodal, image/audio blocks would be silently dropped.
+func (f *FallbackProvider) SupportsMultimodal() bool {
+	if f.primary == nil || f.fallback == nil {
+		return false
+	}
+	return f.primary.SupportsMultimodal() && f.fallback.SupportsMultimodal()
+}
+
+// SupportsAudio returns true only if BOTH providers support audio input.
+func (f *FallbackProvider) SupportsAudio() bool {
+	if f.primary == nil || f.fallback == nil {
+		return false
+	}
+	return f.primary.SupportsAudio() && f.fallback.SupportsAudio()
+}
+
 // HealthCheck checks the primary; if unhealthy, falls back to the secondary.
 // Returns a combined error if both are unhealthy (triggers os.Exit(1) in main.go).
 func (f *FallbackProvider) HealthCheck(ctx context.Context) (string, error) {

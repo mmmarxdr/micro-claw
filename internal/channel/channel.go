@@ -4,15 +4,24 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"microagent/internal/content"
 )
 
 type IncomingMessage struct {
 	ID        string
 	ChannelID string // e.g., "cli", "telegram:123456"
 	SenderID  string
-	Text      string
+	Content   content.Blocks    // multimodal content blocks
 	Metadata  map[string]string // channel-specific data
 	Timestamp time.Time
+}
+
+// Text returns the text-only representation of the message content.
+// Non-text blocks are skipped. This is a convenience method for consumers
+// that only need the textual portion of the message.
+func (m IncomingMessage) Text() string {
+	return m.Content.TextOnly()
 }
 
 type OutgoingMessage struct {

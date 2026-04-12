@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // ---- helpers ----------------------------------------------------------------
@@ -31,7 +33,7 @@ func newTestProvider(t *testing.T, ts *httptest.Server, overrides ...func(*confi
 
 func minimalRequest() ChatRequest {
 	return ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hello")}},
 	}
 }
 
@@ -121,7 +123,7 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 	}{
 		{
 			name:     "simple user message",
-			messages: []ChatMessage{{Role: "user", Content: "hi"}},
+			messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 			verify: func(t *testing.T, body map[string]any) {
 				msgs := body["messages"].([]any)
 				if len(msgs) != 1 {
@@ -131,18 +133,27 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 				if msg["role"] != "user" {
 					t.Errorf("role = %v, want user", msg["role"])
 				}
-				if msg["content"] != "hi" {
-					t.Errorf("content = %v, want hi", msg["content"])
+				// content.Blocks marshals as a JSON array of content blocks
+				blocks, ok := msg["content"].([]any)
+				if !ok || len(blocks) == 0 {
+					t.Fatalf("expected content to be a non-empty array, got %v", msg["content"])
+				}
+				b0 := blocks[0].(map[string]any)
+				if b0["type"] != "text" {
+					t.Errorf("block[0] type = %v, want text", b0["type"])
+				}
+				if b0["text"] != "hi" {
+					t.Errorf("block[0] text = %v, want hi", b0["text"])
 				}
 			},
 		},
 		{
 			name: "assistant message with tool calls",
 			messages: []ChatMessage{
-				{Role: "user", Content: "do something"},
+				{Role: "user", Content: content.TextBlock("do something")},
 				{
 					Role:    "assistant",
-					Content: "",
+					Content: nil,
 					ToolCalls: []ToolCall{
 						{ID: "tc1", Name: "shell_exec", Input: json.RawMessage(`{"command":"ls"}`)},
 					},
@@ -177,7 +188,7 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 		{
 			name: "standalone tool result message",
 			messages: []ChatMessage{
-				{Role: "tool", Content: "hello", ToolCallID: "tc1"},
+				{Role: "tool", Content: content.TextBlock("hello"), ToolCallID: "tc1"},
 			},
 			verify: func(t *testing.T, body map[string]any) {
 				msgs := body["messages"].([]any)
@@ -204,8 +215,8 @@ func TestAnthropicProvider_RequestMapping(t *testing.T) {
 		{
 			name: "tool result after user message merges",
 			messages: []ChatMessage{
-				{Role: "user", Content: "run it"},
-				{Role: "tool", Content: "done", ToolCallID: "tc2"},
+				{Role: "user", Content: content.TextBlock("run it")},
+				{Role: "tool", Content: content.TextBlock("done"), ToolCallID: "tc2"},
 			},
 			verify: func(t *testing.T, body map[string]any) {
 				msgs := body["messages"].([]any)
@@ -291,7 +302,7 @@ func TestAnthropicProvider_DefaultModelAndMaxTokens(t *testing.T) {
 		c.Model = ""
 	})
 	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "hello"}},
+		Messages:  []ChatMessage{{Role: "user", Content: content.TextBlock("hello")}},
 		MaxTokens: 0,
 	}
 	_, err := prov.Chat(context.Background(), req)
@@ -647,10 +658,10 @@ func TestAnthropicProvider_AssistantWithTextAndToolCalls(t *testing.T) {
 	prov := newTestProvider(t, ts)
 	req := ChatRequest{
 		Messages: []ChatMessage{
-			{Role: "user", Content: "hi"},
+			{Role: "user", Content: content.TextBlock("hi")},
 			{
 				Role:    "assistant",
-				Content: "I'll use a tool",
+				Content: content.TextBlock("I'll use a tool"),
 				ToolCalls: []ToolCall{
 					{ID: "tc1", Name: "shell_exec", Input: json.RawMessage(`{"command":"ls"}`)},
 				},
@@ -704,8 +715,8 @@ func TestAnthropicProvider_ToolResultMergesIntoExistingArray(t *testing.T) {
 	// Second tool result should append to that []any.
 	req := ChatRequest{
 		Messages: []ChatMessage{
-			{Role: "tool", Content: "result1", ToolCallID: "tc1"},
-			{Role: "tool", Content: "result2", ToolCallID: "tc2"},
+			{Role: "tool", Content: content.TextBlock("result1"), ToolCallID: "tc1"},
+			{Role: "tool", Content: content.TextBlock("result2"), ToolCallID: "tc2"},
 		},
 	}
 	_, err := prov.Chat(context.Background(), req)
@@ -741,7 +752,7 @@ func TestAnthropicProvider_WithToolDefinitions(t *testing.T) {
 
 	prov := newTestProvider(t, ts)
 	req := ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 		Tools: []ToolDefinition{
 			{
 				Name:        "shell_exec",
@@ -841,5 +852,105 @@ func TestAnthropicProvider_ToolCallDetails(t *testing.T) {
 	var inp map[string]any
 	if err := json.Unmarshal(tc.Input, &inp); err != nil {
 		t.Errorf("ToolCall.Input is not valid JSON: %v", err)
+	}
+}
+
+// ---- TestAnthropicMultimodalRequest ----------------------------------------
+
+// stubMediaReader is a minimal mediaReader for tests that returns fixed bytes
+// keyed by sha256. It satisfies the mediaReader interface without importing any
+// store package.
+type stubMediaReader struct {
+	// entries maps sha256 → (bytes, mime)
+	entries map[string]stubMediaEntry
+}
+
+type stubMediaEntry struct {
+	data []byte
+	mime string
+}
+
+func (s *stubMediaReader) GetMedia(_ context.Context, sha256 string) ([]byte, string, error) {
+	if e, ok := s.entries[sha256]; ok {
+		return e.data, e.mime, nil
+	}
+	return nil, "", nil
+}
+
+// TestAnthropicMultimodalRequest verifies that a user message containing a
+// BlockText + BlockImage is translated to the correct Anthropic API wire shape.
+// The expected shape is stored in testdata/anthropic_multimodal_request.json.
+// Comparison is map-based (JSON unmarshal → reflect.DeepEqual equivalent via
+// re-marshal) so key ordering does not cause false failures.
+func TestAnthropicMultimodalRequest(t *testing.T) {
+	// JPEG magic bytes — a plausible image payload for testing.
+	jpegMagic := []byte{0xFF, 0xD8, 0xFF, 0xE0}
+
+	stub := &stubMediaReader{
+		entries: map[string]stubMediaEntry{
+			"abc123": {data: jpegMagic, mime: "image/jpeg"},
+		},
+	}
+
+	var capturedBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		capturedBody, err = readAll(r.Body)
+		if err != nil {
+			t.Logf("read body error: %v", err)
+		}
+		writeJSON(w, buildSuccessBody("ok"))
+	}))
+	defer ts.Close()
+
+	prov := newTestProvider(t, ts).WithMediaReader(stub)
+
+	req := ChatRequest{
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				Content: content.Blocks{
+					{Type: content.BlockText, Text: "here is a photo"},
+					{Type: content.BlockImage, MediaSHA256: "abc123", MIME: "image/jpeg", Size: 1024},
+				},
+			},
+		},
+	}
+
+	_, err := prov.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+
+	// Unmarshal actual body as a generic map for key-order-independent comparison.
+	var actual map[string]any
+	if err := json.Unmarshal(capturedBody, &actual); err != nil {
+		t.Fatalf("unmarshal actual body: %v", err)
+	}
+
+	// Load golden file.
+	goldenPath := "testdata/anthropic_multimodal_request.json"
+	goldenRaw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("reading golden file %s: %v", goldenPath, err)
+	}
+	var golden map[string]any
+	if err := json.Unmarshal(goldenRaw, &golden); err != nil {
+		t.Fatalf("unmarshal golden file: %v", err)
+	}
+
+	// Re-marshal both to canonical JSON for a stable string comparison.
+	actualCanon, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatalf("re-marshal actual: %v", err)
+	}
+	goldenCanon, err := json.Marshal(golden)
+	if err != nil {
+		t.Fatalf("re-marshal golden: %v", err)
+	}
+
+	if string(actualCanon) != string(goldenCanon) {
+		t.Errorf("multimodal request body does not match golden file %s\n\ngot:\n%s\n\nwant:\n%s",
+			goldenPath, capturedBody, goldenRaw)
 	}
 }

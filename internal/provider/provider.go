@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"microagent/internal/content"
 )
 
 // Sentinel errors for provider failure classification.
@@ -27,10 +29,42 @@ func wrapNetworkError(err error) error {
 }
 
 type ChatMessage struct {
-	Role       string     `json:"role"` // "user", "assistant", "tool"
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string         `json:"role"` // "user", "assistant", "tool"
+	Content    content.Blocks `json:"content"`
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// UnmarshalJSON accepts both the legacy plain-string form and the new
+// array-of-blocks form for the "content" field.
+//
+//	"content":"hello"   → Blocks{{Type:text, Text:"hello"}}
+//	"content":[{…}]    → unmarshal directly as []ContentBlock
+//	"content":null/""  → nil Blocks
+//
+// No custom MarshalJSON — default struct marshal writes the new array form,
+// which is write-forward. Old binaries with the Phase 0 forward-compat shim
+// can still read the array form.
+func (m *ChatMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	m.ToolCalls = raw.ToolCalls
+	m.ToolCallID = raw.ToolCallID
+
+	bs, err := content.UnmarshalBlocks(raw.Content)
+	if err != nil {
+		return fmt.Errorf("ChatMessage.Content: %w", err)
+	}
+	m.Content = bs
+	return nil
 }
 
 type ToolCall struct {
@@ -70,6 +104,8 @@ type Provider interface {
 	Name() string
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	SupportsTools() bool
+	SupportsMultimodal() bool
+	SupportsAudio() bool
 	HealthCheck(ctx context.Context) (string, error)
 }
 

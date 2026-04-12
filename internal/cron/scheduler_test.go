@@ -248,8 +248,8 @@ func TestScheduler_FireJob_SendsToInbox(t *testing.T) {
 		if msg.ChannelID != "cron:"+job.ID {
 			t.Errorf("expected ChannelID %q, got %q", "cron:"+job.ID, msg.ChannelID)
 		}
-		if msg.Text != job.Prompt {
-			t.Errorf("expected Text %q, got %q", job.Prompt, msg.Text)
+		if msg.Text() != job.Prompt {
+			t.Errorf("expected Text() %q, got %q", job.Prompt, msg.Text())
 		}
 		if msg.SenderID != "cron" {
 			t.Errorf("expected SenderID %q, got %q", "cron", msg.SenderID)

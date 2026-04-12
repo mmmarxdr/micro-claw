@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -191,7 +192,7 @@ func TestOpenRouterProvider_Chat_HappyPath(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hello")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -228,7 +229,7 @@ func TestOpenRouterProvider_Chat_ToolCallResponse(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "run ls"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("run ls")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -280,7 +281,7 @@ func TestOpenRouterProvider_Chat_MultipleToolCalls(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "use tools"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("use tools")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -319,7 +320,7 @@ func TestOpenRouterProvider_Chat_FinishReasonMappings(t *testing.T) {
 			})
 			p := NewOpenRouterProvider(cfg)
 			resp, err := p.Chat(context.Background(), ChatRequest{
-				Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+				Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 			})
 			if err != nil {
 				t.Fatalf("Chat() error: %v", err)
@@ -348,7 +349,7 @@ func TestOpenRouterProvider_Chat_InvalidToolArguments(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid tool arguments JSON")
@@ -372,7 +373,7 @@ func TestOpenRouterProvider_Chat_HTTP401_NoRetry(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 401")
@@ -400,7 +401,7 @@ func TestOpenRouterProvider_Chat_HTTP429_Retries(t *testing.T) {
 	defer cancel()
 
 	_, err := p.Chat(ctx, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error after retry exhaustion")
@@ -432,7 +433,7 @@ func TestOpenRouterProvider_Chat_HTTP500_RetrySucceeds(t *testing.T) {
 	defer cancel()
 
 	resp, err := p.Chat(ctx, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -459,7 +460,7 @@ func TestOpenRouterProvider_Chat_SystemPrompt(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
 		SystemPrompt: "You are helpful",
-		Messages:     []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages:     []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -498,7 +499,7 @@ func TestOpenRouterProvider_Chat_NoSystemPrompt(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -533,7 +534,7 @@ func TestOpenRouterProvider_Chat_ToolDefinitions(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 		Tools: []ToolDefinition{
 			{
 				Name:        "shell_exec",
@@ -592,7 +593,7 @@ func TestOpenRouterProvider_Chat_ContextCancellation(t *testing.T) {
 
 	start := time.Now()
 	_, err := p.Chat(ctx, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	elapsed := time.Since(start)
 
@@ -617,7 +618,7 @@ func TestOpenRouterProvider_Chat_NoToolsOmitsToolsKey(t *testing.T) {
 
 	p := NewOpenRouterProvider(cfg)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
@@ -647,7 +648,7 @@ func TestOpenRouterProvider_Chat_AssistantNullContentOnToolCalls(t *testing.T) {
 	// An assistant message with tool calls — content should be null in wire format
 	_, err := p.Chat(context.Background(), ChatRequest{
 		Messages: []ChatMessage{
-			{Role: "user", Content: "do something"},
+			{Role: "user", Content: content.TextBlock("do something")},
 			{
 				Role: "assistant",
 				ToolCalls: []ToolCall{

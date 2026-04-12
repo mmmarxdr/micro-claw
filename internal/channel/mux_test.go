@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"microagent/internal/content"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,11 +45,11 @@ func (m *muxMockChannel) Stop() error { return m.stopErr }
 func TestMux_Start_FansInbox(t *testing.T) {
 	ch1 := &muxMockChannel{
 		name: "ch1",
-		msgs: []IncomingMessage{{ChannelID: "ch1", Text: "hello from ch1"}},
+		msgs: []IncomingMessage{{ChannelID: "ch1", Content: content.TextBlock("hello from ch1")}},
 	}
 	ch2 := &muxMockChannel{
 		name: "ch2",
-		msgs: []IncomingMessage{{ChannelID: "ch2", Text: "hello from ch2"}},
+		msgs: []IncomingMessage{{ChannelID: "ch2", Content: content.TextBlock("hello from ch2")}},
 	}
 
 	mux := NewMultiplexChannel([]Channel{ch1, ch2})

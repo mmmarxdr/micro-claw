@@ -69,8 +69,8 @@ func TestCronIntegration_ScheduleAndFire(t *testing.T) {
 		if msg.ChannelID != "cron:"+jobID {
 			t.Errorf("expected ChannelID %q, got %q", "cron:"+jobID, msg.ChannelID)
 		}
-		if msg.Text != createdJob.Prompt {
-			t.Errorf("expected Text %q, got %q", createdJob.Prompt, msg.Text)
+		if msg.Text() != createdJob.Prompt {
+			t.Errorf("expected Text() %q, got %q", createdJob.Prompt, msg.Text())
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for inbox message from scheduler")

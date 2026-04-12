@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/filter"
 	"microagent/internal/provider"
 	"microagent/internal/store"
@@ -27,10 +29,11 @@ func userScope(channelID, senderID string) string {
 }
 
 func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage) {
-	slog.Debug("processing message",
+	slog.Debug("incoming message",
+		"block_count", len(msg.Content),
+		"text_len", len(msg.Content.TextOnly()),
+		"has_media", msg.Content.HasMedia(),
 		"channel_id", msg.ChannelID,
-		"sender_id", msg.SenderID,
-		"text_len", len(msg.Text),
 	)
 
 	scope := userScope(msg.ChannelID, msg.SenderID)
@@ -49,7 +52,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 	conv.Messages = append(conv.Messages, provider.ChatMessage{
 		Role:    "user",
-		Content: msg.Text,
+		Content: msg.Content,
 	})
 
 	// Token-based context management takes precedence when MaxContextTokens > 0.
@@ -63,7 +66,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		conv.Messages = a.legacyTruncate(ctx, conv.Messages)
 	}
 
-	memories, _ := a.store.SearchMemory(ctx, scope, msg.Text, a.config.MemoryResults)
+	memories, _ := a.store.SearchMemory(ctx, scope, msg.Content.TextOnly(), a.config.MemoryResults)
 
 	maxIters := a.config.MaxIterations
 	if maxIters <= 0 {
@@ -89,6 +92,24 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		} else {
 			slog.Debug("streaming enabled but channel does not implement StreamSender; server-side streaming with buffered display")
 		}
+	}
+
+	// Determine degradation once per turn, before the tool-call loop.
+	// A degraded turn means the current provider cannot handle media blocks
+	// in the user's message — we note it and prepend a notice to the final reply.
+	degraded := !a.provider.SupportsMultimodal() && msg.Content.HasMedia()
+	var degradedBlocks content.Blocks
+	if degraded {
+		degradedBlocks = msg.Content
+		typesList := make([]string, 0, len(msg.Content))
+		seen := map[string]bool{}
+		for _, b := range msg.Content {
+			if string(b.Type) != "text" && !seen[string(b.Type)] {
+				typesList = append(typesList, string(b.Type))
+				seen[string(b.Type)] = true
+			}
+		}
+		slog.Info("degradation", "provider_name", a.provider.Name(), "block_types", typesList)
 	}
 
 	for i := 0; i < maxIters; i++ {
@@ -129,6 +150,14 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			StopReason: resp.StopReason, Iteration: i,
 		})
 
+		// Prepend degradation notice to the final text reply (no tool calls remaining).
+		if degraded && len(resp.ToolCalls) == 0 {
+			notice := content.DegradationNotice(degradedBlocks)
+			if notice != "" {
+				resp.Content = notice + "\n" + resp.Content
+			}
+		}
+
 		// Send text to channel only if it wasn't already streamed.
 		if resp.Content != "" && !textStreamed {
 			_ = a.channel.Send(ctx, channel.OutgoingMessage{
@@ -141,7 +170,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			slog.Debug("LLM responded with text", "response_len", len(resp.Content))
 			conv.Messages = append(conv.Messages, provider.ChatMessage{
 				Role:    "assistant",
-				Content: resp.Content,
+				Content: content.TextBlock(resp.Content),
 			})
 			if resp.Content != "" {
 				entry := store.MemoryEntry{
@@ -169,7 +198,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 		conv.Messages = append(conv.Messages, provider.ChatMessage{
 			Role:      "assistant",
-			Content:   resp.Content,
+			Content:   content.TextBlock(resp.Content),
 			ToolCalls: resp.ToolCalls,
 		})
 
@@ -236,18 +265,41 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					}
 				}
 
-				// Index the output
-				output := store.ToolOutput{
-					ID:        tc.ID,
-					ToolName:  tc.Name,
-					Command:   cmd,
-					Content:   result.Content,
-					Truncated: filterMetrics.CompressedBytes < filterMetrics.OriginalBytes,
-					ExitCode:  0, // No way to get actual exit code without changing tool interface
-					Timestamp: time.Now().UTC(),
+				// H2: read exit code from Meta set by PreApply; fall back to 0.
+				exitCode := 0
+				if ec, ok := result.Meta["microagent/exit_code"]; ok {
+					if v, err := strconv.Atoi(ec); err == nil {
+						exitCode = v
+					}
 				}
-				if err := a.outputStore.IndexOutput(ctx, output); err != nil {
-					slog.Warn("failed to index tool output", "tool", tc.Name, "error", err)
+
+				// H3: read sandbox truncation flag from Meta set by PreApply;
+				// fall back to the filter-level comparison when the key is absent.
+				truncated := filterMetrics.CompressedBytes < filterMetrics.OriginalBytes
+				if tv, ok := result.Meta["microagent/truncated"]; ok {
+					truncated = tv == "true"
+				}
+
+				// Only index non-empty outputs to avoid noisy warnings for commands that
+				// succeed with no stdout (e.g. `touch foo`).
+				if result.Content != "" {
+					output := store.ToolOutput{
+						ID:        tc.ID,
+						ToolName:  tc.Name,
+						Command:   cmd,
+						Content:   result.Content,
+						Truncated: truncated,
+						ExitCode:  exitCode,
+						Timestamp: time.Now().UTC(),
+					}
+					if a.indexWorker != nil {
+						a.indexWorker.Enqueue(output)
+					} else {
+						// Fallback: synchronous indexing when worker is unavailable.
+						if err := a.outputStore.IndexOutput(ctx, output); err != nil {
+							slog.Warn("failed to index tool output", "tool", tc.Name, "error", err)
+						}
+					}
 				}
 			}
 
@@ -277,7 +329,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			safeContent := html.EscapeString(resultContent)
 			conv.Messages = append(conv.Messages, provider.ChatMessage{
 				Role:       "tool",
-				Content:    fmt.Sprintf("<tool_result status=\"%s\">\n%s\n</tool_result>", status, safeContent),
+				Content:    content.TextBlock(fmt.Sprintf("<tool_result status=\"%s\">\n%s\n</tool_result>", status, safeContent)),
 				ToolCallID: tc.ID,
 			})
 		}
@@ -325,7 +377,7 @@ func (a *Agent) legacyTruncate(ctx context.Context, messages []provider.ChatMess
 	}
 
 	if sumText != "" {
-		summaryMsg := provider.ChatMessage{Role: "assistant", Content: sumText}
+		summaryMsg := provider.ChatMessage{Role: "assistant", Content: content.TextBlock(sumText)}
 		tail = append([]provider.ChatMessage{summaryMsg}, tail...)
 	}
 

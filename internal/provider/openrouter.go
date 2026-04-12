@@ -127,8 +127,10 @@ func NewOpenRouterProvider(cfg config.ProviderConfig) *OpenRouterProvider {
 // Simple interface methods
 // --------------------------------------------------------------------------
 
-func (p *OpenRouterProvider) Name() string        { return "openrouter" }
-func (p *OpenRouterProvider) SupportsTools() bool { return true }
+func (p *OpenRouterProvider) Name() string             { return "openrouter" }
+func (p *OpenRouterProvider) SupportsTools() bool      { return true }
+func (p *OpenRouterProvider) SupportsMultimodal() bool { return true }
+func (p *OpenRouterProvider) SupportsAudio() bool      { return true }
 
 // HealthCheck checks that an API key is configured and returns the model name.
 // No HTTP call is made — mirrors AnthropicProvider pattern for startup-latency consistency.

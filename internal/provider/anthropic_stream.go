@@ -3,11 +3,15 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -68,7 +72,7 @@ type anthropicStreamRequest struct {
 // then reads SSE events and maps them to StreamEvent values.
 func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*StreamResult, error) {
 	// 1. Build the same request body as Chat(), but with stream: true.
-	apiReq := p.buildAnthropicRequest(req)
+	apiReq := p.buildAnthropicRequest(ctx, req)
 	streamReq := anthropicStreamRequest{
 		anthropicRequest: apiReq,
 		Stream:           true,
@@ -227,7 +231,9 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 
 // buildAnthropicRequest constructs the API request body from a ChatRequest.
 // Shared by Chat() and ChatStream().
-func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequest {
+// ctx is forwarded to translateBlocks so that image bytes can be fetched from
+// the backing media store.
+func (p *AnthropicProvider) buildAnthropicRequest(ctx context.Context, req ChatRequest) anthropicRequest {
 	// Per-request model override takes precedence over the provider's configured model.
 	model := req.Model
 	if model == "" {
@@ -257,11 +263,13 @@ func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequ
 			if len(apiReq.Messages) > 0 && apiReq.Messages[len(apiReq.Messages)-1].Role == "user" {
 				prev := apiReq.Messages[len(apiReq.Messages)-1]
 				switch v := prev.Content.(type) {
-				case string:
-					apiReq.Messages[len(apiReq.Messages)-1].Content = []any{
-						map[string]any{"type": "text", "text": v},
-						block,
+				case content.Blocks:
+					var blocks []any
+					if txt := v.TextOnly(); txt != "" {
+						blocks = append(blocks, map[string]any{"type": "text", "text": txt})
 					}
+					blocks = append(blocks, block)
+					apiReq.Messages[len(apiReq.Messages)-1].Content = blocks
 				case []any:
 					apiReq.Messages[len(apiReq.Messages)-1].Content = append(v, block)
 				}
@@ -273,8 +281,8 @@ func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequ
 			}
 		} else if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			var content []any
-			if m.Content != "" {
-				content = append(content, map[string]any{"type": "text", "text": m.Content})
+			if txt := m.Content.TextOnly(); txt != "" {
+				content = append(content, map[string]any{"type": "text", "text": txt})
 			}
 			for _, tc := range m.ToolCalls {
 				content = append(content, map[string]any{
@@ -291,7 +299,7 @@ func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequ
 		} else {
 			apiReq.Messages = append(apiReq.Messages, anthropicMessage{
 				Role:    m.Role,
-				Content: m.Content,
+				Content: p.translateBlocks(ctx, m.Content),
 			})
 		}
 	}
@@ -301,4 +309,83 @@ func (p *AnthropicProvider) buildAnthropicRequest(req ChatRequest) anthropicRequ
 	}
 
 	return apiReq
+}
+
+// translateBlocks converts a content.Blocks slice into the []any content parts
+// format expected by the Anthropic Messages API.
+//
+//   - BlockText  → {"type":"text","text":"..."}
+//   - BlockImage → {"type":"image","source":{"type":"base64","media_type":"<mime>","data":"<b64>"}}
+//     Bytes are fetched from p.media (mediaReader). If p.media is nil, or GetMedia
+//     returns an error, a text placeholder is substituted and a warning is logged.
+//   - BlockAudio / BlockDocument → Anthropic does not natively support these;
+//     fall back to FlattenBlocks placeholder text so the request still goes out.
+//     (Audio: SupportsAudio()==false; upstream degradation check should have caught it.
+//     Document PDF support is deferred to a later phase.)
+func (p *AnthropicProvider) translateBlocks(ctx context.Context, bs content.Blocks) []any {
+	if len(bs) == 0 {
+		return nil
+	}
+
+	parts := make([]any, 0, len(bs))
+	for _, b := range bs {
+		switch b.Type {
+		case content.BlockText:
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": b.Text,
+			})
+
+		case content.BlockImage:
+			imgBytes, mime, err := p.fetchMedia(ctx, b)
+			if err != nil {
+				// Graceful degradation: log and substitute placeholder text.
+				slog.Warn("anthropic: failed to load media, substituting placeholder",
+					"sha256", b.MediaSHA256,
+					"err", err,
+				)
+				parts = append(parts, map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("[image unavailable: %s]", b.MediaSHA256),
+				})
+				continue
+			}
+			parts = append(parts, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": mime,
+					"data":       base64.StdEncoding.EncodeToString(imgBytes),
+				},
+			})
+
+		default:
+			// BlockAudio, BlockDocument, and any future types: fall back to
+			// FlattenBlocks-style placeholder. Anthropic does not support audio;
+			// document (PDF) support is out of Phase 3 scope.
+			placeholder := content.FlattenBlocks(content.Blocks{b})
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": placeholder,
+			})
+		}
+	}
+	return parts
+}
+
+// fetchMedia loads bytes for a media block from p.media.
+// Returns an error if p.media is nil or GetMedia fails.
+func (p *AnthropicProvider) fetchMedia(ctx context.Context, b content.ContentBlock) ([]byte, string, error) {
+	if p.media == nil {
+		return nil, "", fmt.Errorf("no media reader configured")
+	}
+	imgBytes, mime, err := p.media.GetMedia(ctx, b.MediaSHA256)
+	if err != nil {
+		return nil, "", err
+	}
+	// Prefer the MIME from the store response; fall back to block's MIME field.
+	if mime == "" {
+		mime = b.MIME
+	}
+	return imgBytes, mime, nil
 }

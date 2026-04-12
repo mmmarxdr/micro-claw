@@ -11,6 +11,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 	"microagent/internal/store"
@@ -32,16 +33,16 @@ func TestBuildSummarizationPrompt_Empty(t *testing.T) {
 
 func TestBuildSummarizationPrompt_WithMessages(t *testing.T) {
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "What files are in the project?"},
+		{Role: "user", Content: content.TextBlock("What files are in the project?")},
 		{
 			Role:    "assistant",
-			Content: "Let me check.",
+			Content: content.TextBlock("Let me check."),
 			ToolCalls: []provider.ToolCall{
 				{ID: "tc1", Name: "list_files", Input: json.RawMessage(`{"path": "."}`)},
 			},
 		},
-		{Role: "tool", Content: "file1.go\nfile2.go", ToolCallID: "tc1"},
-		{Role: "assistant", Content: "I found file1.go and file2.go."},
+		{Role: "tool", Content: content.TextBlock("file1.go\nfile2.go"), ToolCallID: "tc1"},
+		{Role: "assistant", Content: content.TextBlock("I found file1.go and file2.go.")},
 	}
 
 	prompt := buildSummarizationPrompt(msgs, 500)
@@ -66,7 +67,7 @@ func TestBuildSummarizationPrompt_WithMessages(t *testing.T) {
 func TestBuildSummarizationPrompt_TruncatesLongContent(t *testing.T) {
 	longContent := strings.Repeat("x", 1000)
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: longContent},
+		{Role: "user", Content: content.TextBlock(longContent)},
 	}
 
 	prompt := buildSummarizationPrompt(msgs, 500)
@@ -87,12 +88,12 @@ func TestBuildSummarizationPrompt_TruncatesLongContent(t *testing.T) {
 func TestCompressToolResult_UnderLimit(t *testing.T) {
 	msg := provider.ChatMessage{
 		Role:       "tool",
-		Content:    "short result",
+		Content:    content.TextBlock("short result"),
 		ToolCallID: "tc1",
 	}
 	result := compressToolResult(msg, 1000)
-	if result.Content != "short result" {
-		t.Errorf("expected content unchanged, got %q", result.Content)
+	if result.Content.TextOnly() != "short result" {
+		t.Errorf("expected content unchanged, got %q", result.Content.TextOnly())
 	}
 	if result.ToolCallID != "tc1" {
 		t.Error("expected ToolCallID preserved")
@@ -100,26 +101,27 @@ func TestCompressToolResult_UnderLimit(t *testing.T) {
 }
 
 func TestCompressToolResult_OverLimit(t *testing.T) {
-	content := strings.Repeat("a", 2000)
+	rawStr := strings.Repeat("a", 2000)
 	msg := provider.ChatMessage{
 		Role:       "tool",
-		Content:    content,
+		Content:    content.TextBlock(rawStr),
 		ToolCallID: "tc2",
 	}
 	result := compressToolResult(msg, 800)
 
-	if len(result.Content) >= len(content) {
-		t.Errorf("expected compressed content to be shorter; original=%d, got=%d", len(content), len(result.Content))
+	got := result.Content.TextOnly()
+	if len(got) >= len(rawStr) {
+		t.Errorf("expected compressed content to be shorter; original=%d, got=%d", len(rawStr), len(got))
 	}
-	if !strings.Contains(result.Content, "truncated") {
+	if !strings.Contains(got, "truncated") {
 		t.Error("expected truncation indicator in compressed content")
 	}
 	// Should start with first 500 chars of original
-	if !strings.HasPrefix(result.Content, content[:500]) {
+	if !strings.HasPrefix(got, rawStr[:500]) {
 		t.Error("expected compressed content to start with first 500 chars")
 	}
 	// Should end with last 200 chars of original
-	if !strings.HasSuffix(result.Content, content[len(content)-200:]) {
+	if !strings.HasSuffix(got, rawStr[len(rawStr)-200:]) {
 		t.Error("expected compressed content to end with last 200 chars")
 	}
 	if result.ToolCallID != "tc2" {
@@ -128,26 +130,27 @@ func TestCompressToolResult_OverLimit(t *testing.T) {
 }
 
 func TestCompressToolResult_SmallMaxChars(t *testing.T) {
-	content := strings.Repeat("b", 500)
+	rawStr := strings.Repeat("b", 500)
 	msg := provider.ChatMessage{
 		Role:    "tool",
-		Content: content,
+		Content: content.TextBlock(rawStr),
 	}
 	result := compressToolResult(msg, 100)
 
-	if len(result.Content) > 200 { // 100 chars + truncation message
-		t.Errorf("expected small compressed content, got length %d", len(result.Content))
+	got := result.Content.TextOnly()
+	if len(got) > 200 { // 100 chars + truncation message
+		t.Errorf("expected small compressed content, got length %d", len(got))
 	}
-	if !strings.Contains(result.Content, "truncated") {
+	if !strings.Contains(got, "truncated") {
 		t.Error("expected truncation indicator")
 	}
 }
 
 func TestCompressToolResult_ExactLimit(t *testing.T) {
-	content := strings.Repeat("c", 800)
-	msg := provider.ChatMessage{Role: "tool", Content: content}
+	rawStr := strings.Repeat("c", 800)
+	msg := provider.ChatMessage{Role: "tool", Content: content.TextBlock(rawStr)}
 	result := compressToolResult(msg, 800)
-	if result.Content != content {
+	if result.Content.TextOnly() != rawStr {
 		t.Error("expected content unchanged at exact limit")
 	}
 }
@@ -165,14 +168,14 @@ func TestMechanicalSummary_Empty(t *testing.T) {
 
 func TestMechanicalSummary_WithMessages(t *testing.T) {
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "List files"},
-		{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{
+		{Role: "user", Content: content.TextBlock("List files")},
+		{Role: "assistant", Content: nil, ToolCalls: []provider.ToolCall{
 			{Name: "shell"},
 			{Name: "list_files"},
 		}},
-		{Role: "tool", Content: "result"},
-		{Role: "user", Content: "Now edit them"},
-		{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{
+		{Role: "tool", Content: content.TextBlock("result")},
+		{Role: "user", Content: content.TextBlock("Now edit them")},
+		{Role: "assistant", Content: nil, ToolCalls: []provider.ToolCall{
 			{Name: "shell"},
 		}},
 	}
@@ -224,8 +227,8 @@ func TestManageContextTokens_UnderBudget(t *testing.T) {
 	ag := New(cfg, defaultLimits(), config.FilterConfig{}, &mockChannel{}, prov, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "hi"},
+		{Role: "user", Content: content.TextBlock("hello")},
+		{Role: "assistant", Content: content.TextBlock("hi")},
 	}
 
 	result := ag.manageContextTokens(context.Background(), "system prompt", msgs)
@@ -251,12 +254,12 @@ func TestManageContextTokens_ToolCompression(t *testing.T) {
 	// Create messages with a large tool result that should get compressed
 	bigToolContent := strings.Repeat("x", 2000)
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "checking", ToolCalls: []provider.ToolCall{{ID: "tc1", Name: "shell"}}},
-		{Role: "tool", Content: bigToolContent, ToolCallID: "tc1"},
-		{Role: "assistant", Content: "done"},
-		{Role: "user", Content: "thanks"},
-		{Role: "assistant", Content: "welcome"},
+		{Role: "user", Content: content.TextBlock("hello")},
+		{Role: "assistant", Content: content.TextBlock("checking"), ToolCalls: []provider.ToolCall{{ID: "tc1", Name: "shell"}}},
+		{Role: "tool", Content: content.TextBlock(bigToolContent), ToolCallID: "tc1"},
+		{Role: "assistant", Content: content.TextBlock("done")},
+		{Role: "user", Content: content.TextBlock("thanks")},
+		{Role: "assistant", Content: content.TextBlock("welcome")},
 	}
 
 	result := ag.manageContextTokens(context.Background(), "sys", msgs)
@@ -286,9 +289,9 @@ func TestManageContextTokens_SummarizationFallback(t *testing.T) {
 	msgs := make([]provider.ChatMessage, 20)
 	for i := range msgs {
 		if i%2 == 0 {
-			msgs[i] = provider.ChatMessage{Role: "user", Content: fmt.Sprintf("message %d with some content", i)}
+			msgs[i] = provider.ChatMessage{Role: "user", Content: content.TextBlock(fmt.Sprintf("message %d with some content", i))}
 		} else {
-			msgs[i] = provider.ChatMessage{Role: "assistant", Content: fmt.Sprintf("reply %d with some content", i)}
+			msgs[i] = provider.ChatMessage{Role: "assistant", Content: content.TextBlock(fmt.Sprintf("reply %d with some content", i))}
 		}
 	}
 
@@ -302,7 +305,7 @@ func TestManageContextTokens_SummarizationFallback(t *testing.T) {
 	// Should contain a mechanical summary since LLM failed
 	foundMechanical := false
 	for _, m := range result {
-		if strings.Contains(m.Content, "mechanical") || strings.Contains(m.Content, "Summary of previous conversation") {
+		if strings.Contains(m.Content.TextOnly(), "mechanical") || strings.Contains(m.Content.TextOnly(), "Summary of previous conversation") {
 			foundMechanical = true
 			break
 		}
@@ -319,7 +322,7 @@ func TestManageContextTokens_ZeroBudget(t *testing.T) {
 	ag := New(cfg, defaultLimits(), config.FilterConfig{}, &mockChannel{}, &mockProvider{}, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "hello"},
+		{Role: "user", Content: content.TextBlock("hello")},
 	}
 
 	result := ag.manageContextTokens(context.Background(), "sys", msgs)
@@ -337,14 +340,14 @@ func TestProcessMessage_TokenBasedTruncation(t *testing.T) {
 	existingMsgs := make([]provider.ChatMessage, 20)
 	for i := range existingMsgs {
 		if i%2 == 0 {
-			existingMsgs[i] = provider.ChatMessage{Role: "user", Content: strings.Repeat("question ", 50)}
+			existingMsgs[i] = provider.ChatMessage{Role: "user", Content: content.TextBlock(strings.Repeat("question ", 50))}
 		} else {
-			existingMsgs[i] = provider.ChatMessage{Role: "assistant", Content: strings.Repeat("answer ", 50)}
+			existingMsgs[i] = provider.ChatMessage{Role: "assistant", Content: content.TextBlock(strings.Repeat("answer ", 50))}
 		}
 	}
 
 	// Estimate what the total would be so we can set a budget below it
-	totalEst := EstimateTokens("test personality") + EstimateMessagesTokens(existingMsgs) + EstimateMessageTokens(provider.ChatMessage{Role: "user", Content: "new message"})
+	totalEst := EstimateTokens("test personality") + EstimateMessagesTokens(existingMsgs) + EstimateMessageTokens(provider.ChatMessage{Role: "user", Content: content.TextBlock("new message")})
 
 	cfg := config.AgentConfig{
 		MaxIterations:    1,
@@ -371,7 +374,7 @@ func TestProcessMessage_TokenBasedTruncation(t *testing.T) {
 	}
 
 	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new message"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("new message")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
@@ -405,9 +408,9 @@ func TestProcessMessage_LegacyFallback(t *testing.T) {
 	existing := make([]provider.ChatMessage, 10)
 	for i := range existing {
 		if i%2 == 0 {
-			existing[i] = provider.ChatMessage{Role: "user", Content: fmt.Sprintf("msg-%d", i)}
+			existing[i] = provider.ChatMessage{Role: "user", Content: content.TextBlock(fmt.Sprintf("msg-%d", i))}
 		} else {
-			existing[i] = provider.ChatMessage{Role: "assistant", Content: fmt.Sprintf("reply-%d", i)}
+			existing[i] = provider.ChatMessage{Role: "assistant", Content: content.TextBlock(fmt.Sprintf("reply-%d", i))}
 		}
 	}
 
@@ -420,7 +423,7 @@ func TestProcessMessage_LegacyFallback(t *testing.T) {
 	}
 
 	ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("new")})
 
 	// The legacy path should have been used; verify summarization call happened
 	if prov.calls < 2 {
@@ -435,9 +438,9 @@ func makeTestMessages(n int) []provider.ChatMessage {
 	msgs := make([]provider.ChatMessage, n)
 	for i := range msgs {
 		if i%2 == 0 {
-			msgs[i] = provider.ChatMessage{Role: "user", Content: fmt.Sprintf("user message %d with some padding text", i)}
+			msgs[i] = provider.ChatMessage{Role: "user", Content: content.TextBlock(fmt.Sprintf("user message %d with some padding text", i))}
 		} else {
-			msgs[i] = provider.ChatMessage{Role: "assistant", Content: fmt.Sprintf("assistant reply %d with some padding text", i)}
+			msgs[i] = provider.ChatMessage{Role: "assistant", Content: content.TextBlock(fmt.Sprintf("assistant reply %d with some padding text", i))}
 		}
 	}
 	return msgs

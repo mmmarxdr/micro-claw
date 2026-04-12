@@ -26,8 +26,10 @@ type enrichMockProvider struct {
 	delay    time.Duration // artificial delay to simulate slow responses
 }
 
-func (p *enrichMockProvider) Name() string { return "mock" }
-func (p *enrichMockProvider) SupportsTools() bool { return false }
+func (p *enrichMockProvider) Name() string                                  { return "mock" }
+func (p *enrichMockProvider) SupportsTools() bool                           { return false }
+func (p *enrichMockProvider) SupportsMultimodal() bool                      { return false }
+func (p *enrichMockProvider) SupportsAudio() bool                           { return false }
 func (p *enrichMockProvider) HealthCheck(_ context.Context) (string, error) { return "ok", nil }
 func (p *enrichMockProvider) Chat(ctx context.Context, _ provider.ChatRequest) (*provider.ChatResponse, error) {
 	p.mu.Lock()
@@ -58,27 +60,31 @@ func (p *enrichMockProvider) chatCalls() int {
 
 // enrichMockStore records UpdateMemory calls.
 type enrichMockStore struct {
-	mu            sync.Mutex
-	updateCalls   []store.MemoryEntry
-	appendedMems  []store.MemoryEntry
+	mu           sync.Mutex
+	updateCalls  []store.MemoryEntry
+	appendedMems []store.MemoryEntry
 }
 
 func (s *enrichMockStore) SaveConversation(_ context.Context, _ store.Conversation) error { return nil }
 func (s *enrichMockStore) LoadConversation(_ context.Context, _ string) (*store.Conversation, error) {
 	return nil, store.ErrNotFound
 }
+
 func (s *enrichMockStore) ListConversations(_ context.Context, _ string, _ int) ([]store.Conversation, error) {
 	return nil, nil
 }
+
 func (s *enrichMockStore) AppendMemory(_ context.Context, _ string, entry store.MemoryEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendedMems = append(s.appendedMems, entry)
 	return nil
 }
+
 func (s *enrichMockStore) SearchMemory(_ context.Context, _ string, _ string, _ int) ([]store.MemoryEntry, error) {
 	return nil, nil
 }
+
 func (s *enrichMockStore) UpdateMemory(_ context.Context, scopeID string, entry store.MemoryEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

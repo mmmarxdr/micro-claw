@@ -17,6 +17,7 @@ import (
 type GeminiProvider struct {
 	config config.ProviderConfig
 	client *http.Client
+	media  mediaReader // optional; nil → text-only fallback for image/audio blocks
 }
 
 func NewGeminiProvider(cfg config.ProviderConfig) *GeminiProvider {
@@ -30,8 +31,19 @@ func NewGeminiProvider(cfg config.ProviderConfig) *GeminiProvider {
 	}
 }
 
-func (p *GeminiProvider) Name() string        { return "gemini" }
-func (p *GeminiProvider) SupportsTools() bool { return true }
+// WithMediaReader wires a mediaReader into the provider so that image and audio
+// blocks can be translated to base64 Gemini inlineData parts. Callers that do
+// not yet have a store (e.g. text-only test fixtures) leave this unset; the
+// provider falls back gracefully to placeholder text for any media blocks.
+func (p *GeminiProvider) WithMediaReader(mr mediaReader) *GeminiProvider {
+	p.media = mr
+	return p
+}
+
+func (p *GeminiProvider) Name() string             { return "gemini" }
+func (p *GeminiProvider) SupportsTools() bool      { return true }
+func (p *GeminiProvider) SupportsMultimodal() bool { return true }
+func (p *GeminiProvider) SupportsAudio() bool      { return true }
 
 // --------------------------------------------------------------------------
 // Wire types — Gemini generateContent REST API
@@ -39,8 +51,15 @@ func (p *GeminiProvider) SupportsTools() bool { return true }
 
 type geminiPart struct {
 	Text             string              `json:"text,omitempty"`
+	InlineData       *geminiInlineData   `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResp `json:"functionResponse,omitempty"`
+}
+
+// geminiInlineData carries base64-encoded media for image and audio blocks.
+type geminiInlineData struct {
+	MIMEType string `json:"mimeType"`
+	Data     string `json:"data"` // base64-encoded bytes
 }
 
 type geminiFunctionCall struct {
@@ -126,7 +145,7 @@ func (p *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		model = "gemini-2.0-flash"
 	}
 
-	apiReq := p.buildGeminiRequest(req)
+	apiReq := p.buildGeminiRequest(ctx, req)
 
 	bodyBytes, err := json.Marshal(apiReq)
 	if err != nil {
@@ -331,8 +350,8 @@ func normalizeGeminiFinishReason(reason string) string {
 
 // geminiEmbedRequest is the request body for the embedContent endpoint.
 type geminiEmbedRequest struct {
-	Model   string           `json:"model"`
-	Content geminiEmbedPart  `json:"content"`
+	Model   string          `json:"model"`
+	Content geminiEmbedPart `json:"content"`
 }
 
 type geminiEmbedPart struct {

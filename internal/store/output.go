@@ -2,7 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+// Sentinel errors returned by IndexOutput when required fields are missing.
+var (
+	ErrOutputMissingID       = errors.New("ToolOutput.ID is required")
+	ErrOutputMissingToolName = errors.New("ToolOutput.ToolName is required")
+	ErrOutputEmptyContent    = errors.New("ToolOutput.Content is required")
 )
 
 // ToolOutput represents the output of a tool execution for indexing and search.

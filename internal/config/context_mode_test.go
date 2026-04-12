@@ -89,11 +89,6 @@ provider:
 		t.Errorf("Auto mode ShellMaxOutput = %d, want 4096", ctxMode.ShellMaxOutput)
 	}
 
-	// FileChunkSize should default to 2000 in auto mode
-	if ctxMode.FileChunkSize != 2000 {
-		t.Errorf("Auto mode FileChunkSize = %d, want 2000", ctxMode.FileChunkSize)
-	}
-
 	// SandboxTimeout should default to 30s
 	if ctxMode.SandboxTimeout != 30*time.Second {
 		t.Errorf("Auto mode SandboxTimeout = %v, want 30s", ctxMode.SandboxTimeout)
@@ -143,11 +138,6 @@ provider:
 		t.Errorf("Conservative mode ShellMaxOutput = %d, want 8192", ctxMode.ShellMaxOutput)
 	}
 
-	// FileChunkSize should default to 4000 in conservative mode
-	if ctxMode.FileChunkSize != 4000 {
-		t.Errorf("Conservative mode FileChunkSize = %d, want 4000", ctxMode.FileChunkSize)
-	}
-
 	// SandboxTimeout should default to 30s (same for all modes)
 	if ctxMode.SandboxTimeout != 30*time.Second {
 		t.Errorf("Conservative mode SandboxTimeout = %v, want 30s", ctxMode.SandboxTimeout)
@@ -175,7 +165,6 @@ agent:
   context_mode:
     mode: "auto"
     shell_max_output: 2048
-    file_chunk_size: 1000
     sandbox_timeout: 15s
     auto_index_outputs: false
     sandbox_keep_first: 5
@@ -200,9 +189,6 @@ provider:
 	if ctxMode.ShellMaxOutput != 2048 {
 		t.Errorf("Custom ShellMaxOutput = %d, want 2048", ctxMode.ShellMaxOutput)
 	}
-	if ctxMode.FileChunkSize != 1000 {
-		t.Errorf("Custom FileChunkSize = %d, want 1000", ctxMode.FileChunkSize)
-	}
 	if ctxMode.SandboxTimeout != 15*time.Second {
 		t.Errorf("Custom SandboxTimeout = %v, want 15s", ctxMode.SandboxTimeout)
 	}
@@ -215,5 +201,35 @@ provider:
 	}
 	if ctxMode.SandboxKeepLast != 3 {
 		t.Errorf("Custom SandboxKeepLast = %d, want 3", ctxMode.SandboxKeepLast)
+	}
+}
+
+// TestLoadConfig_LegacyFileChunkSize_SilentlyIgnored verifies that a YAML containing the
+// removed file_chunk_size field is still parsed without error (yaml.v3 non-strict default),
+// and that the resulting config reflects the correct mode setting.
+func TestLoadConfig_LegacyFileChunkSize_SilentlyIgnored(t *testing.T) {
+	yamlData := `
+agent:
+  name: "TestAgent"
+  context_mode:
+    mode: "auto"
+    file_chunk_size: 1024
+provider:
+  type: "test_provider"
+  model: "test-model"
+  api_key: "test-key"
+`
+
+	tmpFile := createTempFile(t, yamlData)
+	defer os.Remove(tmpFile)
+
+	cfg, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load with legacy file_chunk_size should succeed, got error: %v", err)
+	}
+
+	// The mode should be correctly set despite the unknown field being present.
+	if cfg.Agent.ContextMode.Mode != ContextModeAuto {
+		t.Errorf("Mode = %q, want %q", cfg.Agent.ContextMode.Mode, ContextModeAuto)
 	}
 }

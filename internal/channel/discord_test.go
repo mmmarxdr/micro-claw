@@ -10,7 +10,7 @@ import (
 // TestNewDiscordChannel_TokenRequired verifies that NewDiscordChannel returns an error
 // when no token is provided.
 func TestNewDiscordChannel_TokenRequired(t *testing.T) {
-	_, err := NewDiscordChannel(config.ChannelConfig{})
+	_, err := NewDiscordChannel(config.ChannelConfig{}, config.MediaConfig{}, nil)
 	if err == nil {
 		t.Fatal("expected error for empty token, got nil")
 	}

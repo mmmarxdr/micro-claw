@@ -3,11 +3,15 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -47,7 +51,7 @@ func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (*Stre
 		model = "gemini-2.0-flash"
 	}
 
-	apiReq := p.buildGeminiRequest(req)
+	apiReq := p.buildGeminiRequest(ctx, req)
 
 	bodyBytes, err := json.Marshal(apiReq)
 	if err != nil {
@@ -190,9 +194,77 @@ func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (*Stre
 	return sr, nil
 }
 
+// translateBlocks converts a content.Blocks slice into the Gemini parts format.
+//
+//   - BlockText  → {text: "..."}
+//   - BlockImage → {inlineData: {mimeType: "<mime>", data: "<b64>"}}
+//   - BlockAudio → {inlineData: {mimeType: "<mime>", data: "<b64>"}} (Gemini supports audio natively)
+//     Bytes are fetched from p.media (mediaReader). If p.media is nil, or GetMedia
+//     returns an error, a text placeholder is substituted and a warning is logged.
+//   - BlockDocument → Gemini has partial PDF support but for this phase fall back to
+//     FlattenBlocks placeholder text.
+func (p *GeminiProvider) translateBlocks(ctx context.Context, bs content.Blocks) []geminiPart {
+	if len(bs) == 0 {
+		return nil
+	}
+
+	parts := make([]geminiPart, 0, len(bs))
+	for _, b := range bs {
+		switch b.Type {
+		case content.BlockText:
+			parts = append(parts, geminiPart{Text: b.Text})
+
+		case content.BlockImage, content.BlockAudio:
+			imgBytes, mime, err := p.fetchMedia(ctx, b)
+			if err != nil {
+				// Graceful degradation: log and substitute placeholder text.
+				slog.Warn("gemini: failed to load media, substituting placeholder",
+					"sha256", b.MediaSHA256,
+					"err", err,
+				)
+				parts = append(parts, geminiPart{
+					Text: fmt.Sprintf("[%s unavailable: %s]", b.Type, b.MediaSHA256),
+				})
+				continue
+			}
+			parts = append(parts, geminiPart{
+				InlineData: &geminiInlineData{
+					MIMEType: mime,
+					Data:     base64.StdEncoding.EncodeToString(imgBytes),
+				},
+			})
+
+		default:
+			// BlockDocument and future types: fall back to FlattenBlocks placeholder.
+			placeholder := content.FlattenBlocks(content.Blocks{b})
+			parts = append(parts, geminiPart{Text: placeholder})
+		}
+	}
+	return parts
+}
+
+// fetchMedia loads bytes for a media block from p.media.
+// Returns an error if p.media is nil or GetMedia fails.
+func (p *GeminiProvider) fetchMedia(ctx context.Context, b content.ContentBlock) ([]byte, string, error) {
+	if p.media == nil {
+		return nil, "", fmt.Errorf("no media reader configured")
+	}
+	imgBytes, mime, err := p.media.GetMedia(ctx, b.MediaSHA256)
+	if err != nil {
+		return nil, "", err
+	}
+	// Prefer the MIME from the store response; fall back to block's MIME field.
+	if mime == "" {
+		mime = b.MIME
+	}
+	return imgBytes, mime, nil
+}
+
 // buildGeminiRequest constructs the API request body from a ChatRequest.
 // Shared by Chat() and ChatStream().
-func (p *GeminiProvider) buildGeminiRequest(req ChatRequest) geminiRequest {
+// ctx is forwarded to translateBlocks so that media bytes can be fetched from
+// the backing media store.
+func (p *GeminiProvider) buildGeminiRequest(ctx context.Context, req ChatRequest) geminiRequest {
 	apiReq := geminiRequest{}
 
 	// System prompt → systemInstruction
@@ -244,8 +316,8 @@ func (p *GeminiProvider) buildGeminiRequest(req ChatRequest) geminiRequest {
 
 		case "assistant":
 			var parts []geminiPart
-			if m.Content != "" {
-				parts = append(parts, geminiPart{Text: m.Content})
+			if txt := m.Content.TextOnly(); txt != "" {
+				parts = append(parts, geminiPart{Text: txt})
 			}
 			for _, tc := range m.ToolCalls {
 				var args map[string]any
@@ -262,10 +334,14 @@ func (p *GeminiProvider) buildGeminiRequest(req ChatRequest) geminiRequest {
 			}
 
 		default:
-			// user
+			// user — translate blocks to Gemini parts (supports image + audio inline data)
+			parts := p.translateBlocks(ctx, m.Content)
+			if len(parts) == 0 {
+				parts = []geminiPart{{Text: m.Content.TextOnly()}}
+			}
 			apiReq.Contents = append(apiReq.Contents, geminiContent{
 				Role:  "user",
-				Parts: []geminiPart{{Text: m.Content}},
+				Parts: parts,
 			})
 		}
 	}

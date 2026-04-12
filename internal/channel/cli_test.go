@@ -3,16 +3,39 @@ package channel
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
+// syncBuffer is a goroutine-safe bytes.Buffer for use in tests where the
+// CLI goroutine writes to the buffer concurrently with test assertions.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 func newTestCLIChannel(in io.Reader, out io.Writer) *CLIChannel {
-	return NewCLIChannel(config.ChannelConfig{}, in, out)
+	return NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, in, out)
 }
 
 // TestNewCLIChannel_NonNil verifies the constructor returns a non-nil channel.
@@ -136,8 +159,8 @@ func TestCLIChannel_MessageRouting(t *testing.T) {
 
 	select {
 	case msg := <-inbox:
-		if msg.Text != "hello" {
-			t.Errorf("msg.Text = %q, want %q", msg.Text, "hello")
+		if msg.Text() != "hello" {
+			t.Errorf("msg.Text() = %q, want %q", msg.Text(), "hello")
 		}
 		if msg.ChannelID != "cli" {
 			t.Errorf("msg.ChannelID = %q, want %q", msg.ChannelID, "cli")
@@ -271,7 +294,7 @@ func TestCLIChannel_PipeClose(t *testing.T) {
 
 // TestNewCLIChannelDefault verifies that NewCLIChannelDefault returns a non-nil channel.
 func TestNewCLIChannelDefault(t *testing.T) {
-	ch := NewCLIChannelDefault(config.ChannelConfig{})
+	ch := NewCLIChannelDefault(config.ChannelConfig{}, config.MediaConfig{}, nil)
 	if ch == nil {
 		t.Fatal("expected non-nil CLIChannel from NewCLIChannelDefault, got nil")
 	}
@@ -297,5 +320,225 @@ func TestCLIChannel_Send_ExactOutput(t *testing.T) {
 	want := "\nAgent: test message\n> "
 	if got != want {
 		t.Errorf("Send() output = %q, want %q", got, want)
+	}
+}
+
+// --- /attach command tests ---
+
+// buildMediaCLIChannel creates a CLIChannel with media enabled and the given store.
+func buildMediaCLIChannel(in io.Reader, out io.Writer, ms *fakeMediaStore) *CLIChannel {
+	enabled := true
+	med := config.MediaConfig{
+		Enabled:             &enabled,
+		MaxAttachmentBytes:  1024 * 1024, // 1 MB
+		MaxMessageBytes:     5 * 1024 * 1024,
+		AllowedMIMEPrefixes: []string{"image/", "audio/", "text/", "application/pdf"},
+	}
+	return NewCLIChannel(config.ChannelConfig{}, med, ms, in, out)
+}
+
+// TestCLIChannel_Attach_ImageFile verifies /attach with a JPEG-like temp file enqueues
+// a BlockImage with the expected SHA from the fake store.
+func TestCLIChannel_Attach_ImageFile(t *testing.T) {
+	// Create a temp file with JPEG magic bytes (FFD8FF)
+	tmpFile, err := os.CreateTemp("", "test-*.jpg")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	// Write JPEG magic bytes followed by padding
+	jpegData := append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte{0x00}, 100)...)
+	if _, err := tmpFile.Write(jpegData); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	ms := newFakeMediaStore()
+	pr, pw := io.Pipe()
+	out := &syncBuffer{}
+	ch := buildMediaCLIChannel(pr, out, ms)
+
+	inbox := make(chan IncomingMessage, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer pw.Close()
+
+	if err := ch.Start(ctx, inbox); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// Write /attach command
+	if _, err := fmt.Fprintf(pw, "/attach %s\n", tmpFile.Name()); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	select {
+	case msg := <-inbox:
+		if len(msg.Content) == 0 {
+			t.Fatal("expected content blocks, got none")
+		}
+		block := msg.Content[0]
+		if block.Type != content.BlockImage {
+			t.Errorf("expected BlockImage, got %q", block.Type)
+		}
+		if block.MediaSHA256 == "" {
+			t.Error("expected non-empty MediaSHA256")
+		}
+		ms.mu.Lock()
+		cnt := ms.callCnt
+		ms.mu.Unlock()
+		if cnt == 0 {
+			t.Error("expected StoreMedia to be called")
+		}
+		// Verify the SHA is in the store
+		if _, ok := ms.stored[block.MediaSHA256]; !ok {
+			t.Errorf("SHA %q not found in fake store", block.MediaSHA256)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for attach message")
+	}
+}
+
+// TestCLIChannel_Attach_OversizedFile verifies an oversized file prints a rejection
+// notice and does NOT enqueue a message.
+func TestCLIChannel_Attach_OversizedFile(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-oversized-*.bin")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	// Write data larger than MaxAttachmentBytes (1 MB)
+	bigData := bytes.Repeat([]byte("X"), 2*1024*1024) // 2 MB
+	if _, err := tmpFile.Write(bigData); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	tmpFile.Close()
+
+	ms := newFakeMediaStore()
+	pr, pw := io.Pipe()
+	out := &syncBuffer{}
+	ch := buildMediaCLIChannel(pr, out, ms)
+
+	inbox := make(chan IncomingMessage, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer pw.Close()
+
+	if err := ch.Start(ctx, inbox); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	if _, err := fmt.Fprintf(pw, "/attach %s\n", tmpFile.Name()); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	select {
+	case msg := <-inbox:
+		t.Fatalf("oversized file should not enqueue, got %+v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// expected — check that rejection notice was printed
+	}
+
+	if !strings.Contains(out.String(), "too large") {
+		t.Errorf("expected rejection notice in output, got: %q", out.String())
+	}
+	ms.mu.Lock()
+	cnt := ms.callCnt
+	ms.mu.Unlock()
+	if cnt != 0 {
+		t.Errorf("expected StoreMedia not called, called %d times", cnt)
+	}
+}
+
+// TestCLIChannel_Attach_BlockedMIME verifies that a file with a blocked MIME type
+// prints a rejection notice and does NOT enqueue a message.
+func TestCLIChannel_Attach_BlockedMIME(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-exec-*.exe")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	// Write Windows PE magic bytes (MZ header) → MIME will be application/x-msdownload or octet-stream
+	exeData := append([]byte{0x4D, 0x5A}, bytes.Repeat([]byte{0x00}, 100)...)
+	if _, err := tmpFile.Write(exeData); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	tmpFile.Close()
+
+	ms := newFakeMediaStore()
+	pr, pw := io.Pipe()
+	out := &syncBuffer{}
+	ch := buildMediaCLIChannel(pr, out, ms)
+
+	inbox := make(chan IncomingMessage, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer pw.Close()
+
+	if err := ch.Start(ctx, inbox); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	if _, err := fmt.Fprintf(pw, "/attach %s\n", tmpFile.Name()); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	select {
+	case msg := <-inbox:
+		t.Fatalf("blocked MIME should not enqueue, got %+v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// expected
+	}
+
+	if !strings.Contains(out.String(), "not allowed") {
+		t.Errorf("expected MIME rejection notice, got: %q", out.String())
+	}
+	ms.mu.Lock()
+	cnt := ms.callCnt
+	ms.mu.Unlock()
+	if cnt != 0 {
+		t.Errorf("expected StoreMedia not called, called %d times", cnt)
+	}
+}
+
+// TestCLIChannel_Attach_MediaDisabled verifies that /attach prints "media disabled"
+// and does NOT enqueue when media is not enabled.
+func TestCLIChannel_Attach_MediaDisabled(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-disabled-*.txt")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if err := os.WriteFile(tmpFile.Name(), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	pr, pw := io.Pipe()
+	out := &syncBuffer{}
+	// media disabled: nil store
+	ch := newTestCLIChannel(pr, out)
+
+	inbox := make(chan IncomingMessage, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer pw.Close()
+
+	if err := ch.Start(ctx, inbox); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	if _, err := fmt.Fprintf(pw, "/attach %s\n", tmpFile.Name()); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	select {
+	case msg := <-inbox:
+		t.Fatalf("media disabled — should not enqueue, got %+v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// expected
+	}
+
+	if !strings.Contains(out.String(), "media disabled") {
+		t.Errorf("expected 'media disabled' notice, got: %q", out.String())
 	}
 }

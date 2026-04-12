@@ -12,6 +12,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 	"microagent/internal/tool"
@@ -442,7 +443,7 @@ func TestProcessMessage_StreamEnabled_TextOnly(t *testing.T) {
 	st := &mockStore{}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// Text was streamed, so channel.Send() should NOT have been called with the response text.
 	for _, msg := range sCh.sent {
@@ -513,7 +514,7 @@ func TestProcessMessage_StreamEnabled_WithToolCalls(t *testing.T) {
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, st, audit.NoopAuditor{},
 		map[string]tool.Tool{"mock_tool": mt}, nil, skill.SkillIndex{}, 4, true)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "do something"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("do something")})
 
 	// Two streaming calls should have been made.
 	if callCount != 2 {
@@ -552,7 +553,7 @@ func TestProcessMessage_StreamFallbackToSync(t *testing.T) {
 		t.Error("expected agent.stream to be false when provider doesn't implement StreamingProvider")
 	}
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// Should fall back to sync path and deliver via Send().
 	if len(ch.sent) != 1 {

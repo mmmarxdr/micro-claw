@@ -3,12 +3,16 @@ package channel
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"microagent/internal/config"
+	"microagent/internal/content"
+	"microagent/internal/store"
 )
 
 // DiscordChannel implements the channel.Channel interface using Discord's Gateway (WebSocket).
@@ -17,10 +21,14 @@ type DiscordChannel struct {
 	allowedGuilds   map[string]bool
 	allowedChannels map[string]bool
 	cancel          context.CancelFunc
+	media           config.MediaConfig
+	mediaStore      store.MediaStore
+	httpClient      *http.Client
 }
 
 // NewDiscordChannel initializes the Discord session and sets up guild/channel allowlists.
-func NewDiscordChannel(cfg config.ChannelConfig) (*DiscordChannel, error) {
+// mediaStore may be nil — if nil or media.Enabled=false, attachments are ignored.
+func NewDiscordChannel(cfg config.ChannelConfig, media config.MediaConfig, mediaStore store.MediaStore) (*DiscordChannel, error) {
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("discord token is required")
 	}
@@ -50,11 +58,187 @@ func NewDiscordChannel(cfg config.ChannelConfig) (*DiscordChannel, error) {
 		session:         session,
 		allowedGuilds:   allowedGuilds,
 		allowedChannels: allowedChannels,
+		media:           media,
+		mediaStore:      mediaStore,
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
 func (d *DiscordChannel) Name() string {
 	return "discord"
+}
+
+// isMediaEnabled returns true when media is enabled in config AND a MediaStore is available.
+func (d *DiscordChannel) isMediaEnabled() bool {
+	return config.BoolVal(d.media.Enabled) && d.mediaStore != nil
+}
+
+// processDiscordMessage converts a discordgo.MessageCreate into an IncomingMessage.
+// Returns the message and true if it should be enqueued, or zero value and false to skip.
+func (d *DiscordChannel) processDiscordMessage(ctx context.Context, m *discordgo.MessageCreate) (IncomingMessage, bool) {
+	// Attribute the sender so the LLM knows who is speaking in a team channel.
+	text := fmt.Sprintf("[%s]: %s", m.Author.Username, m.Content)
+
+	var blocks content.Blocks
+
+	if len(m.Attachments) == 0 {
+		// No attachments — fast path
+		blocks = content.TextBlock(text)
+	} else if !d.isMediaEnabled() {
+		// Media disabled but attachments present — enqueue with notice
+		blocks = content.TextBlock(text)
+		blocks = append(blocks, content.ContentBlock{
+			Type: content.BlockText,
+			Text: "(media ignored — disabled in config)",
+		})
+	} else {
+		// Process attachments
+		blocks = d.handleAttachments(ctx, m.Content, m.Author.Username, m.Attachments)
+	}
+
+	return IncomingMessage{
+		ID:        m.ID,
+		ChannelID: "discord:" + m.ChannelID,
+		SenderID:  m.Author.ID,
+		Content:   blocks,
+		Timestamp: time.Now(),
+	}, true
+}
+
+// handleAttachments processes Discord message attachments and builds content blocks.
+func (d *DiscordChannel) handleAttachments(ctx context.Context, msgContent, username string, attachments []*discordgo.MessageAttachment) content.Blocks {
+	// Attribution prefix block
+	prefix := fmt.Sprintf("[%s]: %s", username, msgContent)
+	var blocks content.Blocks
+	if prefix != "" {
+		blocks = append(blocks, content.ContentBlock{Type: content.BlockText, Text: prefix})
+	}
+
+	// Total message bytes gate: sum of all attachment sizes + text content
+	var totalBytes int64
+	totalBytes += int64(len(msgContent))
+	for _, att := range attachments {
+		totalBytes += int64(att.Size)
+	}
+	if totalBytes > d.media.MaxMessageBytes {
+		blocks = append(blocks, content.ContentBlock{
+			Type: content.BlockText,
+			Text: fmt.Sprintf("(message too large: %d bytes exceeds total limit %d)", totalBytes, d.media.MaxMessageBytes),
+		})
+		return blocks
+	}
+
+	for _, att := range attachments {
+		// Per-attachment size gate
+		if int64(att.Size) > d.media.MaxAttachmentBytes {
+			blocks = append(blocks, content.ContentBlock{
+				Type: content.BlockText,
+				Text: fmt.Sprintf("(attachment too large: %d bytes exceeds limit %d)", att.Size, d.media.MaxAttachmentBytes),
+			})
+			continue
+		}
+
+		// Download attachment
+		data, mime, err := d.downloadURL(ctx, att.URL, att.ContentType)
+		if err != nil {
+			slog.Warn("discord: attachment download failed", "url", att.URL, "error", err)
+			blocks = append(blocks, content.ContentBlock{
+				Type: content.BlockText,
+				Text: fmt.Sprintf("(media failed to download: %s)", err.Error()),
+			})
+			continue
+		}
+
+		// MIME whitelist check
+		allowed := false
+		for _, prefix := range d.media.AllowedMIMEPrefixes {
+			if strings.HasPrefix(mime, prefix) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			blocks = append(blocks, content.ContentBlock{
+				Type: content.BlockText,
+				Text: fmt.Sprintf("(attachment type not allowed: %s)", mime),
+			})
+			continue
+		}
+
+		sha, err := d.mediaStore.StoreMedia(ctx, data, mime)
+		if err != nil {
+			slog.Warn("discord: failed to store attachment", "error", err)
+			blocks = append(blocks, content.ContentBlock{
+				Type: content.BlockText,
+				Text: fmt.Sprintf("(media failed to download: %s)", err.Error()),
+			})
+			continue
+		}
+
+		var block content.ContentBlock
+		switch {
+		case strings.HasPrefix(mime, "image/"):
+			block = content.ContentBlock{
+				Type:        content.BlockImage,
+				MediaSHA256: sha,
+				MIME:        mime,
+				Size:        int64(len(data)),
+			}
+		case strings.HasPrefix(mime, "audio/"):
+			block = content.ContentBlock{
+				Type:        content.BlockAudio,
+				MediaSHA256: sha,
+				MIME:        mime,
+				Size:        int64(len(data)),
+			}
+		default:
+			block = content.ContentBlock{
+				Type:        content.BlockDocument,
+				MediaSHA256: sha,
+				MIME:        mime,
+				Size:        int64(len(data)),
+				Filename:    att.Filename,
+			}
+		}
+		blocks = append(blocks, block)
+	}
+
+	return blocks
+}
+
+// downloadURL fetches bytes from a URL. If contentTypeHint is non-empty it is used as MIME;
+// otherwise MIME is detected from the response body.
+func (d *DiscordChannel) downloadURL(ctx context.Context, url, contentTypeHint string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("CDN returned status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read body: %w", err)
+	}
+
+	mime := contentTypeHint
+	if mime == "" {
+		probe := data
+		if len(probe) > 512 {
+			probe = probe[:512]
+		}
+		mime = http.DetectContentType(probe)
+	}
+
+	return data, mime, nil
 }
 
 // Start registers the MessageCreate handler, opens the WebSocket connection,
@@ -70,8 +254,8 @@ func (d *DiscordChannel) Start(ctx context.Context, inbox chan<- IncomingMessage
 			return
 		}
 
-		// Empty content (e.g. embeds-only) is not actionable.
-		if strings.TrimSpace(m.Content) == "" {
+		// Empty content with no attachments is not actionable.
+		if strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0 {
 			return
 		}
 
@@ -98,17 +282,12 @@ func (d *DiscordChannel) Start(ctx context.Context, inbox chan<- IncomingMessage
 			"guild_id", m.GuildID,
 			"author", m.Author.Username,
 			"content", m.Content,
+			"attachments", len(m.Attachments),
 		)
 
-		// Attribute the sender so the LLM knows who is speaking in a team channel.
-		text := fmt.Sprintf("[%s]: %s", m.Author.Username, m.Content)
-
-		msg := IncomingMessage{
-			ID:        m.ID,
-			ChannelID: "discord:" + m.ChannelID,
-			SenderID:  m.Author.ID,
-			Text:      text,
-			Timestamp: time.Now(),
+		msg, enqueue := d.processDiscordMessage(stopCtx, m)
+		if !enqueue {
+			return
 		}
 
 		// Non-blocking push: drop if inbox is full rather than blocking the dispatch loop.

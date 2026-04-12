@@ -13,6 +13,7 @@ import (
 	robfigcron "github.com/robfig/cron/v3"
 
 	cronpkg "microagent/internal/cron"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/store"
 )
@@ -292,7 +293,7 @@ func (t *scheduleTaskTool) callProviderForCron(ctx context.Context, schedule str
 		Messages: []provider.ChatMessage{
 			{
 				Role:    "user",
-				Content: fmt.Sprintf("Convert this schedule to a cron expression: %s", schedule),
+				Content: content.TextBlock(fmt.Sprintf("Convert this schedule to a cron expression: %s", schedule)),
 			},
 		},
 		MaxTokens: 20,

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"microagent/internal/content"
 	"microagent/internal/provider"
 )
 
@@ -26,7 +27,7 @@ func buildSummarizationPrompt(messages []provider.ChatMessage, maxTokens int) st
 		switch msg.Role {
 		case "user":
 			sb.WriteString("[User]: ")
-			sb.WriteString(truncateContent(msg.Content, 500))
+			sb.WriteString(truncateContent(msg.Content.TextOnly(), 500))
 			sb.WriteString("\n\n")
 		case "assistant":
 			sb.WriteString("[Assistant]: ")
@@ -37,11 +38,11 @@ func buildSummarizationPrompt(messages []provider.ChatMessage, maxTokens int) st
 				}
 				sb.WriteString(fmt.Sprintf("(called tools: %s) ", strings.Join(names, ", ")))
 			}
-			sb.WriteString(truncateContent(msg.Content, 300))
+			sb.WriteString(truncateContent(msg.Content.TextOnly(), 300))
 			sb.WriteString("\n\n")
 		case "tool":
 			sb.WriteString(fmt.Sprintf("[Tool Result (id=%s)]: ", msg.ToolCallID))
-			sb.WriteString(truncateContent(msg.Content, 200))
+			sb.WriteString(truncateContent(msg.Content.TextOnly(), 200))
 			sb.WriteString("\n\n")
 		}
 	}
@@ -68,7 +69,7 @@ func (a *Agent) summarizeHistory(ctx context.Context, messages []provider.ChatMe
 	resp, err := a.provider.Chat(summarizeCtx, provider.ChatRequest{
 		SystemPrompt: "You are a conversation summarizer. Produce concise, structured summaries that preserve key decisions, file paths, tool results, and action items. Never fabricate information not present in the input.",
 		Messages: []provider.ChatMessage{
-			{Role: "user", Content: prompt},
+			{Role: "user", Content: content.TextBlock(prompt)},
 		},
 		MaxTokens:   summaryTokens,
 		Temperature: 0.0,
@@ -95,7 +96,7 @@ func mechanicalSummary(messages []provider.ChatMessage) string {
 		switch msg.Role {
 		case "user":
 			userMsgCount++
-			sb.WriteString(fmt.Sprintf("- User (%d): %s\n", userMsgCount, truncateContent(msg.Content, 100)))
+			sb.WriteString(fmt.Sprintf("- User (%d): %s\n", userMsgCount, truncateContent(msg.Content.TextOnly(), 100)))
 		case "assistant":
 			for _, tc := range msg.ToolCalls {
 				toolNames[tc.Name] = true
@@ -116,24 +117,31 @@ func mechanicalSummary(messages []provider.ChatMessage) string {
 
 // compressToolResult reduces a tool result message for history storage.
 // Keeps first and last characters plus metadata, removes bulk output.
+// Tool results are expected to be text-only; if the content has media blocks,
+// it is returned unchanged (media blocks in tool results are unexpected).
 func compressToolResult(msg provider.ChatMessage, maxChars int) provider.ChatMessage {
-	if len(msg.Content) <= maxChars {
+	// Compress against the text-only representation.
+	text := msg.Content.TextOnly()
+	if len(text) <= maxChars {
 		return msg
 	}
 
 	headSize := 500
 	tailSize := 200
+	compressed := msg
 	if maxChars < headSize+tailSize+50 {
-		// For very small maxChars, just truncate
-		compressed := msg
-		compressed.Content = msg.Content[:maxChars] + fmt.Sprintf("\n[...truncated %d chars...]", len(msg.Content)-maxChars)
+		// For very small maxChars, just truncate.
+		compressed.Content = content.TextBlock(
+			text[:maxChars] + fmt.Sprintf("\n[...truncated %d chars...]", len(text)-maxChars),
+		)
 		return compressed
 	}
 
-	compressed := msg
-	compressed.Content = msg.Content[:headSize] +
-		fmt.Sprintf("\n[...truncated %d chars...]\n", len(msg.Content)-headSize-tailSize) +
-		msg.Content[len(msg.Content)-tailSize:]
+	compressed.Content = content.TextBlock(
+		text[:headSize] +
+			fmt.Sprintf("\n[...truncated %d chars...]\n", len(text)-headSize-tailSize) +
+			text[len(text)-tailSize:],
+	)
 	return compressed
 }
 
@@ -158,8 +166,9 @@ func (a *Agent) manageContextTokens(ctx context.Context, systemPrompt string, me
 		return messages
 	}
 
+	provName := a.provider.Name()
 	systemTokens := EstimateTokens(systemPrompt)
-	msgTokens := EstimateMessagesTokens(messages)
+	msgTokens := EstimateMessagesTokensFor(messages, provName)
 	totalTokens := systemTokens + msgTokens
 
 	if totalTokens <= maxTokens {
@@ -183,7 +192,7 @@ func (a *Agent) manageContextTokens(ctx context.Context, systemPrompt string, me
 		}
 	}
 
-	msgTokens = EstimateMessagesTokens(messages)
+	msgTokens = EstimateMessagesTokensFor(messages, provName)
 	totalTokens = systemTokens + msgTokens
 	if totalTokens <= maxTokens {
 		slog.Info("context within budget after tool compression", "total_tokens", totalTokens)
@@ -205,7 +214,7 @@ func (a *Agent) manageContextTokens(ctx context.Context, systemPrompt string, me
 	summarizeEnd := 0
 	freedTokens := 0
 	for i := 0; i < cutoff && freedTokens < tokensToFree; i++ {
-		freedTokens += EstimateMessageTokens(messages[i])
+		freedTokens += EstimateMessageTokensFor(messages[i], provName)
 		summarizeEnd = i + 1
 	}
 
@@ -221,11 +230,11 @@ func (a *Agent) manageContextTokens(ctx context.Context, systemPrompt string, me
 
 		summaryMsg := provider.ChatMessage{
 			Role:    "assistant",
-			Content: "(Summary of previous conversation):\n" + summaryText,
+			Content: content.TextBlock("(Summary of previous conversation):\n" + summaryText),
 		}
 		messages = append([]provider.ChatMessage{summaryMsg}, remaining...)
 
-		msgTokens = EstimateMessagesTokens(messages)
+		msgTokens = EstimateMessagesTokensFor(messages, provName)
 		totalTokens = systemTokens + msgTokens
 		slog.Info("context after summarization",
 			"total_tokens", totalTokens, "summarized_messages", summarizeEnd, "remaining_messages", len(messages))
@@ -251,7 +260,7 @@ func (a *Agent) manageContextTokens(ctx context.Context, systemPrompt string, me
 	usedTokens := 0
 
 	for i := len(messages) - 1; i >= 0; i-- {
-		msgTok := EstimateMessageTokens(messages[i])
+		msgTok := EstimateMessageTokensFor(messages[i], provName)
 		if usedTokens+msgTok > budgetForMessages {
 			break
 		}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"microagent/internal/content"
 	"microagent/internal/provider"
 )
 
@@ -19,7 +20,7 @@ func TestEstimateTokens(t *testing.T) {
 		{"five chars", "abcde", 2},
 		{"eight chars", "abcdefgh", 2},
 		{"twelve chars", "abcdefghijkl", 3},
-		{"hello world", "hello world", 3}, // 11 chars → (11+3)/4 = 3
+		{"hello world", "hello world", 3},                                 // 11 chars → (11+3)/4 = 3
 		{"long text", "The quick brown fox jumps over the lazy dog.", 11}, // 44 chars → (44+3)/4 = 47/4 = 11
 	}
 	for _, tt := range tests {
@@ -35,7 +36,7 @@ func TestEstimateTokens(t *testing.T) {
 func TestEstimateMessageTokens_UserMessage(t *testing.T) {
 	msg := provider.ChatMessage{
 		Role:    "user",
-		Content: "Hello, how are you?",
+		Content: content.TextBlock("Hello, how are you?"),
 	}
 	tokens := EstimateMessageTokens(msg)
 	// 4 (overhead) + (19+3)/4 = 4 + 5 = 9
@@ -48,7 +49,7 @@ func TestEstimateMessageTokens_UserMessage(t *testing.T) {
 func TestEstimateMessageTokens_AssistantWithToolCalls(t *testing.T) {
 	msg := provider.ChatMessage{
 		Role:    "assistant",
-		Content: "Let me check that.",
+		Content: content.TextBlock("Let me check that."),
 		ToolCalls: []provider.ToolCall{
 			{
 				ID:    "tc1",
@@ -70,7 +71,7 @@ func TestEstimateMessageTokens_AssistantWithToolCalls(t *testing.T) {
 func TestEstimateMessageTokens_ToolResult(t *testing.T) {
 	msg := provider.ChatMessage{
 		Role:       "tool",
-		Content:    "file1.txt\nfile2.txt\nfile3.txt",
+		Content:    content.TextBlock("file1.txt\nfile2.txt\nfile3.txt"),
 		ToolCallID: "tc1",
 	}
 	tokens := EstimateMessageTokens(msg)
@@ -92,8 +93,8 @@ func TestEstimateMessageTokens_EmptyMessage(t *testing.T) {
 
 func TestEstimateMessagesTokens(t *testing.T) {
 	msgs := []provider.ChatMessage{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "hi there"},
+		{Role: "user", Content: content.TextBlock("hello")},
+		{Role: "assistant", Content: content.TextBlock("hi there")},
 	}
 	total := EstimateMessagesTokens(msgs)
 	expected := EstimateMessageTokens(msgs[0]) + EstimateMessageTokens(msgs[1])

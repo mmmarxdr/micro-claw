@@ -1,0 +1,23 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "here is a photo",
+          "type": "text"
+        },
+        {
+          "source": {
+            "data": "/9j/4A==",
+            "media_type": "image/jpeg",
+            "type": "base64"
+          },
+          "type": "image"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-3-5-sonnet-20241022"
+}

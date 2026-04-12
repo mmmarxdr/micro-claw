@@ -15,6 +15,7 @@ import (
 type AnthropicProvider struct {
 	config config.ProviderConfig
 	client *http.Client
+	media  mediaReader // optional; nil → text-only fallback for image blocks
 }
 
 func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
@@ -28,13 +29,24 @@ func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
 	}
 }
 
+// WithMediaReader wires a mediaReader into the provider so that image blocks
+// can be translated to base64 Anthropic content parts. Callers that do not yet
+// have a store (e.g. text-only test fixtures) leave this unset; the provider
+// falls back gracefully to placeholder text for any image blocks it encounters.
+//
+// Phase 4's *store.SQLiteStore will satisfy this interface automatically.
+func (p *AnthropicProvider) WithMediaReader(mr mediaReader) *AnthropicProvider {
+	p.media = mr
+	return p
+}
+
 func (p *AnthropicProvider) Name() string {
 	return "anthropic"
 }
 
-func (p *AnthropicProvider) SupportsTools() bool {
-	return true
-}
+func (p *AnthropicProvider) SupportsTools() bool      { return true }
+func (p *AnthropicProvider) SupportsMultimodal() bool { return true }
+func (p *AnthropicProvider) SupportsAudio() bool      { return false }
 
 func (p *AnthropicProvider) HealthCheck(ctx context.Context) (string, error) {
 	if p.config.APIKey == "" {
@@ -82,7 +94,7 @@ type anthropicResponse struct {
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	apiReq := p.buildAnthropicRequest(req)
+	apiReq := p.buildAnthropicRequest(ctx, req)
 
 	bodyBytes, err := json.Marshal(apiReq)
 	if err != nil {

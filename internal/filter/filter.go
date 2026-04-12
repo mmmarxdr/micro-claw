@@ -37,8 +37,6 @@ func PreApply(ctx context.Context, toolName string, input json.RawMessage, cfg c
 	switch toolName {
 	case "shell_exec":
 		return preApplyShell(ctx, input, cfg)
-	case "read_file":
-		return preApplyFileRead(input, cfg)
 	default:
 		// Unsupported tool - continue execution
 		return tool.ToolResult{}, false
@@ -46,7 +44,7 @@ func PreApply(ctx context.Context, toolName string, input json.RawMessage, cfg c
 }
 
 // preApplyShell handles shell_exec tool pre-execution.
-// When context-mode is enabled, intercepts and runs via Sandbox with byte limiting.
+// When context-mode is enabled, intercepts and runs via BoundedExec with byte limiting.
 func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
 	var params struct {
 		Command string `json:"command"`
@@ -59,32 +57,41 @@ func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.Contex
 		return tool.ToolResult{}, false
 	}
 
-	// Create sandbox with context-mode limits
-	sb := &tool.Sandbox{
+	// Create bounded executor with context-mode limits.
+	be := &tool.BoundedExec{
 		MaxOutputBytes: cfg.ShellMaxOutput,
 		Timeout:        cfg.SandboxTimeout,
 		KeepFirstN:     cfg.SandboxKeepFirst,
 		KeepLastN:      cfg.SandboxKeepLast,
 	}
 
-	result, err := sb.Run(ctx, "sh", "-c", params.Command)
+	result, err := be.Run(ctx, "sh", "-c", params.Command)
 	if err != nil {
-		// Sandbox error (e.g. timeout) — return as error result, skip execution
+		// BoundedExec.Run always returns nil; this branch is kept for interface safety.
 		return tool.ToolResult{
 			IsError: true,
 			Content: fmt.Sprintf("sandbox execution failed: %v", err),
 			Meta: map[string]string{
-				"command":   params.Command,
-				"exit_code": "-1",
+				"command":                  params.Command,
+				"microagent/exit_code":     "-1",
+				"microagent/error_kind":    "other",
+				"microagent/truncated":     "false",
+				"microagent/presummarized": "true",
 			},
 		}, true
 	}
 
-	// Build result from sandbox output
+	// Build result from bounded exec output.
 	exitCode := fmt.Sprintf("%d", result.Metrics.ExitCode)
+	truncated := fmt.Sprintf("%v", result.Metrics.Truncated)
 	meta := map[string]string{
-		"command":   params.Command,
-		"exit_code": exitCode,
+		"command":                  params.Command,
+		"microagent/exit_code":     exitCode,
+		"microagent/truncated":     truncated,
+		"microagent/presummarized": "true",
+	}
+	if result.Metrics.ErrorKind != tool.ExecErrorNone {
+		meta["microagent/error_kind"] = string(result.Metrics.ErrorKind)
 	}
 
 	content := result.Summary
@@ -104,34 +111,16 @@ func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.Contex
 	}, true // true = skip normal execution
 }
 
-// preApplyFileRead handles read_file tool pre-execution.
-// Phase 2: extracts path and validates config, but doesn't intercept yet.
-// Phase 3+: will apply chunk size limiting.
-func preApplyFileRead(input json.RawMessage, cfg config.ContextModeConfig) (tool.ToolResult, bool) {
-	// Extract path from JSON
-	var params struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(input, &params); err != nil {
-		// Invalid JSON - can't intercept
-		return tool.ToolResult{}, false
-	}
-
-	if params.Path == "" {
-		// Empty path - let execution handle validation
-		return tool.ToolResult{}, false
-	}
-
-	// Phase 2: We have the path and config (cfg.FileChunkSize),
-	// but we don't intercept yet. Chunking implementation comes later.
-
-	return tool.ToolResult{}, false
-}
-
 // Apply post-processes a tool result before it enters the conversation context.
 // It is a zero-allocation no-op when cfg.Enabled is false.
 // Error results (result.IsError == true) are never filtered.
+// Results that were already summarised by PreApply (Meta["microagent/presummarized"]=="true")
+// are returned unchanged so they are never double-processed.
+// TODO(multimodal-tool-output): filter operates on text tool output only; content blocks live in context.go
 func Apply(toolName string, input json.RawMessage, result tool.ToolResult, cfg config.FilterConfig) (tool.ToolResult, Metrics) {
+	if result.Meta["microagent/presummarized"] == "true" {
+		return result, Metrics{}
+	}
 	if !cfg.Enabled || result.IsError {
 		return result, Metrics{}
 	}

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -115,7 +117,7 @@ func TestOpenAIProvider_ChatTextResponse(t *testing.T) {
 	}
 
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -171,7 +173,7 @@ func TestOpenAIProvider_ChatWithToolCalls(t *testing.T) {
 	}
 
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Run ls"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Run ls")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -205,7 +207,7 @@ func TestOpenAIProvider_ChatError401(t *testing.T) {
 	}
 
 	_, err = p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 401")
@@ -227,7 +229,7 @@ func TestOpenAIProvider_ChatError500(t *testing.T) {
 	}
 
 	_, err = p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 500")
@@ -259,7 +261,7 @@ func TestOpenAIProvider_ChatRetryOn429(t *testing.T) {
 	}
 
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -298,7 +300,7 @@ func TestOpenAIProvider_OllamaMode(t *testing.T) {
 	}
 
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -437,6 +439,93 @@ func TestOpenAIProvider_Embed_EmptyData(t *testing.T) {
 	_, err = p.Embed(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error for empty data array")
+	}
+}
+
+// ---- TestOpenAIMultimodalRequest --------------------------------------------
+
+// TestOpenAIMultimodalRequest verifies that a user message containing a
+// BlockText + BlockImage is translated to the correct OpenAI API wire shape.
+// The expected shape is stored in testdata/openai_multimodal_request.json.
+// Comparison is map-based (JSON unmarshal → re-marshal) so key ordering does
+// not cause false failures.
+func TestOpenAIMultimodalRequest(t *testing.T) {
+	// PNG magic bytes — a distinct payload from the Anthropic JPEG test.
+	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47}
+
+	stub := &stubMediaReader{
+		entries: map[string]stubMediaEntry{
+			"def456": {data: pngMagic, mime: "image/png"},
+		},
+	}
+
+	var capturedBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := readAll(r.Body)
+		if err != nil {
+			t.Logf("read body error: %v", err)
+		}
+		capturedBody = b
+		// Return a minimal valid OpenAI response.
+		resp := openAITextResponse("ok")
+		respBytes, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBytes)
+	}))
+	defer ts.Close()
+
+	_, cfg := newOpenAITestServer(t, nil)
+	cfg.BaseURL = ts.URL
+	prov, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+	prov = prov.WithMediaReader(stub)
+
+	req := ChatRequest{
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				Content: content.Blocks{
+					{Type: content.BlockText, Text: "look"},
+					{Type: content.BlockImage, MediaSHA256: "def456", MIME: "image/png", Size: 2048},
+				},
+			},
+		},
+	}
+
+	_, callErr := prov.Chat(context.Background(), req)
+	if callErr != nil {
+		t.Fatalf("Chat() error: %v", callErr)
+	}
+
+	var actual map[string]any
+	if err := json.Unmarshal(capturedBody, &actual); err != nil {
+		t.Fatalf("unmarshal actual body: %v", err)
+	}
+
+	goldenPath := "testdata/openai_multimodal_request.json"
+	goldenRaw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("reading golden file %s: %v", goldenPath, err)
+	}
+	var golden map[string]any
+	if err := json.Unmarshal(goldenRaw, &golden); err != nil {
+		t.Fatalf("unmarshal golden file: %v", err)
+	}
+
+	actualCanon, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatalf("re-marshal actual: %v", err)
+	}
+	goldenCanon, err := json.Marshal(golden)
+	if err != nil {
+		t.Fatalf("re-marshal golden: %v", err)
+	}
+
+	if string(actualCanon) != string(goldenCanon) {
+		t.Errorf("multimodal request body does not match golden file %s\n\ngot:\n%s\n\nwant:\n%s",
+			goldenPath, capturedBody, goldenRaw)
 	}
 }
 

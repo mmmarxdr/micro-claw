@@ -34,15 +34,15 @@ func NewSQLiteStore(cfg config.StoreConfig) (*SQLiteStore, error) {
 	}
 
 	dbPath := filepath.Join(cfg.Path, "microagent.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// Embed pragmas in the DSN so every connection in the pool inherits them —
+	// a PRAGMA set via db.Exec only applies to the one connection that ran it.
+	// busy_timeout: wait up to 5 s on a locked write (fixes SQLITE_BUSY from
+	// the async IndexingWorker racing against the main agent loop).
+	// journal_mode=WAL: allows concurrent readers alongside a writer.
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite database at %s: %w", dbPath, err)
-	}
-
-	// Enable WAL mode for concurrent reads alongside writes.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enabling WAL mode: %w", err)
 	}
 
 	s := &SQLiteStore{db: db, cfg: cfg}
@@ -105,6 +105,13 @@ func (s *SQLiteStore) SaveConversation(ctx context.Context, conv Conversation) e
 	if err != nil {
 		return fmt.Errorf("saving conversation %s: %w", conv.ID, err)
 	}
+
+	// Best-effort: keep referenced media blobs alive so the GC prune does not
+	// collect them. Errors are ignored — a failed touch only risks early GC.
+	if shas := collectMediaSHAs(conv.Messages); len(shas) > 0 {
+		_ = s.touchMediaBatch(ctx, shas)
+	}
+
 	return nil
 }
 
@@ -135,6 +142,12 @@ func (s *SQLiteStore) LoadConversation(ctx context.Context, id string) (*Convers
 		if err := json.Unmarshal([]byte(metadataJSON), &conv.Metadata); err != nil {
 			return nil, fmt.Errorf("unmarshalling metadata for conversation %s: %w", id, err)
 		}
+	}
+
+	// Best-effort: refresh last_referenced_at for any media blobs in this
+	// conversation so the GC prune does not collect recently-read blobs.
+	if shas := collectMediaSHAs(conv.Messages); len(shas) > 0 {
+		_ = s.touchMediaBatch(ctx, shas)
 	}
 
 	return &conv, nil
@@ -486,8 +499,32 @@ func (s *SQLiteStore) UpdateMemory(ctx context.Context, scopeID string, entry Me
 
 // ─── OutputStore implementation ───────────────────────────────────────────────
 
+// escapeLike escapes backslash, percent, and underscore in s so the result
+// can be used as a literal pattern in a SQL LIKE … ESCAPE '\' clause.
+func escapeLike(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' || c == '%' || c == '_' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
 // IndexOutput stores a tool output in the FTS5 table for later search.
 func (s *SQLiteStore) IndexOutput(ctx context.Context, output ToolOutput) error {
+	if output.ID == "" {
+		return ErrOutputMissingID
+	}
+	if output.ToolName == "" {
+		return ErrOutputMissingToolName
+	}
+	if output.Content == "" {
+		return ErrOutputEmptyContent
+	}
 	// Store timestamp as Unix epoch for reliable storage/retrieval
 	timestampUnix := output.Timestamp.Unix()
 	_, err := s.db.ExecContext(ctx,
@@ -528,11 +565,12 @@ func (s *SQLiteStore) SearchOutputs(ctx context.Context, query string, limit int
 		// Build FTS5 query and search
 		ftsQuery := BuildFTSQuery(query)
 		if ftsQuery == "" {
-			// Fallback to LIKE search if no keywords
-			likePattern := "%" + strings.ToLower(query) + "%"
+			// Fallback to LIKE search if no keywords.
+			// escapeLike prevents user-supplied % and _ from acting as wildcards.
+			likePattern := "%" + escapeLike(strings.ToLower(query)) + "%"
 			q := `SELECT ` + cols + `
 			      FROM tool_outputs
-			      WHERE lower(content) LIKE ? OR lower(tool_name) LIKE ? OR lower(command) LIKE ?
+			      WHERE lower(content) LIKE ? ESCAPE '\' OR lower(tool_name) LIKE ? ESCAPE '\' OR lower(command) LIKE ? ESCAPE '\'
 			      ORDER BY timestamp DESC`
 			args := []any{likePattern, likePattern, likePattern}
 			if limit > 0 {
@@ -589,9 +627,11 @@ func (s *SQLiteStore) SearchOutputs(ctx context.Context, query string, limit int
 }
 
 // Compile-time assertions.
-var _ SecretsStore = (*SQLiteStore)(nil)
-var _ CronStore = (*SQLiteStore)(nil)
-var _ OutputStore = (*SQLiteStore)(nil)
+var (
+	_ SecretsStore = (*SQLiteStore)(nil)
+	_ CronStore    = (*SQLiteStore)(nil)
+	_ OutputStore  = (*SQLiteStore)(nil)
+)
 
 // ─── CronStore implementation ─────────────────────────────────────────────────
 

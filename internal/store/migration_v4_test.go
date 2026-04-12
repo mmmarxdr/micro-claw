@@ -42,8 +42,8 @@ func TestMigration_V4_ToolOutputsFTSTable(t *testing.T) {
 	}
 }
 
-// TestMigration_V4_SchemaVersionIs4 verifies that migration v4 updates the
-// schema_version to 4.
+// TestMigration_V4_SchemaVersionIs4 verifies that migration v4 ran; the final
+// version is now 5 because v5 (media_blobs) runs after v4 on a fresh DB.
 func TestMigration_V4_SchemaVersionIs4(t *testing.T) {
 	s := newTestSQLiteStore(t)
 
@@ -51,8 +51,8 @@ func TestMigration_V4_SchemaVersionIs4(t *testing.T) {
 	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("reading schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("expected schema_version=4, got %d", version)
+	if version != 5 {
+		t.Errorf("expected schema_version=5 (v4+v5 both applied), got %d", version)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestMigration_V4_RerunIsNoOp(t *testing.T) {
 	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("reading schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("expected schema_version=4 after re-run, got %d", version)
+	if version != 5 {
+		t.Errorf("expected schema_version=5 after re-run, got %d", version)
 	}
 	s.Close()
 }

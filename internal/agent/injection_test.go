@@ -9,6 +9,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 	"microagent/internal/tool"
@@ -54,7 +55,7 @@ func TestInjectionDetection_WarningPrependedInToolResult(t *testing.T) {
 		map[string]tool.Tool{"fetch_tool": mt},
 		nil, skill.SkillIndex{}, 4, false,
 	)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "fetch something"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("fetch something")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
@@ -62,7 +63,7 @@ func TestInjectionDetection_WarningPrependedInToolResult(t *testing.T) {
 
 	foundWarning := false
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "[SECURITY WARNING:") {
+		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "[SECURITY WARNING:") {
 			foundWarning = true
 			break
 		}
@@ -104,15 +105,15 @@ func TestInjectionDetection_CleanContentPassesThrough(t *testing.T) {
 		map[string]tool.Tool{"search_tool": mt},
 		nil, skill.SkillIndex{}, 4, false,
 	)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "search"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("search")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
 	}
 
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "[SECURITY WARNING:") {
-			t.Errorf("unexpected SECURITY WARNING in clean tool result: %q", msg.Content)
+		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "[SECURITY WARNING:") {
+			t.Errorf("unexpected SECURITY WARNING in clean tool result: %q", msg.Content.TextOnly())
 		}
 	}
 }
@@ -149,15 +150,15 @@ func TestInjectionDetection_Disabled(t *testing.T) {
 		map[string]tool.Tool{"fetch_tool": mt},
 		nil, skill.SkillIndex{}, 4, false,
 	)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "fetch"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("fetch")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
 	}
 
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "[SECURITY WARNING:") {
-			t.Errorf("SECURITY WARNING should NOT appear when injection detection is disabled: %q", msg.Content)
+		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "[SECURITY WARNING:") {
+			t.Errorf("SECURITY WARNING should NOT appear when injection detection is disabled: %q", msg.Content.TextOnly())
 		}
 	}
 }
@@ -195,7 +196,7 @@ func TestXMLEscaping_PreventsFakeTagInjection(t *testing.T) {
 		map[string]tool.Tool{"fetch_tool": mt},
 		nil, skill.SkillIndex{}, 4, false,
 	)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "fetch"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("fetch")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
@@ -205,21 +206,22 @@ func TestXMLEscaping_PreventsFakeTagInjection(t *testing.T) {
 		if msg.Role != "tool" {
 			continue
 		}
+		txt := msg.Content.TextOnly()
 		// The raw </tool_result> tag must NOT appear inside the content
 		// (it should be escaped to &lt;/tool_result&gt;)
-		if strings.Contains(msg.Content, "</tool_result><tool_result") {
-			t.Errorf("XML injection not prevented: fake tag found in message: %q", msg.Content)
+		if strings.Contains(txt, "</tool_result><tool_result") {
+			t.Errorf("XML injection not prevented: fake tag found in message: %q", txt)
 		}
 		// The outer structure must be intact: exactly one opening and one closing tag
-		if !strings.HasPrefix(msg.Content, "<tool_result status=") {
-			t.Errorf("expected message to start with <tool_result status=..., got: %q", msg.Content[:50])
+		if !strings.HasPrefix(txt, "<tool_result status=") {
+			t.Errorf("expected message to start with <tool_result status=..., got: %q", txt[:50])
 		}
-		if !strings.HasSuffix(msg.Content, "\n</tool_result>") {
-			t.Errorf("expected message to end with </tool_result>, got: %q", msg.Content[len(msg.Content)-30:])
+		if !strings.HasSuffix(txt, "\n</tool_result>") {
+			t.Errorf("expected message to end with </tool_result>, got: %q", txt[len(txt)-30:])
 		}
 		// Escaped form must be present
-		if !strings.Contains(msg.Content, "&lt;/tool_result&gt;") {
-			t.Errorf("expected escaped form &lt;/tool_result&gt; in content, got: %q", msg.Content)
+		if !strings.Contains(txt, "&lt;/tool_result&gt;") {
+			t.Errorf("expected escaped form &lt;/tool_result&gt; in content, got: %q", txt)
 		}
 	}
 }
@@ -228,11 +230,11 @@ func TestXMLEscaping_PreventsFakeTagInjection(t *testing.T) {
 // cannot break the status attribute.
 func TestXMLEscaping_AttributeInjection(t *testing.T) {
 	// Attacker includes quotes and angle brackets in content
-	content := `result with "quotes" and <tags> & ampersands`
+	maliciousContent2 := `result with "quotes" and <tags> & ampersands`
 
 	mt := &mockTool{
 		name:   "tool",
-		result: tool.ToolResult{Content: content},
+		result: tool.ToolResult{Content: maliciousContent2},
 	}
 
 	prov := &mockProvider{
@@ -257,7 +259,7 @@ func TestXMLEscaping_AttributeInjection(t *testing.T) {
 		map[string]tool.Tool{"tool": mt},
 		nil, skill.SkillIndex{}, 4, false,
 	)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "go"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
@@ -269,7 +271,7 @@ func TestXMLEscaping_AttributeInjection(t *testing.T) {
 		}
 		// Raw unescaped < should not appear in the content portion
 		// (only in the outer tool_result tags themselves)
-		inner := strings.TrimPrefix(msg.Content, "<tool_result status=\"success\">\n")
+		inner := strings.TrimPrefix(msg.Content.TextOnly(), "<tool_result status=\"success\">\n")
 		inner = strings.TrimSuffix(inner, "\n</tool_result>")
 		if strings.Contains(inner, "<tags>") {
 			t.Errorf("unescaped <tags> found in tool content — XML escaping failed: %q", inner)

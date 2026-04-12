@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // geminiOKResponse builds a minimal valid Gemini API response.
@@ -101,7 +103,7 @@ func TestGeminiProvider_Chat_TextResponse(t *testing.T) {
 	resp, err := p.Chat(context.Background(), ChatRequest{
 		SystemPrompt: "You are helpful.",
 		Messages: []ChatMessage{
-			{Role: "user", Content: "Hi!"},
+			{Role: "user", Content: content.TextBlock("Hi!")},
 		},
 	})
 	if err != nil {
@@ -131,7 +133,7 @@ func TestGeminiProvider_Chat_ToolCallResponse(t *testing.T) {
 
 	p := newTestGeminiProvider(srv.URL)
 	resp, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "List my files"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("List my files")}},
 		Tools: []ToolDefinition{
 			{Name: "shell_exec", Description: "Run shell command", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`)},
 		},
@@ -168,7 +170,7 @@ func TestGeminiProvider_Chat_APIError(t *testing.T) {
 
 	p := newTestGeminiProvider(srv.URL)
 	_, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "test"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("test")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 401 response, got nil")
@@ -194,7 +196,7 @@ func TestGeminiProvider_Chat_SystemPromptIncluded(t *testing.T) {
 	p := newTestGeminiProvider(srv.URL)
 	_, _ = p.Chat(context.Background(), ChatRequest{
 		SystemPrompt: "Be concise.",
-		Messages:     []ChatMessage{{Role: "user", Content: "hello"}},
+		Messages:     []ChatMessage{{Role: "user", Content: content.TextBlock("hello")}},
 	})
 
 	if received.SystemInstruction == nil {
@@ -285,5 +287,87 @@ func TestNormalizeGeminiFinishReason(t *testing.T) {
 		if got != c.want {
 			t.Errorf("normalizeGeminiFinishReason(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// ---- TestGeminiMultimodalRequest --------------------------------------------
+
+// TestGeminiMultimodalRequest verifies that a user message containing a
+// BlockText + BlockAudio is translated to the correct Gemini API wire shape.
+// This specifically covers the audio-block path since Gemini supports audio natively.
+// The expected shape is stored in testdata/gemini_multimodal_request.json.
+// Comparison is map-based (JSON unmarshal → re-marshal) so key ordering does
+// not cause false failures.
+func TestGeminiMultimodalRequest(t *testing.T) {
+	// OGG magic bytes — a distinct payload covering the audio path.
+	oggMagic := []byte{0x4F, 0x67, 0x67, 0x53}
+
+	stub := &stubMediaReader{
+		entries: map[string]stubMediaEntry{
+			"audio789": {data: oggMagic, mime: "audio/ogg"},
+		},
+	}
+
+	var capturedBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := readAll(r.Body)
+		if err != nil {
+			t.Logf("read body error: %v", err)
+		}
+		capturedBody = b
+		// Return a minimal valid Gemini response.
+		resp := geminiOKResponse("ok")
+		respBytes, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBytes)
+	}))
+	defer ts.Close()
+
+	prov := newTestGeminiProvider(ts.URL).WithMediaReader(stub)
+
+	req := ChatRequest{
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				Content: content.Blocks{
+					{Type: content.BlockText, Text: "listen"},
+					{Type: content.BlockAudio, MediaSHA256: "audio789", MIME: "audio/ogg", Size: 512},
+				},
+			},
+		},
+	}
+
+	_, callErr := prov.Chat(context.Background(), req)
+	if callErr != nil {
+		t.Fatalf("Chat() error: %v", callErr)
+	}
+
+	var actual map[string]any
+	if err := json.Unmarshal(capturedBody, &actual); err != nil {
+		t.Fatalf("unmarshal actual body: %v", err)
+	}
+
+	goldenPath := "testdata/gemini_multimodal_request.json"
+	goldenRaw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("reading golden file %s: %v", goldenPath, err)
+	}
+	var golden map[string]any
+	if err := json.Unmarshal(goldenRaw, &golden); err != nil {
+		t.Fatalf("unmarshal golden file: %v", err)
+	}
+
+	actualCanon, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatalf("re-marshal actual: %v", err)
+	}
+	goldenCanon, err := json.Marshal(golden)
+	if err != nil {
+		t.Fatalf("re-marshal golden: %v", err)
+	}
+
+	if string(actualCanon) != string(goldenCanon) {
+		t.Errorf("multimodal request body does not match golden file %s\n\ngot:\n%s\n\nwant:\n%s",
+			goldenPath, capturedBody, goldenRaw)
 	}
 }

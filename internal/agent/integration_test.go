@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 	"microagent/internal/store"
@@ -187,7 +189,7 @@ func TestIntegration_FullCLIFlow(t *testing.T) {
 	// CLIChannel wired to io.Pipe so we can inject input and capture output.
 	pr, pw := newLinePipe()
 	var outBuf syncBuffer
-	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
+	ch := channel.NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, pr, &outBuf)
 
 	ag := New(
 		defaultIntegrationAgentConfig(),
@@ -270,7 +272,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 
 	pr1, pw1 := newLinePipe()
 	var outBuf1 syncBuffer
-	ch1 := channel.NewCLIChannel(config.ChannelConfig{}, pr1, &outBuf1)
+	ch1 := channel.NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, pr1, &outBuf1)
 
 	ag1 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch1, prov1, st1, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
@@ -338,7 +340,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 		for _, m := range body.Messages {
 			capturedMessages = append(capturedMessages, provider.ChatMessage{
 				Role:    m.Role,
-				Content: fmt.Sprintf("%v", m.Content),
+				Content: content.TextBlock(fmt.Sprintf("%v", m.Content)),
 			})
 		}
 
@@ -352,7 +354,7 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 
 	pr2, pw2 := newLinePipe()
 	var outBuf2 syncBuffer
-	ch2 := channel.NewCLIChannel(config.ChannelConfig{}, pr2, &outBuf2)
+	ch2 := channel.NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, pr2, &outBuf2)
 
 	ag2 := New(defaultIntegrationAgentConfig(), defaultIntegrationLimitsConfig(), config.FilterConfig{}, ch2, prov2, st2, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
@@ -378,10 +380,10 @@ func TestIntegration_ConversationSurvivesRestart(t *testing.T) {
 	foundHello := false
 	foundReply := false
 	for _, m := range capturedMessages {
-		if m.Role == "user" && strings.Contains(m.Content, "hello agent") {
+		if m.Role == "user" && strings.Contains(m.Content.TextOnly(), "hello agent") {
 			foundHello = true
 		}
-		if m.Role == "assistant" && strings.Contains(m.Content, assistantReply) {
+		if m.Role == "assistant" && strings.Contains(m.Content.TextOnly(), assistantReply) {
 			foundReply = true
 		}
 	}
@@ -442,7 +444,7 @@ func TestIntegration_AddNewTool(t *testing.T) {
 
 	pr, pw := newLinePipe()
 	var outBuf syncBuffer
-	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
+	ch := channel.NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, pr, &outBuf)
 
 	ag := New(
 		defaultIntegrationAgentConfig(),
@@ -531,17 +533,21 @@ func (e *echoTestTool) Execute(_ context.Context, params json.RawMessage) (tool.
 // It returns a static text response for Chat and a zero embedding for Embed.
 type mockFullProvider struct{}
 
-func (m *mockFullProvider) Name() string        { return "mock" }
-func (m *mockFullProvider) SupportsTools() bool { return false }
+func (m *mockFullProvider) Name() string             { return "mock" }
+func (m *mockFullProvider) SupportsTools() bool      { return false }
+func (m *mockFullProvider) SupportsMultimodal() bool { return false }
+func (m *mockFullProvider) SupportsAudio() bool      { return false }
 func (m *mockFullProvider) HealthCheck(_ context.Context) (string, error) {
 	return "ok", nil
 }
+
 func (m *mockFullProvider) Chat(_ context.Context, _ provider.ChatRequest) (*provider.ChatResponse, error) {
 	return &provider.ChatResponse{
 		Content:    "Shutdown test response",
 		StopReason: "end_turn",
 	}, nil
 }
+
 func (m *mockFullProvider) Embed(_ context.Context, _ string) ([]float32, error) {
 	return make([]float32, 256), nil
 }
@@ -563,7 +569,7 @@ func TestIntegration_GracefulShutdown_AllWorkersExit(t *testing.T) {
 
 	pr, pw := newLinePipe()
 	var outBuf syncBuffer
-	ch := channel.NewCLIChannel(config.ChannelConfig{}, pr, &outBuf)
+	ch := channel.NewCLIChannel(config.ChannelConfig{}, config.MediaConfig{}, nil, pr, &outBuf)
 
 	agentCfg := config.AgentConfig{
 		MaxIterations:      5,
@@ -707,3 +713,265 @@ func (r *pipeReader) Read(p []byte) (int, error) {
 	r.buf = r.buf[n:]
 	return n, nil
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12 Integration Tests
+// ---------------------------------------------------------------------------
+
+// multimodalMockProvider is a mock provider with configurable multimodal/audio
+// capability flags. It captures the last ChatRequest for inspection.
+type multimodalMockProvider struct {
+	mu                 sync.Mutex
+	supportsMultimodal bool
+	supportsAudio      bool
+	lastReq            provider.ChatRequest
+	response           string
+}
+
+func (m *multimodalMockProvider) Name() string        { return "multimodal-mock" }
+func (m *multimodalMockProvider) SupportsTools() bool { return false }
+func (m *multimodalMockProvider) SupportsMultimodal() bool {
+	return m.supportsMultimodal
+}
+func (m *multimodalMockProvider) SupportsAudio() bool { return m.supportsAudio }
+func (m *multimodalMockProvider) HealthCheck(_ context.Context) (string, error) {
+	return "ok", nil
+}
+
+func (m *multimodalMockProvider) Chat(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastReq = req
+	text := m.response
+	if text == "" {
+		text = "ok"
+	}
+	return &provider.ChatResponse{Content: text, StopReason: "end_turn"}, nil
+}
+
+func (m *multimodalMockProvider) capturedReq() provider.ChatRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastReq
+}
+
+// ---------------------------------------------------------------------------
+// Test 12.1: Telegram photo → multimodal provider receives BlockImage
+// ---------------------------------------------------------------------------
+//
+// Simulates an IncomingMessage with text + image blocks (as Telegram channel
+// would produce) processed through the agent loop with a multimodal-capable
+// mock provider. Asserts the image block is forwarded in the provider request
+// and no degradation notice is prepended to the reply.
+//
+// Note: 12.2 (degradation path) is already covered at the unit level by
+// TestProcessMessage_DegradationNotice_ImageOnTextOnlyProvider in loop_test.go.
+
+func TestIntegration_MultimodalProvider_ReceivesImageBlock(t *testing.T) {
+	prov := &multimodalMockProvider{
+		supportsMultimodal: true,
+		response:           "Image received.",
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	// Simulate what TelegramChannel produces for a photo with caption.
+	incomingMsg := channel.IncomingMessage{
+		ChannelID: "tg:42",
+		SenderID:  "42",
+		Content: content.Blocks{
+			{Type: content.BlockText, Text: "check this"},
+			{Type: content.BlockImage, MediaSHA256: "sha_photo", MIME: "image/jpeg", Size: 1024},
+		},
+	}
+
+	ag.processMessage(context.Background(), incomingMsg)
+
+	// Assert the image block was forwarded to the provider.
+	req := prov.capturedReq()
+	if len(req.Messages) == 0 {
+		t.Fatal("expected at least one message in provider request")
+	}
+
+	lastUserMsg := req.Messages[len(req.Messages)-1]
+	hasImageBlock := false
+	for _, b := range lastUserMsg.Content {
+		if b.Type == content.BlockImage && b.MediaSHA256 == "sha_photo" {
+			hasImageBlock = true
+		}
+	}
+	if !hasImageBlock {
+		t.Errorf("expected BlockImage with sha_photo in provider request, got: %+v", lastUserMsg.Content)
+	}
+
+	// Assert no degradation notice was prepended.
+	sent := ch.sentMessages()
+	if len(sent) == 0 {
+		t.Fatal("expected at least one sent message")
+	}
+	notice := content.DegradationNotice(incomingMsg.Content)
+	if strings.HasPrefix(sent[0].Text, notice) {
+		t.Errorf("unexpected degradation notice in reply: %q", sent[0].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 12.2 coverage note
+// ---------------------------------------------------------------------------
+//
+// The degradation path (text-only provider + image block → degradation notice)
+// is already covered at the unit level by:
+//   TestProcessMessage_DegradationNotice_ImageOnTextOnlyProvider  (loop_test.go)
+//   TestProcessMessage_NoDegradationNotice_ImageOnMultimodalProvider (loop_test.go)
+//   TestProcessMessage_NoDegradationNotice_TextOnlyMessage (loop_test.go)
+//
+// No duplicate integration test is needed.
+
+// ---------------------------------------------------------------------------
+// Test 12.3: Voice note → audio-capable provider receives BlockAudio
+// ---------------------------------------------------------------------------
+//
+// Simulates an IncomingMessage with an audio block (as Telegram produces for
+// voice notes) through the agent loop with an audio-capable mock provider.
+// Asserts the audio block is forwarded without degradation.
+
+func TestIntegration_AudioCapableProvider_ReceivesAudioBlock(t *testing.T) {
+	prov := &multimodalMockProvider{
+		supportsMultimodal: true,
+		supportsAudio:      true,
+		response:           "Voice note received.",
+	}
+	ch := &mockChannel{}
+	st := &mockStore{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	// Simulate what TelegramChannel produces for a voice note.
+	incomingMsg := channel.IncomingMessage{
+		ChannelID: "tg:42",
+		SenderID:  "42",
+		Content: content.Blocks{
+			{Type: content.BlockAudio, MediaSHA256: "sha_voice", MIME: "audio/ogg", Size: 512},
+		},
+	}
+
+	ag.processMessage(context.Background(), incomingMsg)
+
+	// Assert the audio block was forwarded to the provider.
+	req := prov.capturedReq()
+	if len(req.Messages) == 0 {
+		t.Fatal("expected at least one message in provider request")
+	}
+
+	lastUserMsg := req.Messages[len(req.Messages)-1]
+	hasAudioBlock := false
+	for _, b := range lastUserMsg.Content {
+		if b.Type == content.BlockAudio && b.MediaSHA256 == "sha_voice" {
+			hasAudioBlock = true
+		}
+	}
+	if !hasAudioBlock {
+		t.Errorf("expected BlockAudio with sha_voice in provider request, got: %+v", lastUserMsg.Content)
+	}
+
+	// Assert no degradation notice was prepended.
+	sent := ch.sentMessages()
+	if len(sent) == 0 {
+		t.Fatal("expected at least one sent message")
+	}
+	notice := content.DegradationNotice(incomingMsg.Content)
+	if strings.HasPrefix(sent[0].Text, notice) {
+		t.Errorf("unexpected degradation notice in reply: %q", sent[0].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 12.4 coverage note
+// ---------------------------------------------------------------------------
+//
+// The oversized photo path (photo.FileSize > max → rejection notice, no download)
+// is already covered at the channel level by:
+//   TestProcessUpdate_PhotoOversized  (internal/channel/telegram_test.go)
+//
+// No duplicate integration test is needed.
+
+// ---------------------------------------------------------------------------
+// Test 12.5: Legacy fixture round-trip
+// ---------------------------------------------------------------------------
+//
+// Loads the checked-in legacy fixture (string-form content) and verifies the
+// full forward-compat → re-marshal cycle.
+//
+// NEVER DELETE internal/provider/testdata/legacy_chatmessage.json — it is the
+// contract fixture for backward-compat. Any change to ChatMessage.UnmarshalJSON
+// that breaks this round-trip is a regression.
+
+func TestIntegration_LegacyFixtureRoundTrip(t *testing.T) {
+	fixtureData, err := os.ReadFile("../provider/testdata/legacy_chatmessage.json")
+	if err != nil {
+		t.Fatalf("failed to read legacy fixture: %v", err)
+	}
+
+	// Step 1: unmarshal legacy string-form content.
+	var msg provider.ChatMessage
+	if err := json.Unmarshal(fixtureData, &msg); err != nil {
+		t.Fatalf("unmarshal legacy fixture: %v", err)
+	}
+
+	// Step 2: verify Content is a valid Blocks slice with the original text.
+	if len(msg.Content) == 0 {
+		t.Fatal("expected non-empty Blocks after unmarshal of legacy fixture")
+	}
+	if msg.Content[0].Type != content.BlockText {
+		t.Errorf("expected first block to be BlockText, got %q", msg.Content[0].Type)
+	}
+	if !strings.Contains(msg.Content[0].Text, "hello from before multimodal") {
+		t.Errorf("unexpected text in first block: %q", msg.Content[0].Text)
+	}
+
+	// Step 3: re-marshal to JSON.
+	remarshaled, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+
+	// Step 4: assert re-marshaled content is array form, NOT legacy string form.
+	// The content field must start with "[" (array), not "\"" (string literal).
+	var rawCheck map[string]json.RawMessage
+	if err := json.Unmarshal(remarshaled, &rawCheck); err != nil {
+		t.Fatalf("unmarshal re-marshaled: %v", err)
+	}
+	contentRaw := rawCheck["content"]
+	if len(contentRaw) == 0 || contentRaw[0] != '[' {
+		t.Errorf("expected re-marshaled content to be JSON array form (starting with '['), got: %s", contentRaw)
+	}
+
+	// Step 5: unmarshal again and assert content is preserved.
+	var msg2 provider.ChatMessage
+	if err := json.Unmarshal(remarshaled, &msg2); err != nil {
+		t.Fatalf("second unmarshal: %v", err)
+	}
+	if len(msg2.Content) != len(msg.Content) {
+		t.Errorf("content length mismatch after round-trip: got %d want %d", len(msg2.Content), len(msg.Content))
+	}
+	for i, b := range msg.Content {
+		if i >= len(msg2.Content) {
+			break
+		}
+		if msg2.Content[i].Type != b.Type || msg2.Content[i].Text != b.Text {
+			t.Errorf("block[%d] mismatch after round-trip: got %+v want %+v", i, msg2.Content[i], b)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 12.6 coverage note
+// ---------------------------------------------------------------------------
+//
+// The retention GC scenario (stale+unreferenced deleted, fresh kept, stale+referenced kept)
+// is already covered at the store level by:
+//   TestSQLiteStore_PruneUnreferencedMedia  (internal/store/media_test.go)
+//
+// No duplicate integration test is needed.

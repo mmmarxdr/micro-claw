@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -274,5 +275,110 @@ func TestPruneMemories_EmptyStore(t *testing.T) {
 	}
 	if pruned != 0 || deleted != 0 {
 		t.Errorf("expected (0,0) on empty store, got (%d,%d)", pruned, deleted)
+	}
+}
+
+// decayScore computes the expected pruning score in Go using the same formula
+// as the SQL in PruneMemories, allowing us to assert boundary behaviour.
+//
+//	score = exp(-Lambda * age_days) + ln(1 + access_count) * BoostFactor
+func decayScore(cfg PruneConfig, ageDays float64, accessCount int) float64 {
+	return math.Exp(-cfg.Lambda*ageDays) + math.Log(1+float64(accessCount))*cfg.BoostFactor
+}
+
+// TestPruneMemories_DecayMath_BoundaryBehavior verifies the pruning score
+// formula at carefully chosen boundary values.  Each entry is designed to sit
+// just above or just below the threshold so that a sign flip in the decay
+// exponent (e.g. exp(+Lambda*age) instead of exp(-Lambda*age)) is caught
+// immediately — entries that should be KEPT would be ARCHIVED and vice-versa.
+//
+// With DefaultPruneConfig (Lambda=0.03, BoostFactor=0.5, Threshold=0.1):
+//   - age=76, access=0: score ≈ exp(-2.28) ≈ 0.1023 → JUST ABOVE threshold → KEPT
+//   - age=77, access=0: score ≈ exp(-2.31) ≈ 0.0993 → JUST BELOW threshold → ARCHIVED
+//   - age=77, access=1: score ≈ 0.0993 + ln(2)*0.5 ≈ 0.0993+0.347 ≈ 0.446 → KEPT (access boost saves it)
+//   - age=200, access=0: score ≈ exp(-6.0) ≈ 0.0025 → well below → ARCHIVED
+func TestPruneMemories_DecayMath_BoundaryBehavior(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultPruneConfig()
+
+	tests := []struct {
+		id           string
+		ageDays      int
+		accessCount  int
+		wantArchived bool
+	}{
+		{
+			id:           "boundary-above",
+			ageDays:      76,
+			accessCount:  0,
+			wantArchived: false, // score ≈ 0.1023 > 0.1 → kept
+		},
+		{
+			id:           "boundary-below",
+			ageDays:      77,
+			accessCount:  0,
+			wantArchived: true, // score ≈ 0.0993 < 0.1 → archived
+		},
+		{
+			id:           "boundary-below-saved-by-access",
+			ageDays:      77,
+			accessCount:  1,
+			wantArchived: false, // score ≈ 0.446 > 0.1 → kept by access boost
+		},
+		{
+			id:           "deeply-old",
+			ageDays:      200,
+			accessCount:  0,
+			wantArchived: true, // score ≈ 0.0025 → archived
+		},
+	}
+
+	// Verify our Go formula agrees with the score expectations (catches
+	// test bugs where we computed the wrong expected value).
+	for _, tc := range tests {
+		score := decayScore(cfg, float64(tc.ageDays), tc.accessCount)
+		belowThreshold := score < cfg.Threshold
+		if belowThreshold != tc.wantArchived {
+			t.Errorf("precondition: id=%s ageDays=%d access=%d score=%.6f threshold=%.3f: expected wantArchived=%v but formula gives archived=%v",
+				tc.id, tc.ageDays, tc.accessCount, score, cfg.Threshold, tc.wantArchived, belowThreshold)
+		}
+	}
+
+	st := openPruningTestDB(t)
+	ctx := context.Background()
+
+	for _, tc := range tests {
+		createdAt := time.Now().AddDate(0, 0, -tc.ageDays)
+		insertMemoryAt(t, st.db, tc.id, "scope1", "decay math test content", createdAt, nil, tc.accessCount)
+	}
+
+	pruned, _, err := st.PruneMemories(ctx, cfg)
+	if err != nil {
+		t.Fatalf("PruneMemories: %v", err)
+	}
+
+	wantPruned := 0
+	for _, tc := range tests {
+		if tc.wantArchived {
+			wantPruned++
+		}
+	}
+	if pruned != wantPruned {
+		t.Errorf("pruned=%d, want %d", pruned, wantPruned)
+	}
+
+	for _, tc := range tests {
+		var archivedAt *string
+		err := st.db.QueryRowContext(ctx, `SELECT archived_at FROM memory WHERE id = ?`, tc.id).Scan(&archivedAt)
+		if err != nil {
+			t.Fatalf("checking archived_at for %s: %v", tc.id, err)
+		}
+		isArchived := archivedAt != nil
+		score := decayScore(cfg, float64(tc.ageDays), tc.accessCount)
+		if isArchived != tc.wantArchived {
+			t.Errorf("id=%s ageDays=%d access=%d score=%.6f: archived=%v, want archived=%v",
+				tc.id, tc.ageDays, tc.accessCount, score, isArchived, tc.wantArchived)
+		}
 	}
 }

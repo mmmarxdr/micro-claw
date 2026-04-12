@@ -28,6 +28,7 @@ type Config struct {
 	Audit             AuditConfig    `yaml:"audit"`
 	Cron              CronConfig     `yaml:"cron"`
 	Filter            FilterConfig   `yaml:"filter"`
+	Media             MediaConfig    `yaml:"media"`
 	Skills            []string       `yaml:"skills"`
 	SkillsDir         string         `yaml:"skills_dir"`
 	SkillsRegistryURL string         `yaml:"skills_registry_url"`
@@ -62,7 +63,6 @@ const (
 type ContextModeConfig struct {
 	Mode             ContextMode   `yaml:"mode"`               // default: "off"
 	ShellMaxOutput   int           `yaml:"shell_max_output"`   // bytes, default 4096 (auto), 8192 (conservative)
-	FileChunkSize    int           `yaml:"file_chunk_size"`    // bytes, default 2000 (auto), 4000 (conservative)
 	SandboxTimeout   time.Duration `yaml:"sandbox_timeout"`    // default 30s
 	AutoIndexOutputs *bool         `yaml:"auto_index_outputs"` // default true in auto mode, false otherwise
 	SandboxKeepFirst int           `yaml:"sandbox_keep_first"` // default 20 lines
@@ -235,6 +235,21 @@ type AuditConfig struct {
 	Path    string `yaml:"path"`
 }
 
+// MediaConfig controls multimodal attachment handling.
+// YAML key: media
+//
+// Enabled uses *bool (pointer) so that an explicitly set `enabled: false`
+// is distinguishable from the omitted/unset case (nil → default true).
+// Use BoolVal(cfg.Media.Enabled) to read the effective value.
+type MediaConfig struct {
+	Enabled             *bool         `yaml:"enabled"`
+	MaxAttachmentBytes  int64         `yaml:"max_attachment_bytes"`
+	MaxMessageBytes     int64         `yaml:"max_message_bytes"`
+	RetentionDays       int           `yaml:"retention_days"`
+	CleanupInterval     time.Duration `yaml:"cleanup_interval"`
+	AllowedMIMEPrefixes []string      `yaml:"allowed_mime_prefixes"`
+}
+
 func (c *Config) applyDefaults() {
 	if c.Agent.MaxIterations == 0 {
 		c.Agent.MaxIterations = 10
@@ -354,6 +369,29 @@ func (c *Config) applyDefaults() {
 		c.Filter.InjectionDetection = &t
 	}
 
+	// Media defaults.
+	// Enabled is *bool: nil means omitted → default true; non-nil means explicitly set.
+	// Other fields use zero-value sentinel: 0 / nil slice means omitted → apply default.
+	if c.Media.Enabled == nil {
+		t := true
+		c.Media.Enabled = &t
+	}
+	if c.Media.MaxAttachmentBytes == 0 {
+		c.Media.MaxAttachmentBytes = 10485760
+	}
+	if c.Media.MaxMessageBytes == 0 {
+		c.Media.MaxMessageBytes = 26214400
+	}
+	if c.Media.RetentionDays == 0 {
+		c.Media.RetentionDays = 30
+	}
+	if c.Media.CleanupInterval == 0 {
+		c.Media.CleanupInterval = 24 * time.Hour
+	}
+	if len(c.Media.AllowedMIMEPrefixes) == 0 {
+		c.Media.AllowedMIMEPrefixes = []string{"image/", "audio/", "application/pdf", "text/"}
+	}
+
 	// Context-mode defaults.
 	if c.Agent.ContextMode.Mode == "" {
 		c.Agent.ContextMode.Mode = ContextModeOff
@@ -365,9 +403,6 @@ func (c *Config) applyDefaults() {
 		if c.Agent.ContextMode.ShellMaxOutput == 0 {
 			c.Agent.ContextMode.ShellMaxOutput = 4096
 		}
-		if c.Agent.ContextMode.FileChunkSize == 0 {
-			c.Agent.ContextMode.FileChunkSize = 2000
-		}
 		// AutoIndexOutputs defaults to true in auto mode
 		if c.Agent.ContextMode.AutoIndexOutputs == nil {
 			t := true
@@ -377,13 +412,10 @@ func (c *Config) applyDefaults() {
 		if c.Agent.ContextMode.ShellMaxOutput == 0 {
 			c.Agent.ContextMode.ShellMaxOutput = 8192
 		}
-		if c.Agent.ContextMode.FileChunkSize == 0 {
-			c.Agent.ContextMode.FileChunkSize = 4000
-		}
 		// AutoIndexOutputs defaults to false for conservative (zero-value)
 	case ContextModeOff:
-		// Off mode doesn't need specific defaults for ShellMaxOutput/FileChunkSize
-		// They remain at zero values
+		// Off mode doesn't need specific defaults for ShellMaxOutput
+		// Values remain at zero
 	}
 
 	// Common defaults for all modes
@@ -523,6 +555,25 @@ func (c *Config) validate() error {
 		return fmt.Errorf("agent.prune_threshold must be between 0 and 1.0")
 	}
 
+	// Media validation — skipped entirely when disabled (kill switch).
+	if BoolVal(c.Media.Enabled) {
+		if c.Media.MaxAttachmentBytes < 1024 || c.Media.MaxAttachmentBytes > 52428800 {
+			return fmt.Errorf("media.max_attachment_bytes must be between 1024 and 52428800, got %d", c.Media.MaxAttachmentBytes)
+		}
+		if c.Media.MaxMessageBytes < c.Media.MaxAttachmentBytes {
+			return fmt.Errorf("media.max_message_bytes (%d) must be >= media.max_attachment_bytes (%d)", c.Media.MaxMessageBytes, c.Media.MaxAttachmentBytes)
+		}
+		if c.Media.RetentionDays < 1 {
+			return fmt.Errorf("media.retention_days must be >= 1, got %d", c.Media.RetentionDays)
+		}
+		if c.Media.CleanupInterval < time.Hour {
+			return fmt.Errorf("media.cleanup_interval must be >= 1h, got %s", c.Media.CleanupInterval)
+		}
+		if len(c.Media.AllowedMIMEPrefixes) == 0 {
+			return fmt.Errorf("media.allowed_mime_prefixes must not be empty when media.enabled=true")
+		}
+	}
+
 	// Context-mode validation.
 	if c.Agent.ContextMode.Mode != ContextModeOff &&
 		c.Agent.ContextMode.Mode != ContextModeConservative &&
@@ -532,9 +583,6 @@ func (c *Config) validate() error {
 	if c.Agent.ContextMode.Mode != ContextModeOff {
 		if c.Agent.ContextMode.ShellMaxOutput < 0 {
 			return fmt.Errorf("agent.context_mode.shell_max_output must not be negative")
-		}
-		if c.Agent.ContextMode.FileChunkSize < 0 {
-			return fmt.Errorf("agent.context_mode.file_chunk_size must not be negative")
 		}
 		if c.Agent.ContextMode.SandboxTimeout <= 0 {
 			return fmt.Errorf("agent.context_mode.sandbox_timeout must be positive")

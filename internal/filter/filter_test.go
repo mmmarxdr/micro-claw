@@ -803,21 +803,21 @@ func TestPreApply_ShellToolWithMaxOutputHint(t *testing.T) {
 	}
 }
 
-func TestPreApply_FileReadToolWithChunkSize(t *testing.T) {
-	// When context mode is "auto", PreApply should handle file read tool
+func TestPreApply_ReadFile_ReturnsFalse(t *testing.T) {
+	// read_file has no PreApply handler — must return (empty, false) regardless of mode.
 	cfg := config.ContextModeConfig{
-		Mode:          config.ContextModeAuto,
-		FileChunkSize: 2000,
+		Mode: config.ContextModeAuto,
 	}
 	input := json.RawMessage(`{"path": "/tmp/test.txt"}`)
 
 	result, shouldSkip := PreApply(context.Background(), "read_file", input, cfg)
 
-	// For Phase 2, PreApply doesn't actually intercept yet - returns false
 	if shouldSkip {
-		t.Errorf("Phase 2: PreApply should return false (not yet implemented), got true")
+		t.Errorf("PreApply for read_file: expected shouldSkip=false, got true")
 	}
-	_ = result // Mark as used for now
+	if result.Content != "" {
+		t.Errorf("PreApply for read_file: expected empty content, got %q", result.Content)
+	}
 }
 
 func TestPreApply_UnsupportedToolReturnsFalse(t *testing.T) {
@@ -934,5 +934,230 @@ func TestPreApply_ShellTool_InvalidJSON_ReturnsFalse(t *testing.T) {
 	}
 	if result.Content != "" {
 		t.Errorf("PreApply with invalid JSON returned non-empty content: %q", result.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Meta key completeness, Apply early-return, and PreApply dispatch
+// ---------------------------------------------------------------------------
+
+func TestPreApply_Shell_MetaKeysPresent(t *testing.T) {
+	// PreApply intercepting shell_exec must emit all 4 microagent/ Meta keys.
+	cfg := config.ContextModeConfig{
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
+	}
+	input := json.RawMessage(`{"command": "echo meta-test"}`)
+
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
+
+	if !shouldSkip {
+		t.Fatalf("PreApply should intercept shell_exec in auto mode")
+	}
+
+	requiredKeys := []string{
+		"microagent/exit_code",
+		"microagent/truncated",
+		"microagent/presummarized",
+	}
+	for _, k := range requiredKeys {
+		if _, ok := result.Meta[k]; !ok {
+			t.Errorf("Meta missing required key %q", k)
+		}
+	}
+	if result.Meta["microagent/exit_code"] != "0" {
+		t.Errorf("microagent/exit_code = %q, want 0", result.Meta["microagent/exit_code"])
+	}
+	if result.Meta["microagent/truncated"] != "false" {
+		t.Errorf("microagent/truncated = %q, want false", result.Meta["microagent/truncated"])
+	}
+	if result.Meta["microagent/presummarized"] != "true" {
+		t.Errorf("microagent/presummarized = %q, want true", result.Meta["microagent/presummarized"])
+	}
+	// error_kind absent on clean exit (ExecErrorNone == "")
+	if v, ok := result.Meta["microagent/error_kind"]; ok && v != "" {
+		t.Errorf("microagent/error_kind = %q, want absent or empty for success", v)
+	}
+}
+
+func TestPreApply_Shell_MetaKeys_NonZeroExit(t *testing.T) {
+	// A non-zero exit (e.g. false) must still set exit_code, truncated, and
+	// presummarized correctly.  error_kind must be absent (not a fault, just non-zero).
+	cfg := config.ContextModeConfig{
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
+	}
+	input := json.RawMessage(`{"command": "exit 1"}`)
+
+	result, shouldSkip := PreApply(context.Background(), "shell_exec", input, cfg)
+
+	if !shouldSkip {
+		t.Fatalf("PreApply should intercept shell_exec")
+	}
+	if result.Meta["microagent/exit_code"] == "0" {
+		t.Errorf("microagent/exit_code = 0 for exit 1, want non-zero")
+	}
+	if result.Meta["microagent/presummarized"] != "true" {
+		t.Errorf("microagent/presummarized = %q, want true", result.Meta["microagent/presummarized"])
+	}
+	// error_kind must be absent for a normal non-zero exit.
+	if v, ok := result.Meta["microagent/error_kind"]; ok && v != "" {
+		t.Errorf("microagent/error_kind = %q, want absent for non-zero exit", v)
+	}
+}
+
+func TestApply_Presummarized_EarlyReturn(t *testing.T) {
+	// Apply called with Meta["microagent/presummarized"]="true" must return the
+	// input result byte-identical and produce zero Metrics.
+	cfg := enabledCfg()
+	original := tool.ToolResult{
+		Content: "sandbox summary output",
+		IsError: false,
+		Meta: map[string]string{
+			"microagent/presummarized": "true",
+			"microagent/exit_code":     "0",
+			"microagent/truncated":     "false",
+		},
+	}
+
+	got, metrics := Apply("shell_exec", makeShellInput("echo hi"), original, cfg)
+
+	if got.Content != original.Content {
+		t.Errorf("Apply early-return: Content = %q, want %q", got.Content, original.Content)
+	}
+	if got.Meta["microagent/presummarized"] != "true" {
+		t.Errorf("Apply early-return: Meta mutated unexpectedly")
+	}
+	if metrics.FilterName != "" || metrics.OriginalBytes != 0 || metrics.CompressedBytes != 0 {
+		t.Errorf("Apply early-return: expected zero Metrics, got %+v", metrics)
+	}
+}
+
+func TestApply_NotPresumarized_RunsNormally(t *testing.T) {
+	// Apply called on a regular shell_exec result (no presummarized marker)
+	// must process through applyShell and return non-zero metrics.
+	cfg := enabledCfg()
+	// git diff content triggers the git_diff filter.
+	diffContent := `diff --git a/foo.go b/foo.go
+index abc..def 100644
+--- a/foo.go
++++ b/foo.go
+@@ -1,3 +1,3 @@
+ package main
+-func old() {}
++func new() {}`
+
+	result := tool.ToolResult{Content: diffContent}
+	got, metrics := Apply("shell_exec", makeShellInput("git diff HEAD~1"), result, cfg)
+
+	if got.Content == diffContent {
+		t.Errorf("Apply without presummarized: content should be filtered, not identical to input")
+	}
+	if metrics.FilterName == "" {
+		t.Errorf("Apply without presummarized: expected non-empty FilterName, got empty")
+	}
+}
+
+func TestPreApply_Then_Apply_NoDoubleProcess(t *testing.T) {
+	// End-to-end: PreApply intercepts shell_exec, then Apply is called on the
+	// result.  Content must be byte-identical to what PreApply returned.
+	contextCfg := config.ContextModeConfig{
+		Mode:             config.ContextModeAuto,
+		ShellMaxOutput:   4096,
+		SandboxTimeout:   30 * time.Second,
+		SandboxKeepFirst: 20,
+		SandboxKeepLast:  10,
+	}
+	filterCfg := enabledCfg()
+	input := json.RawMessage(`{"command": "echo double-process-guard"}`)
+
+	preResult, shouldSkip := PreApply(context.Background(), "shell_exec", input, contextCfg)
+	if !shouldSkip {
+		t.Fatalf("PreApply should intercept shell_exec")
+	}
+
+	applyResult, metrics := Apply("shell_exec", input, preResult, filterCfg)
+
+	if applyResult.Content != preResult.Content {
+		t.Errorf("Apply after PreApply: Content changed from %q to %q (double-process guard failed)", preResult.Content, applyResult.Content)
+	}
+	if metrics.FilterName != "" || metrics.OriginalBytes != 0 {
+		t.Errorf("Apply after PreApply: expected zero Metrics (early-return), got %+v", metrics)
+	}
+}
+
+func TestPreApply_ReadFile_NeverIntercepted(t *testing.T) {
+	// read_file must never be intercepted by PreApply; dispatch was removed.
+	// Verify this for all non-off modes.
+	modes := []config.ContextMode{config.ContextModeAuto, config.ContextModeConservative}
+	for _, mode := range modes {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := config.ContextModeConfig{
+				Mode: mode,
+			}
+			input := json.RawMessage(`{"path": "/tmp/any.txt"}`)
+
+			result, shouldSkip := PreApply(context.Background(), "read_file", input, cfg)
+
+			if shouldSkip {
+				t.Errorf("mode=%s: PreApply for read_file returned shouldSkip=true, want false", mode)
+			}
+			if result.Content != "" {
+				t.Errorf("mode=%s: PreApply for read_file returned non-empty content %q", mode, result.Content)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — Filter layer regression guard (multimodal-messages)
+// Locks down PreApply + Apply behaviour for text-only ToolResults so that
+// future multimodal work cannot silently break the filter layer.
+// ---------------------------------------------------------------------------
+
+// TestFilterRegression_TextOnlyToolResult verifies that PreApply returns
+// (empty, false) for a text-only ToolResult with context-mode OFF, and that
+// Apply passes the result through unchanged when filtering is disabled.
+// This locks the function signatures and the no-op paths for the text-only
+// case so multimodal changes cannot inadvertently break them.
+func TestFilterRegression_TextOnlyToolResult(t *testing.T) {
+	textContent := "plain text tool output"
+	tr := tool.ToolResult{Content: textContent}
+	input := json.RawMessage(`{"command": "echo hello"}`)
+
+	// PreApply — context-mode OFF must never intercept.
+	preCfg := config.ContextModeConfig{Mode: config.ContextModeOff}
+	preResult, shouldSkip := PreApply(context.Background(), "shell_exec", input, preCfg)
+	if shouldSkip {
+		t.Errorf("PreApply (mode=off): shouldSkip=true, want false")
+	}
+	if preResult.Content != "" {
+		t.Errorf("PreApply (mode=off): non-empty content %q, want empty", preResult.Content)
+	}
+
+	// Apply — disabled filter must be a no-op for a text-only result.
+	applyCfg := config.FilterConfig{Enabled: false, TruncationChars: 100}
+	got, metrics := Apply("shell_exec", input, tr, applyCfg)
+	if got.Content != textContent {
+		t.Errorf("Apply (disabled): content modified, want %q got %q", textContent, got.Content)
+	}
+	if metrics.FilterName != "" || metrics.OriginalBytes != 0 || metrics.CompressedBytes != 0 {
+		t.Errorf("Apply (disabled): non-zero metrics %+v", metrics)
+	}
+
+	// Apply — error result must pass through unchanged even when enabled.
+	errResult := tool.ToolResult{Content: "error text", IsError: true}
+	gotErr, errMetrics := Apply("shell_exec", input, errResult, enabledCfg())
+	if gotErr.Content != "error text" {
+		t.Errorf("Apply (error): content modified, want unchanged")
+	}
+	if errMetrics.FilterName != "" {
+		t.Errorf("Apply (error): FilterName=%q, want empty", errMetrics.FilterName)
 	}
 }

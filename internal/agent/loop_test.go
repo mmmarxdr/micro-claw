@@ -13,6 +13,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 	"microagent/internal/store"
@@ -24,15 +25,18 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockProvider struct {
-	mu        sync.Mutex
-	responses []provider.ChatResponse
-	errs      []error // parallel to responses; nil entry = no error for that call
-	calls     int
-	lastReq   provider.ChatRequest
+	mu                 sync.Mutex
+	responses          []provider.ChatResponse
+	errs               []error // parallel to responses; nil entry = no error for that call
+	calls              int
+	lastReq            provider.ChatRequest
+	supportsMultimodal bool
 }
 
 func (m *mockProvider) Name() string                                    { return "mock" }
 func (m *mockProvider) SupportsTools() bool                             { return true }
+func (m *mockProvider) SupportsMultimodal() bool                        { return m.supportsMultimodal }
+func (m *mockProvider) SupportsAudio() bool                             { return false }
 func (m *mockProvider) HealthCheck(ctx context.Context) (string, error) { return "mock", nil }
 func (m *mockProvider) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
 	m.mu.Lock()
@@ -160,12 +164,14 @@ func (m *mockStore) SearchMemory(ctx context.Context, scopeID string, query stri
 	defer m.mu.Unlock()
 	return m.memories, nil
 }
+
 func (m *mockStore) UpdateMemory(_ context.Context, _ string, _ store.MemoryEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.updateCount++
 	return nil
 }
+
 func (m *mockStore) updateCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,7 +215,7 @@ func TestAgentLoop(t *testing.T) {
 		"mock_tool": &mockTool{name: "mock_tool", result: tool.ToolResult{Content: "mock result"}},
 	}, nil, skill.SkillIndex{}, 4, false)
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	if len(ch.sent) != 1 {
 		t.Fatalf("expected 1 final message, got %d", len(ch.sent))
@@ -235,7 +241,7 @@ func TestAgent_Run_ProcessesMessages(t *testing.T) {
 	// Pre-fill inbox with one message via mockChannel.messages
 	ch := &mockChannel{
 		messages: []channel.IncomingMessage{
-			{ChannelID: "test", Text: "hello"},
+			{ChannelID: "test", Content: content.TextBlock("hello")},
 		},
 	}
 	st := &mockStore{}
@@ -393,7 +399,7 @@ func TestProcessMessage_MaxIterations(t *testing.T) {
 	mt := &mockTool{name: "mock_tool", result: tool.ToolResult{Content: "result"}}
 	ag := New(cfg, limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"mock_tool": mt}, nil, skill.SkillIndex{}, 4, false)
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "go"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
 
 	found := false
 	for _, msg := range ch.sent {
@@ -426,7 +432,7 @@ func TestProcessMessage_UnknownTool(t *testing.T) {
 	st := &mockStore{}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{}, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// The conversation should have a tool-role message with "not found"
 	if st.conv == nil {
@@ -434,8 +440,8 @@ func TestProcessMessage_UnknownTool(t *testing.T) {
 	}
 	foundNotFound := false
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "not found") {
-			if strings.HasPrefix(msg.Content, "<tool_result status=\"error\">\n") {
+		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "not found") {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
 				foundNotFound = true
 			}
 			break
@@ -468,15 +474,15 @@ func TestProcessMessage_ToolGoError(t *testing.T) {
 	st := &mockStore{}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"err_tool": mt}, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
 	}
 	foundErr := false
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "disk full") {
-			if strings.HasPrefix(msg.Content, "<tool_result status=\"error\">\n") {
+		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "disk full") {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
 				foundErr = true
 			}
 			break
@@ -511,15 +517,15 @@ func TestProcessMessage_ToolPanic(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{"panic_tool": mt}, nil, skill.SkillIndex{}, 4, false)
 
 	// Should NOT panic
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "go"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
 
 	if st.conv == nil {
 		t.Fatal("no conversation saved")
 	}
 	foundCrash := false
 	for _, msg := range st.conv.Messages {
-		if msg.Role == "tool" && (strings.Contains(msg.Content, "crashed") || strings.Contains(msg.Content, "test panic")) {
-			if strings.HasPrefix(msg.Content, "<tool_result status=\"error\">\n") {
+		if msg.Role == "tool" && (strings.Contains(msg.Content.TextOnly(), "crashed") || strings.Contains(msg.Content.TextOnly(), "test panic")) {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
 				foundCrash = true
 			}
 			break
@@ -556,7 +562,7 @@ func TestProcessMessage_MultipleToolCalls(t *testing.T) {
 		"tool_a": toolA,
 		"tool_b": toolB,
 	}, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	if toolA.calls != 1 {
 		t.Errorf("tool_a expected 1 call, got %d", toolA.calls)
@@ -567,12 +573,11 @@ func TestProcessMessage_MultipleToolCalls(t *testing.T) {
 
 	for _, msg := range st.conv.Messages {
 		if msg.Role == "tool" {
-			if !strings.HasPrefix(msg.Content, "<tool_result status=\"success\">\n") || !strings.HasSuffix(msg.Content, "\n</tool_result>") {
-				t.Errorf("expected tool_result xml wrapping with success status, got: %q", msg.Content)
+			if !strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"success\">\n") || !strings.HasSuffix(msg.Content.TextOnly(), "\n</tool_result>") {
+				t.Errorf("expected tool_result xml wrapping with success status, got: %q", msg.Content.TextOnly())
 			}
 		}
 	}
-
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +595,7 @@ func TestProcessMessage_ProviderError(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
 	// Should not panic
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	found := false
 	for _, msg := range ch.sent {
@@ -613,8 +618,8 @@ func TestProcessMessage_ExistingHistory(t *testing.T) {
 		ID:        "conv_test",
 		ChannelID: "test",
 		Messages: []provider.ChatMessage{
-			{Role: "user", Content: "first message"},
-			{Role: "assistant", Content: "first reply"},
+			{Role: "user", Content: content.TextBlock("first message")},
+			{Role: "assistant", Content: content.TextBlock("first reply")},
 		},
 	}
 
@@ -634,7 +639,7 @@ func TestProcessMessage_ExistingHistory(t *testing.T) {
 	capturingProv := &capturingProvider{inner: prov}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, capturingProv, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new message"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("new message")})
 
 	capturedReq = capturingProv.lastReq
 
@@ -642,11 +647,11 @@ func TestProcessMessage_ExistingHistory(t *testing.T) {
 	if len(capturedReq.Messages) < 3 {
 		t.Errorf("expected at least 3 messages in ChatRequest (2 existing + 1 new), got %d", len(capturedReq.Messages))
 	}
-	if capturedReq.Messages[0].Content != "first message" {
-		t.Errorf("expected first message to be 'first message', got %q", capturedReq.Messages[0].Content)
+	if capturedReq.Messages[0].Content.TextOnly() != "first message" {
+		t.Errorf("expected first message to be 'first message', got %q", capturedReq.Messages[0].Content.TextOnly())
 	}
-	if capturedReq.Messages[len(capturedReq.Messages)-1].Content != "new message" {
-		t.Errorf("expected last message to be 'new message', got %q", capturedReq.Messages[len(capturedReq.Messages)-1].Content)
+	if capturedReq.Messages[len(capturedReq.Messages)-1].Content.TextOnly() != "new message" {
+		t.Errorf("expected last message to be 'new message', got %q", capturedReq.Messages[len(capturedReq.Messages)-1].Content.TextOnly())
 	}
 }
 
@@ -656,8 +661,10 @@ type capturingProvider struct {
 	lastReq provider.ChatRequest
 }
 
-func (c *capturingProvider) Name() string        { return "capturing" }
-func (c *capturingProvider) SupportsTools() bool { return true }
+func (c *capturingProvider) Name() string             { return "capturing" }
+func (c *capturingProvider) SupportsTools() bool      { return true }
+func (c *capturingProvider) SupportsMultimodal() bool { return true }
+func (c *capturingProvider) SupportsAudio() bool      { return false }
 func (c *capturingProvider) HealthCheck(ctx context.Context) (string, error) {
 	return c.inner.HealthCheck(ctx)
 }
@@ -681,7 +688,7 @@ func TestProcessMessage_AppendMemoryCalledOnFinalResponse(t *testing.T) {
 	st := &mockStore{}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	if len(st.appendedMems) != 1 {
 		t.Fatalf("expected 1 memory entry appended, got %d", len(st.appendedMems))
@@ -706,7 +713,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 	makeMessages := func(roles ...string) []provider.ChatMessage {
 		msgs := make([]provider.ChatMessage, len(roles))
 		for i, r := range roles {
-			msgs[i] = provider.ChatMessage{Role: r, Content: fmt.Sprintf("msg-%d", i)}
+			msgs[i] = provider.ChatMessage{Role: r, Content: content.TextBlock(fmt.Sprintf("msg-%d", i))}
 		}
 		return msgs
 	}
@@ -729,7 +736,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		roles[0] = "user"
 
 		existing := makeMessages(roles...)
-		existing[0].Content = "initial request"
+		existing[0].Content = content.TextBlock("initial request")
 
 		st := &mockStore{conv: &store.Conversation{
 			ID:        "conv_test",
@@ -744,7 +751,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 5}
 		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new msg"})
+		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("new msg")})
 
 		msgs := prov.lastReq.Messages
 		// Should have 7: preserved first user + summary + last 5 (which includes the new user)
@@ -752,16 +759,16 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 			t.Errorf("expected 7 messages in ChatRequest, got %d: %v", len(msgs), msgs)
 		}
 		// First message must be the preserved initial user msg
-		if msgs[0].Content != "initial request" {
-			t.Errorf("expected first message to be 'initial request', got %q", msgs[0].Content)
+		if msgs[0].Content.TextOnly() != "initial request" {
+			t.Errorf("expected first message to be 'initial request', got %q", msgs[0].Content.TextOnly())
 		}
 		// Second message must be the summary
-		if msgs[1].Role != "assistant" || msgs[1].Content != "(Summary of previous conversation):\nsummary result" {
-			t.Errorf("expected second message to be the summary, got %q (role %q)", msgs[1].Content, msgs[1].Role)
+		if msgs[1].Role != "assistant" || msgs[1].Content.TextOnly() != "(Summary of previous conversation):\nsummary result" {
+			t.Errorf("expected second message to be the summary, got %q (role %q)", msgs[1].Content.TextOnly(), msgs[1].Role)
 		}
 		// Last message must be the new incoming user msg
-		if msgs[len(msgs)-1].Content != "new msg" {
-			t.Errorf("expected last message to be 'new msg', got %q", msgs[len(msgs)-1].Content)
+		if msgs[len(msgs)-1].Content.TextOnly() != "new msg" {
+			t.Errorf("expected last message to be 'new msg', got %q", msgs[len(msgs)-1].Content.TextOnly())
 		}
 	})
 
@@ -793,7 +800,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 7}
 		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "new msg"})
+		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("new msg")})
 
 		msgs := prov.lastReq.Messages
 		if len(msgs) != 8 {
@@ -802,7 +809,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		// Verify messages[5] (role="user", now at overall index 6 after summary injection) appears exactly once
 		count := 0
 		for _, m := range msgs {
-			if m.Content == existing[5].Content {
+			if m.Content.TextOnly() == existing[5].Content.TextOnly() {
 				count++
 			}
 		}
@@ -820,7 +827,7 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		// firstUserIdx=0 < trim=5 → prepend → 2 msgs total
 		roles := []string{"user", "assistant", "user", "assistant", "user"}
 		existing := makeMessages(roles...)
-		existing[0].Content = "first"
+		existing[0].Content = content.TextBlock("first")
 
 		st := &mockStore{conv: &store.Conversation{
 			ID:        "conv_test",
@@ -832,20 +839,20 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 
 		cfg := config.AgentConfig{MaxIterations: 1, MaxTokensPerTurn: 100, HistoryLength: 1}
 		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "later msg"})
+		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("later msg")})
 
 		msgs := prov.lastReq.Messages
 		if len(msgs) != 3 {
 			t.Errorf("expected 3 messages (preserved first user + summary + new user), got %d: %v", len(msgs), msgs)
 		}
-		if msgs[0].Content != "first" {
-			t.Errorf("expected first message to be 'first', got %q", msgs[0].Content)
+		if msgs[0].Content.TextOnly() != "first" {
+			t.Errorf("expected first message to be 'first', got %q", msgs[0].Content.TextOnly())
 		}
-		if !strings.HasPrefix(msgs[1].Content, "(Summary of previous conversation):") {
-			t.Errorf("expected second message to be summary, got %q", msgs[1].Content)
+		if !strings.HasPrefix(msgs[1].Content.TextOnly(), "(Summary of previous conversation):") {
+			t.Errorf("expected second message to be summary, got %q", msgs[1].Content.TextOnly())
 		}
-		if msgs[2].Content != "later msg" {
-			t.Errorf("expected third message to be 'later msg', got %q", msgs[2].Content)
+		if msgs[2].Content.TextOnly() != "later msg" {
+			t.Errorf("expected third message to be 'later msg', got %q", msgs[2].Content.TextOnly())
 		}
 	})
 
@@ -871,14 +878,14 @@ func TestAgentLoop_HistoryTruncation(t *testing.T) {
 		ag := New(cfg, defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
 
 		// Should not panic
-		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "help"})
+		ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("help")})
 
 		msgs := prov.lastReq.Messages
 		if len(msgs) != 4 {
 			t.Errorf("expected 4 messages (no prepend when no user msgs, + 1 summary), got %d: %v", len(msgs), msgs)
 		}
-		if !strings.HasPrefix(msgs[0].Content, "(Summary of previous conversation):") {
-			t.Errorf("expected first message to be summary, got %q", msgs[0].Content)
+		if !strings.HasPrefix(msgs[0].Content.TextOnly(), "(Summary of previous conversation):") {
+			t.Errorf("expected first message to be summary, got %q", msgs[0].Content.TextOnly())
 		}
 	})
 }
@@ -893,7 +900,7 @@ func TestProcessMessage_NoMemoryOnEmptyResponse(t *testing.T) {
 	st := &mockStore{}
 
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	if len(st.appendedMems) != 0 {
 		t.Errorf("expected 0 memory entries for empty response, got %d", len(st.appendedMems))
@@ -971,7 +978,7 @@ func TestAgent_EnricherEnqueueCalledAfterAppendMemory(t *testing.T) {
 		ag.enricher.Stop()
 	}()
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// Verify AppendMemory was called.
 	if len(st.appendedMems) != 1 {
@@ -1080,14 +1087,14 @@ func TestUserIsolation_Integration(t *testing.T) {
 	ag.processMessage(context.Background(), channel.IncomingMessage{
 		ChannelID: "test_channel",
 		SenderID:  "user1",
-		Text:      "hello from user1",
+		Content:   content.TextBlock("hello from user1"),
 	})
 
 	// Second message from user2 in same channel
 	ag.processMessage(context.Background(), channel.IncomingMessage{
 		ChannelID: "test_channel",
 		SenderID:  "user2",
-		Text:      "hello from user2",
+		Content:   content.TextBlock("hello from user2"),
 	})
 
 	// Verify we have 2 memory entries
@@ -1151,7 +1158,7 @@ func TestUserIsolation_BackwardCompat(t *testing.T) {
 	ag.processMessage(context.Background(), channel.IncomingMessage{
 		ChannelID: "test_channel",
 		SenderID:  "", // Empty sender ID
-		Text:      "hello",
+		Content:   content.TextBlock("hello"),
 	})
 
 	// Should not panic and should create memory with channel-only scope
@@ -1209,7 +1216,7 @@ func TestUserIsolation_AsyncWorkers(t *testing.T) {
 	ag.processMessage(context.Background(), channel.IncomingMessage{
 		ChannelID: "test_channel",
 		SenderID:  "test_user",
-		Text:      "hello",
+		Content:   content.TextBlock("hello"),
 	})
 
 	// Verify AppendMemory was called with correct scope
@@ -1288,7 +1295,7 @@ func TestContextMode_PreApply_InterceptsShell(t *testing.T) {
 		"shell_exec": wrappedTool,
 	}, nil, skill.SkillIndex{}, 4, false)
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// PreApply should intercept shell_exec — the mock tool's Execute is NOT called
 	if execCount != 0 {
@@ -1396,7 +1403,7 @@ func TestContextMode_Off_NoAutoIndex(t *testing.T) {
 		"shell_exec": mt,
 	}, nil, skill.SkillIndex{}, 4, false)
 
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "hello"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("hello")})
 
 	// When context_mode is off, no auto-indexing should happen
 	// This test verifies the baseline behavior
@@ -1434,7 +1441,6 @@ func TestContextMode_E2E_ShellExecWithIndexing(t *testing.T) {
 	ctxModeCfg := config.ContextModeConfig{
 		Mode:             config.ContextModeAuto,
 		ShellMaxOutput:   4096,
-		FileChunkSize:    2000,
 		SandboxTimeout:   30 * time.Second,
 		SandboxKeepFirst: 20,
 		SandboxKeepLast:  10,
@@ -1469,7 +1475,10 @@ func TestContextMode_E2E_ShellExecWithIndexing(t *testing.T) {
 	}, nil, skill.SkillIndex{}, 4, false)
 
 	// Process a message that triggers shell_exec
-	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Text: "run echo"})
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("run echo")})
+
+	// Drain the async indexing worker so the output is committed before we search.
+	_ = ag.Shutdown()
 
 	// Verify the tool was executed
 	if len(ch.sent) == 0 {
@@ -1637,5 +1646,343 @@ func TestContextMode_E2E_BatchExecStopOnError(t *testing.T) {
 	// Verify the summary shows fewer than 3 commands ran
 	if strings.Contains(result.Content, "Executed 3 commands") {
 		t.Error("expected only 2 commands to run due to stop_on_error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mockStoreWithOutputStore — store.Store + store.OutputStore for H2/H3 tests
+// ---------------------------------------------------------------------------
+
+type mockStoreWithOutputStore struct {
+	mockStore
+	mu      sync.Mutex
+	indexed []store.ToolOutput
+}
+
+func (m *mockStoreWithOutputStore) IndexOutput(_ context.Context, output store.ToolOutput) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.indexed = append(m.indexed, output)
+	return nil
+}
+
+func (m *mockStoreWithOutputStore) SearchOutputs(_ context.Context, _ string, _ int) ([]store.ToolOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]store.ToolOutput, len(m.indexed))
+	copy(cp, m.indexed)
+	return cp, nil
+}
+
+// ---------------------------------------------------------------------------
+// TestAutoIndex_ExitCode — H2: loop reads microagent/exit_code from Meta
+// ---------------------------------------------------------------------------
+
+// autoIndexCfg returns an AgentConfig with AutoIndexOutputs=true and Mode=Off.
+// Mode=Off prevents PreApply from intercepting tool calls, so the mock tool
+// result (with its hand-crafted Meta map) is used directly by the loop.
+// AutoIndexOutputs is checked independently of Mode, so indexing still fires.
+func autoIndexCfg() config.AgentConfig {
+	autoIndex := true
+	return config.AgentConfig{
+		MaxIterations:    5,
+		MaxTokensPerTurn: 100,
+		ContextMode: config.ContextModeConfig{
+			Mode:             config.ContextModeOff,
+			AutoIndexOutputs: &autoIndex,
+		},
+	}
+}
+
+func TestAutoIndex_ExitCode(t *testing.T) {
+	cases := []struct {
+		name         string
+		metaExitCode string // empty string means key absent
+		wantExitCode int
+	}{
+		{"key_42", "42", 42},
+		{"key_0", "0", 0},
+		{"key_invalid", "invalid", 0},
+		{"key_absent", "", 0},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			meta := map[string]string{"microagent/truncated": "false"}
+			if tc.metaExitCode != "" {
+				meta["microagent/exit_code"] = tc.metaExitCode
+			}
+
+			mt := &mockTool{name: "mock_tool", result: tool.ToolResult{
+				Content: "some output",
+				IsError: false,
+				Meta:    meta,
+			}}
+
+			prov := &mockProvider{
+				responses: []provider.ChatResponse{
+					{ToolCalls: []provider.ToolCall{{ID: "t1", Name: "mock_tool", Input: json.RawMessage(`{}`)}}},
+					{Content: "done"},
+				},
+			}
+			ch := &mockChannel{}
+			st := &mockStoreWithOutputStore{}
+			limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+			ag := New(autoIndexCfg(), limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+				"mock_tool": mt,
+			}, nil, skill.SkillIndex{}, 4, false)
+
+			ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
+			// Drain the async indexing worker before checking results.
+			_ = ag.Shutdown()
+
+			st.mu.Lock()
+			indexed := st.indexed
+			st.mu.Unlock()
+
+			if len(indexed) != 1 {
+				t.Fatalf("expected 1 indexed output, got %d", len(indexed))
+			}
+			if indexed[0].ExitCode != tc.wantExitCode {
+				t.Errorf("ExitCode: got %d, want %d", indexed[0].ExitCode, tc.wantExitCode)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAutoIndex_Truncated — H3: loop reads microagent/truncated from Meta
+// ---------------------------------------------------------------------------
+
+func TestAutoIndex_Truncated(t *testing.T) {
+	cases := []struct {
+		name          string
+		metaTruncated string // empty string means key absent
+		// filterCfg controls whether the filter runs and may produce Metrics.
+		filterCfg config.FilterConfig
+		// content is the mock tool output; a long string can be truncated by filter.
+		content       string
+		wantTruncated bool
+	}{
+		// Meta key present — overrides the filter-level fallback entirely.
+		{
+			name:          "meta_true",
+			metaTruncated: "true",
+			wantTruncated: true,
+		},
+		{
+			// filter would say truncated (content >> TruncationChars), but Meta says false.
+			name:          "meta_false_overrides_filter",
+			metaTruncated: "false",
+			filterCfg:     config.FilterConfig{Enabled: true, TruncationChars: 5},
+			content:       "this content is definitely longer than five chars",
+			wantTruncated: false,
+		},
+		// Meta key absent — falls back to filterMetrics.CompressedBytes < OriginalBytes.
+		{
+			// filter disabled → Metrics{} → 0 < 0 = false
+			name:          "fallback_not_truncated",
+			filterCfg:     config.FilterConfig{Enabled: false},
+			content:       "short output",
+			wantTruncated: false,
+		},
+		{
+			// filter enabled with tiny limit → CompressedBytes < OriginalBytes → true.
+			// Use a non-shell tool name so the filter hits the generic truncation path.
+			name:          "fallback_truncated_via_filter",
+			filterCfg:     config.FilterConfig{Enabled: true, TruncationChars: 5, Levels: config.FilterLevels{Generic: true}},
+			content:       "this content is definitely longer than five chars",
+			wantTruncated: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			meta := map[string]string{"microagent/exit_code": "0"}
+			if tc.metaTruncated != "" {
+				meta["microagent/truncated"] = tc.metaTruncated
+			}
+
+			toolContent := tc.content
+			if toolContent == "" {
+				toolContent = "output"
+			}
+
+			// Use "generic_tool" name so filter hits the generic path, not shell path,
+			// keeping behavior predictable.
+			toolName := "generic_tool"
+
+			mt := &mockTool{name: toolName, result: tool.ToolResult{
+				Content: toolContent,
+				IsError: false,
+				Meta:    meta,
+			}}
+
+			prov := &mockProvider{
+				responses: []provider.ChatResponse{
+					{ToolCalls: []provider.ToolCall{{ID: "t1", Name: toolName, Input: json.RawMessage(`{}`)}}},
+					{Content: "done"},
+				},
+			}
+			ch := &mockChannel{}
+			st := &mockStoreWithOutputStore{}
+			limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+			ag := New(autoIndexCfg(), limits, tc.filterCfg, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+				toolName: mt,
+			}, nil, skill.SkillIndex{}, 4, false)
+
+			ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
+			// Drain the async indexing worker before checking results.
+			_ = ag.Shutdown()
+
+			st.mu.Lock()
+			indexed := st.indexed
+			st.mu.Unlock()
+
+			if len(indexed) != 1 {
+				t.Fatalf("expected 1 indexed output, got %d", len(indexed))
+			}
+			if indexed[0].Truncated != tc.wantTruncated {
+				t.Errorf("Truncated: got %v, want %v", indexed[0].Truncated, tc.wantTruncated)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAutoIndex_EmptyContent_NotIndexed — empty Content skips Enqueue
+// ---------------------------------------------------------------------------
+
+// TestAutoIndex_EmptyContent_NotIndexed verifies that tool results with empty
+// Content (e.g. `touch foo`) are not enqueued for indexing. Commands that
+// succeed with no stdout would otherwise produce noisy ErrOutputEmptyContent
+// warnings from the IndexingWorker.
+func TestAutoIndex_EmptyContent_NotIndexed(t *testing.T) {
+	mt := &mockTool{name: "mock_tool", result: tool.ToolResult{
+		Content: "", // empty — simulates a command with no stdout
+		IsError: false,
+	}}
+
+	prov := &mockProvider{
+		responses: []provider.ChatResponse{
+			{ToolCalls: []provider.ToolCall{{ID: "t1", Name: "mock_tool", Input: json.RawMessage(`{}`)}}},
+			{Content: "done"},
+		},
+	}
+	ch := &mockChannel{}
+	st := &mockStoreWithOutputStore{}
+	limits := config.LimitsConfig{TotalTimeout: 10 * time.Second, ToolTimeout: 2 * time.Second}
+
+	ag := New(autoIndexCfg(), limits, config.FilterConfig{}, ch, prov, st, audit.NoopAuditor{}, map[string]tool.Tool{
+		"mock_tool": mt,
+	}, nil, skill.SkillIndex{}, 4, false)
+
+	ag.processMessage(context.Background(), channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("go")})
+	// Drain the async indexing worker before checking results.
+	_ = ag.Shutdown()
+
+	st.mu.Lock()
+	indexed := st.indexed
+	st.mu.Unlock()
+
+	if len(indexed) != 0 {
+		t.Errorf("expected 0 indexed outputs for empty content, got %d", len(indexed))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Degradation tests (Phase 2)
+// ---------------------------------------------------------------------------
+
+// TestProcessMessage_DegradationNotice_ImageOnTextOnlyProvider verifies that
+// a user message with an image block on a text-only provider prefixes the
+// reply with the degradation notice.
+func TestProcessMessage_DegradationNotice_ImageOnTextOnlyProvider(t *testing.T) {
+	prov := &mockProvider{
+		supportsMultimodal: false,
+		responses: []provider.ChatResponse{
+			{Content: "I see your request.", StopReason: "end_turn"},
+		},
+	}
+	ch := &mockChannel{}
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	imgMsg := channel.IncomingMessage{
+		ChannelID: "c1",
+		Content: content.Blocks{
+			{Type: content.BlockImage, MIME: "image/jpeg", Size: 1024},
+			{Type: content.BlockText, Text: "what is this?"},
+		},
+	}
+	ag.processMessage(context.Background(), imgMsg)
+
+	msgs := ch.sentMessages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one sent message")
+	}
+	notice := content.DegradationNotice(imgMsg.Content)
+	if !strings.HasPrefix(msgs[0].Text, notice) {
+		t.Errorf("reply does not start with degradation notice:\ngot:  %q\nwant prefix: %q", msgs[0].Text, notice)
+	}
+}
+
+// TestProcessMessage_NoDegradationNotice_ImageOnMultimodalProvider verifies
+// that a multimodal provider does NOT trigger the degradation notice.
+func TestProcessMessage_NoDegradationNotice_ImageOnMultimodalProvider(t *testing.T) {
+	prov := &mockProvider{
+		supportsMultimodal: true,
+		responses: []provider.ChatResponse{
+			{Content: "I see a cat.", StopReason: "end_turn"},
+		},
+	}
+	ch := &mockChannel{}
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	imgMsg := channel.IncomingMessage{
+		ChannelID: "c2",
+		Content: content.Blocks{
+			{Type: content.BlockImage, MIME: "image/jpeg", Size: 1024},
+			{Type: content.BlockText, Text: "what is this?"},
+		},
+	}
+	ag.processMessage(context.Background(), imgMsg)
+
+	msgs := ch.sentMessages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one sent message")
+	}
+	notice := content.DegradationNotice(imgMsg.Content)
+	if strings.HasPrefix(msgs[0].Text, notice) {
+		t.Errorf("reply unexpectedly starts with degradation notice: %q", msgs[0].Text)
+	}
+}
+
+// TestProcessMessage_NoDegradationNotice_TextOnlyMessage verifies that a
+// text-only message on a text-only provider produces no degradation notice.
+func TestProcessMessage_NoDegradationNotice_TextOnlyMessage(t *testing.T) {
+	prov := &mockProvider{
+		supportsMultimodal: false,
+		responses: []provider.ChatResponse{
+			{Content: "Hello!", StopReason: "end_turn"},
+		},
+	}
+	ch := &mockChannel{}
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, prov, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, false)
+
+	ag.processMessage(context.Background(), channel.IncomingMessage{
+		ChannelID: "c3",
+		Content:   content.TextBlock("hello"),
+	})
+
+	msgs := ch.sentMessages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one sent message")
+	}
+	if msgs[0].Text != "Hello!" {
+		t.Errorf("unexpected reply: %q", msgs[0].Text)
 	}
 }

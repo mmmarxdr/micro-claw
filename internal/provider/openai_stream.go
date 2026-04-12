@@ -23,8 +23,8 @@ var _ StreamingProvider = (*OpenAIProvider)(nil)
 type openaiStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   *string                 `json:"content"`
-			ToolCalls []openaiStreamToolCall  `json:"tool_calls,omitempty"`
+			Content   *string                `json:"content"`
+			ToolCalls []openaiStreamToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -86,7 +86,17 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (*Stre
 				ToolCalls: mapOpenAIToolCallsToWire(m.ToolCalls),
 			})
 		default:
-			msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content})
+			// Emit parts array when the message contains media blocks;
+			// fall back to a plain TextOnly string for text-only messages to
+			// preserve backward compatibility with existing tests and wire format.
+			if m.Content.HasMedia() {
+				msgs = append(msgs, openaiMessage{
+					Role:    m.Role,
+					Content: p.translateBlocks(ctx, m.Content),
+				})
+			} else {
+				msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content.TextOnly()})
+			}
 		}
 	}
 

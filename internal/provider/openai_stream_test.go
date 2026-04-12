@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -72,7 +73,7 @@ func TestOpenAIProvider_ChatStreamTextOnly(t *testing.T) {
 	}
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Say hello"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Say hello")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
@@ -134,7 +135,7 @@ func TestOpenAIProvider_ChatStreamToolCall(t *testing.T) {
 	}
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Run ls"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Run ls")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
@@ -204,7 +205,7 @@ func TestOpenAIProvider_ChatStreamHTTPError(t *testing.T) {
 	}
 
 	_, err = p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 401 response")

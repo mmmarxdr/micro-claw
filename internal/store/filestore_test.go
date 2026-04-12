@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 )
 
@@ -23,8 +24,8 @@ func TestFileStore_SaveAndLoadConversation(t *testing.T) {
 		ID:        "test-conv-1",
 		ChannelID: "cli",
 		Messages: []provider.ChatMessage{
-			{Role: "user", Content: "hello"},
-			{Role: "assistant", Content: "world"},
+			{Role: "user", Content: content.TextBlock("hello")},
+			{Role: "assistant", Content: content.TextBlock("world")},
 		},
 		CreatedAt: time.Now().Truncate(time.Millisecond).UTC(),
 		UpdatedAt: time.Now().Truncate(time.Millisecond).UTC(),

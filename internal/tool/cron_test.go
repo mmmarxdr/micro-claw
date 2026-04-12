@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"microagent/internal/channel"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/store"
 )
@@ -135,13 +136,15 @@ var errJobNotFoundMock = store.ErrNotFound
 
 // mockProvider returns a fixed response string or an error.
 type mockProvider struct {
-	response string
-	err      error
+	response  string
+	err       error
 	callCount int
 }
 
-func (p *mockProvider) Name() string { return "mock" }
-func (p *mockProvider) SupportsTools() bool { return false }
+func (p *mockProvider) Name() string                                  { return "mock" }
+func (p *mockProvider) SupportsTools() bool                           { return false }
+func (p *mockProvider) SupportsMultimodal() bool                      { return false }
+func (p *mockProvider) SupportsAudio() bool                           { return false }
 func (p *mockProvider) HealthCheck(_ context.Context) (string, error) { return "ok", nil }
 func (p *mockProvider) Chat(_ context.Context, _ provider.ChatRequest) (*provider.ChatResponse, error) {
 	p.callCount++
@@ -294,7 +297,7 @@ func (t *testScheduleTaskTool) Execute(ctx context.Context, params json.RawMessa
 func callMockProviderForCron(ctx context.Context, prov provider.Provider, schedule string) (string, error) {
 	req := provider.ChatRequest{
 		SystemPrompt: "You are a cron expression converter.",
-		Messages:     []provider.ChatMessage{{Role: "user", Content: schedule}},
+		Messages:     []provider.ChatMessage{{Role: "user", Content: content.TextBlock(schedule)}},
 		MaxTokens:    20,
 	}
 	resp, err := prov.Chat(ctx, req)
@@ -310,9 +313,9 @@ type testDeleteCronTool struct {
 	scheduler *mockScheduler
 }
 
-func (t *testDeleteCronTool) Name() string              { return "delete_cron" }
-func (t *testDeleteCronTool) Description() string       { return "" }
-func (t *testDeleteCronTool) Schema() json.RawMessage   { return json.RawMessage(`{}`) }
+func (t *testDeleteCronTool) Name() string            { return "delete_cron" }
+func (t *testDeleteCronTool) Description() string     { return "" }
+func (t *testDeleteCronTool) Schema() json.RawMessage { return json.RawMessage(`{}`) }
 
 func (t *testDeleteCronTool) Execute(ctx context.Context, params json.RawMessage) (ToolResult, error) {
 	var input deleteCronParams
@@ -341,9 +344,9 @@ type testListCronsTool struct {
 	cronStore *mockCronStore
 }
 
-func (t *testListCronsTool) Name() string              { return "list_crons" }
-func (t *testListCronsTool) Description() string       { return "" }
-func (t *testListCronsTool) Schema() json.RawMessage   { return json.RawMessage(`{}`) }
+func (t *testListCronsTool) Name() string            { return "list_crons" }
+func (t *testListCronsTool) Description() string     { return "" }
+func (t *testListCronsTool) Schema() json.RawMessage { return json.RawMessage(`{}`) }
 
 func (t *testListCronsTool) Execute(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
 	lt := &listCronsTool{cronStore: t.cronStore}
@@ -862,6 +865,7 @@ func (a *schedulerIfaceAdapter) Stop() {}
 func (a *schedulerIfaceAdapter) AddJob(ctx context.Context, job store.CronJob) error {
 	return a.m.AddJob(ctx, job)
 }
+
 func (a *schedulerIfaceAdapter) RemoveJob(ctx context.Context, id string) error {
 	return a.m.RemoveJob(ctx, id)
 }
@@ -1044,7 +1048,7 @@ func TestCronExprRegex(t *testing.T) {
 		"every morning at 9am",
 		"9am daily",
 		"",
-		"0 9 * *",   // only 4 fields
+		"0 9 * *",     // only 4 fields
 		"0 9 * * * *", // 6 fields (seconds — not standard 5-field)
 	}
 

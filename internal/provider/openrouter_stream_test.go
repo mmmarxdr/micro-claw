@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -79,7 +80,7 @@ func TestOpenRouterStream_TextOnly(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -154,7 +155,7 @@ func TestOpenRouterStream_ToolCall(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "run ls"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("run ls")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -234,7 +235,7 @@ func TestOpenRouterStream_MixedContent(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "do it"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("do it")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -296,7 +297,7 @@ func TestOpenRouterStream_DoneHandling(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -340,7 +341,7 @@ func TestOpenRouterStream_HTTPError(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	_, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err == nil {
 		t.Fatal("expected error for 401 response")
@@ -363,7 +364,7 @@ func TestOpenRouterStream_MalformedJSON(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -411,7 +412,7 @@ func TestOpenRouterStream_MultipleToolCalls(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "use tools"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("use tools")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -480,7 +481,7 @@ func TestOpenRouterStream_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	sr, err := p.ChatStream(ctx, ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -509,7 +510,7 @@ func TestOpenRouterStream_EmptyChoices(t *testing.T) {
 	p := NewOpenRouterProvider(cfg)
 
 	sr, err := p.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("hi")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)

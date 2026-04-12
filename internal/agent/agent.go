@@ -72,6 +72,7 @@ func (a *Agent) startPruningLoop(ctx context.Context) {
 
 type Agent struct {
 	config          config.AgentConfig
+	mediaCfg        config.MediaConfig // media cleanup configuration
 	limits          config.LimitsConfig
 	filterCfg       config.FilterConfig
 	ctxModeCfg      config.ContextModeConfig // context-mode configuration
@@ -87,6 +88,7 @@ type Agent struct {
 	stream          bool             // true when streaming is enabled and provider supports it
 	enricher        *Enricher        // async tag enrichment worker; nil when disabled
 	embeddingWorker *EmbeddingWorker // async embedding worker; nil when disabled
+	indexWorker     *IndexingWorker  // async output indexing worker; nil when disabled
 }
 
 func New(
@@ -142,6 +144,14 @@ func New(
 		outputStore = sqlStore
 	}
 
+	// Wire indexing worker when an OutputStore is present.
+	// Agent owns the full lifecycle: created and started here, stopped in Shutdown.
+	var idxWorker *IndexingWorker
+	if outputStore != nil {
+		idxWorker = NewIndexingWorker(outputStore)
+		idxWorker.Start(context.Background())
+	}
+
 	return &Agent{
 		config:          cfg,
 		limits:          limits,
@@ -159,7 +169,15 @@ func New(
 		stream:          enableStream,
 		enricher:        NewEnricher(prov, st, cfg),
 		embeddingWorker: embWorker,
+		indexWorker:     idxWorker,
 	}
+}
+
+// WithMediaConfig sets the media configuration on the agent, enabling the
+// periodic media cleanup loop in Run(). Call before Run().
+func (a *Agent) WithMediaConfig(cfg config.MediaConfig) *Agent {
+	a.mediaCfg = cfg
+	return a
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -176,7 +194,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.embeddingWorker != nil {
 		a.embeddingWorker.Start(ctx)
 	}
+	// indexWorker is started in New() — no need to start here.
 	a.startPruningLoop(ctx)
+
+	// Start media cleanup loop when media is enabled and the store supports it.
+	if config.BoolVal(a.mediaCfg.Enabled) {
+		if _, ok := a.store.(store.MediaStore); ok {
+			go a.mediaCleanupLoop(ctx)
+		}
+	}
 
 	slog.Info("agent loop started")
 
@@ -197,7 +223,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				case <-time.After(30 * time.Second):
 					slog.Warn("agent: message dropped, semaphore timeout",
 						"channel_id", m.ChannelID,
-						"text_preview", truncate(m.Text, 80))
+						"text_preview", truncate(m.Content.TextOnly(), 80))
 				}
 			}(msg)
 		}
@@ -212,11 +238,20 @@ func truncate(s string, n int) string {
 }
 
 func (a *Agent) Shutdown() error {
+	// Stop the channel first — no more messages will be enqueued after this.
+	err := a.channel.Stop()
+
+	// Drain the index worker after the channel stops feeding new outputs.
+	if a.indexWorker != nil {
+		a.indexWorker.Stop()
+	}
+
+	// Stop remaining background workers.
 	if a.enricher != nil {
 		a.enricher.Stop()
 	}
 	if a.embeddingWorker != nil {
 		a.embeddingWorker.Stop()
 	}
-	return a.channel.Stop()
+	return err
 }

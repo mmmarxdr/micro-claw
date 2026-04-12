@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 )
 
@@ -51,8 +52,8 @@ func TestSQLiteStore_SaveAndLoadConversation(t *testing.T) {
 		ID:        "test-conv-1",
 		ChannelID: "cli",
 		Messages: []provider.ChatMessage{
-			{Role: "user", Content: "hello"},
-			{Role: "assistant", Content: "world"},
+			{Role: "user", Content: content.TextBlock("hello")},
+			{Role: "assistant", Content: content.TextBlock("world")},
 		},
 		Metadata:  map[string]string{"key": "value"},
 		CreatedAt: now,
@@ -77,10 +78,10 @@ func TestSQLiteStore_SaveAndLoadConversation(t *testing.T) {
 	if len(loaded.Messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(loaded.Messages))
 	}
-	if loaded.Messages[0].Role != "user" || loaded.Messages[0].Content != "hello" {
+	if loaded.Messages[0].Role != "user" || loaded.Messages[0].Content.TextOnly() != "hello" {
 		t.Errorf("message[0] mismatch: %+v", loaded.Messages[0])
 	}
-	if loaded.Messages[1].Role != "assistant" || loaded.Messages[1].Content != "world" {
+	if loaded.Messages[1].Role != "assistant" || loaded.Messages[1].Content.TextOnly() != "world" {
 		t.Errorf("message[1] mismatch: %+v", loaded.Messages[1])
 	}
 	if loaded.Metadata["key"] != "value" {
@@ -955,8 +956,8 @@ func TestIntegration_Scenario5_IdempotentMigration(t *testing.T) {
 	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("reading schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("Scenario 5: expected version=4 after re-run, got %d", version)
+	if version != 5 {
+		t.Errorf("Scenario 5: expected version=5 after re-run, got %d", version)
 	}
 
 	results, err := s.SearchMemory(ctx, "scope1", "data", 5)

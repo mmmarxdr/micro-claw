@@ -309,9 +309,19 @@ func (s *FileStore) SearchMemory(ctx context.Context, scopeID string, query stri
 
 // ─── OutputStore implementation ───────────────────────────────────────────────
 
-// IndexOutput is a no-op for FileStore. The FileStore does not support
-// indexing tool outputs.
-func (s *FileStore) IndexOutput(_ context.Context, _ ToolOutput) error {
+// IndexOutput validates the output fields and returns nil. The FileStore does
+// not persist tool outputs, but it enforces the same input contract as SQLiteStore
+// so callers receive consistent errors regardless of backend.
+func (s *FileStore) IndexOutput(_ context.Context, output ToolOutput) error {
+	if output.ID == "" {
+		return ErrOutputMissingID
+	}
+	if output.ToolName == "" {
+		return ErrOutputMissingToolName
+	}
+	if output.Content == "" {
+		return ErrOutputEmptyContent
+	}
 	return nil
 }
 
@@ -321,5 +331,13 @@ func (s *FileStore) SearchOutputs(_ context.Context, _ string, _ int) ([]ToolOut
 	return []ToolOutput{}, nil
 }
 
+// FileStore does NOT implement MediaStore. Binary media storage requires a
+// SQLite backend. Callers that need media ops must type-assert:
+//
+//	if ms, ok := myStore.(store.MediaStore); ok { ... } else { /* log warning */ }
+//
+// main.go logs a startup warning when cfg.Media.Enabled=true and the store
+// does not satisfy MediaStore — see cmd/microagent/main.go store construction.
+//
 // Compile-time assertion.
 var _ OutputStore = (*FileStore)(nil)

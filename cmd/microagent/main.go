@@ -1,5 +1,7 @@
 package main
 
+// Binary size baseline: ~21M as of multimodal-messages change (content package + media_blobs + media helpers).
+
 import (
 	"context"
 	"errors"
@@ -280,6 +282,16 @@ func main() {
 	}
 	defer st.Close()
 
+	// Warn if media is enabled but the backing store does not support it.
+	// FileStore does not implement MediaStore; SQLiteStore does. Media ops will
+	// be silently dropped by callers that type-assert before writing.
+	if config.BoolVal(cfg.Media.Enabled) {
+		if _, ok := st.(store.MediaStore); !ok {
+			slog.Warn("media enabled but store backend does not support media — media will be dropped",
+				"store_type", cfg.Store.Type)
+		}
+	}
+
 	// Register context-mode tools (BatchExecTool, SearchOutputTool) if enabled
 	if cfg.Agent.ContextMode.Mode != config.ContextModeOff {
 		if outputStore, ok := st.(store.OutputStore); ok {
@@ -343,28 +355,32 @@ func main() {
 	if !*daemon {
 		switch cfg.Channel.Type {
 		case "telegram":
-			t, err := channel.NewTelegramChannel(cfg.Channel)
+			mediaStore, _ := st.(store.MediaStore)
+			t, err := channel.NewTelegramChannel(cfg.Channel, cfg.Media, mediaStore)
 			if err != nil {
 				slog.Error("failed to initialize telegram channel", "error", err)
 				os.Exit(1)
 			}
 			channels = append(channels, t)
 		case "whatsapp":
-			wa, err := channel.NewWhatsAppChannel(cfg.Channel)
+			mediaStore, _ := st.(store.MediaStore)
+			wa, err := channel.NewWhatsAppChannel(cfg.Channel, cfg.Media, mediaStore)
 			if err != nil {
 				slog.Error("failed to initialize whatsapp channel", "error", err)
 				os.Exit(1)
 			}
 			channels = append(channels, wa)
 		case "discord":
-			d, err := channel.NewDiscordChannel(cfg.Channel)
+			mediaStore, _ := st.(store.MediaStore)
+			d, err := channel.NewDiscordChannel(cfg.Channel, cfg.Media, mediaStore)
 			if err != nil {
 				slog.Error("failed to initialize discord channel", "error", err)
 				os.Exit(1)
 			}
 			channels = append(channels, d)
 		case "cli", "":
-			channels = append(channels, channel.NewCLIChannelDefault(cfg.Channel))
+			mediaStore, _ := st.(store.MediaStore)
+			channels = append(channels, channel.NewCLIChannelDefault(cfg.Channel, cfg.Media, mediaStore))
 		default:
 			slog.Error("unknown channel type", "type", cfg.Channel.Type)
 			os.Exit(1)
@@ -431,10 +447,16 @@ func buildProvider(cfg config.ProviderConfig) (provider.Provider, error) {
 		return provider.NewGeminiProvider(cfg), nil
 	case "openrouter":
 		return provider.NewOpenRouterProvider(cfg), nil
-	case "openai", "ollama":
+	case "openai":
 		p, err := provider.NewOpenAIProvider(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize openai provider: %w", err)
+		}
+		return p, nil
+	case "ollama":
+		p, err := provider.NewOllamaProvider(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize ollama provider: %w", err)
 		}
 		return p, nil
 	default:

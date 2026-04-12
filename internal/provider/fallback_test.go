@@ -14,19 +14,22 @@ import (
 // --------------------------------------------------------------------------
 
 type mockProvider struct {
-	name          string
-	supportsTools bool
-	chatResp      *ChatResponse
-	chatErr       error
-	healthName    string
-	healthErr     error
-	chatCalled    int
-	healthCalled  int
+	name               string
+	supportsTools      bool
+	supportsMultimodal bool
+	supportsAudio      bool
+	chatResp           *ChatResponse
+	chatErr            error
+	healthName         string
+	healthErr          error
+	chatCalled         int
+	healthCalled       int
 }
 
-func (m *mockProvider) Name() string { return m.name }
-
-func (m *mockProvider) SupportsTools() bool { return m.supportsTools }
+func (m *mockProvider) Name() string             { return m.name }
+func (m *mockProvider) SupportsTools() bool      { return m.supportsTools }
+func (m *mockProvider) SupportsMultimodal() bool { return m.supportsMultimodal }
+func (m *mockProvider) SupportsAudio() bool      { return m.supportsAudio }
 
 func (m *mockProvider) Chat(_ context.Context, _ ChatRequest) (*ChatResponse, error) {
 	m.chatCalled++
@@ -313,5 +316,56 @@ func TestFallbackProvider_Name(t *testing.T) {
 	got := f.Name()
 	if got != "gemini(openrouter)" {
 		t.Errorf("Name() = %q, want gemini(openrouter)", got)
+	}
+}
+
+// --------------------------------------------------------------------------
+// T14: SupportsMultimodal + SupportsAudio — mixed pool (one text-only) → false
+// --------------------------------------------------------------------------
+
+func TestFallbackProvider_SupportsMultimodal_Mixed(t *testing.T) {
+	primary := &mockProvider{name: "multimodal", supportsMultimodal: true, supportsAudio: true}
+	fallback := &mockProvider{name: "textonly", supportsMultimodal: false, supportsAudio: false}
+	f := newFallback(primary, fallback)
+
+	if f.SupportsMultimodal() {
+		t.Error("SupportsMultimodal() = true, want false when one member is text-only")
+	}
+	if f.SupportsAudio() {
+		t.Error("SupportsAudio() = true, want false when one member is text-only")
+	}
+}
+
+// --------------------------------------------------------------------------
+// T15: SupportsMultimodal + SupportsAudio — all multimodal → true
+// --------------------------------------------------------------------------
+
+func TestFallbackProvider_SupportsMultimodal_AllMultimodal(t *testing.T) {
+	primary := &mockProvider{name: "a", supportsMultimodal: true, supportsAudio: true}
+	fallback := &mockProvider{name: "b", supportsMultimodal: true, supportsAudio: true}
+	f := newFallback(primary, fallback)
+
+	if !f.SupportsMultimodal() {
+		t.Error("SupportsMultimodal() = false, want true when all members support multimodal")
+	}
+	if !f.SupportsAudio() {
+		t.Error("SupportsAudio() = false, want true when all members support audio")
+	}
+}
+
+// --------------------------------------------------------------------------
+// T16: SupportsMultimodal + SupportsAudio — nil member (empty-pool guard) → false
+// --------------------------------------------------------------------------
+
+func TestFallbackProvider_SupportsMultimodal_NilMember(t *testing.T) {
+	// Simulate "empty pool" by constructing a FallbackProvider with nil members.
+	// The nil guard MUST return false rather than panicking.
+	f := &FallbackProvider{primary: nil, fallback: nil, logger: slog.Default()}
+
+	if f.SupportsMultimodal() {
+		t.Error("SupportsMultimodal() = true on nil-member FallbackProvider, want false")
+	}
+	if f.SupportsAudio() {
+		t.Error("SupportsAudio() = true on nil-member FallbackProvider, want false")
 	}
 }

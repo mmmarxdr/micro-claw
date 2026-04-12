@@ -9,6 +9,7 @@ import (
 	"microagent/internal/audit"
 	"microagent/internal/channel"
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/skill"
 )
@@ -53,7 +54,7 @@ func TestAgent_Semaphore_Capacity(t *testing.T) {
 
 	inbox := make(chan channel.IncomingMessage, numMessages)
 	for i := 0; i < numMessages; i++ {
-		inbox <- channel.IncomingMessage{ChannelID: "test", Text: "msg"}
+		inbox <- channel.IncomingMessage{ChannelID: "test", Content: content.TextBlock("msg")}
 	}
 
 	// Start dispatching goroutines manually (mirrors Run() inner loop logic).
@@ -114,6 +115,8 @@ type blockingProvider struct {
 
 func (b *blockingProvider) Name() string                                    { return "blocking" }
 func (b *blockingProvider) SupportsTools() bool                             { return false }
+func (b *blockingProvider) SupportsMultimodal() bool                        { return false }
+func (b *blockingProvider) SupportsAudio() bool                             { return false }
 func (b *blockingProvider) HealthCheck(ctx context.Context) (string, error) { return "blocking", nil }
 func (b *blockingProvider) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
 	if b.onEnter != nil {

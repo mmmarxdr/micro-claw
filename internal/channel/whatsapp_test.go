@@ -127,8 +127,8 @@ func TestWhatsAppChannel_IncomingMessage_TextParsed(t *testing.T) {
 		if msg.SenderID != "15551234567" {
 			t.Errorf("expected senderID '15551234567', got %q", msg.SenderID)
 		}
-		if msg.Text != "Hello World" {
-			t.Errorf("expected text 'Hello World', got %q", msg.Text)
+		if msg.Text() != "Hello World" {
+			t.Errorf("expected text 'Hello World', got %q", msg.Text())
 		}
 		if msg.ID != "wamid.test123" {
 			t.Errorf("expected ID 'wamid.test123', got %q", msg.ID)
@@ -183,10 +183,34 @@ func TestWhatsAppChannel_Allowlist_BlockedPhoneDropped(t *testing.T) {
 	}
 }
 
-// --- Non-text message type ignored ---
+// --- Non-text message type: unsupported types ignored, media types handled ---
 
-func TestWhatsAppChannel_NonTextMessageIgnored(t *testing.T) {
+// TestWhatsAppChannel_UnsupportedTypeIgnored verifies that truly unsupported message
+// types (e.g. "sticker") are silently skipped (no inbox enqueue).
+func TestWhatsAppChannel_UnsupportedTypeIgnored(t *testing.T) {
 	w := newTestWhatsAppChannel(nil)
+	inbox := make(chan IncomingMessage, 1)
+	ctx := context.Background()
+
+	body := buildWebhookPayload("15551234567", "sticker", "")
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	rw := httptest.NewRecorder()
+
+	w.handleIncoming(rw, req, inbox, ctx)
+
+	select {
+	case msg := <-inbox:
+		t.Fatalf("unsupported type should be ignored, got %+v", msg)
+	case <-time.After(50 * time.Millisecond):
+		// expected
+	}
+}
+
+// TestWhatsAppChannel_MediaDisabled_ImageEnqueuesNotice verifies that when media is
+// disabled, an image message results in an enqueued notice (not silently dropped).
+func TestWhatsAppChannel_MediaDisabled_ImageEnqueuesNotice(t *testing.T) {
+	w := newTestWhatsAppChannel(nil)
+	// media is disabled (default zero value — mediaStore is nil, Enabled is nil/false)
 	inbox := make(chan IncomingMessage, 1)
 	ctx := context.Background()
 
@@ -198,9 +222,11 @@ func TestWhatsAppChannel_NonTextMessageIgnored(t *testing.T) {
 
 	select {
 	case msg := <-inbox:
-		t.Fatalf("image message should be ignored, got %+v", msg)
-	case <-time.After(50 * time.Millisecond):
-		// expected
+		if !strings.Contains(msg.Text(), "media ignored") && !strings.Contains(msg.Text(), "media failed") {
+			t.Errorf("expected notice about media, got %q", msg.Text())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected notice message to be enqueued for image with media disabled")
 	}
 }
 
@@ -388,7 +414,7 @@ func TestNewWhatsAppChannel_MissingFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewWhatsAppChannel(tc.cfg)
+			_, err := NewWhatsAppChannel(tc.cfg, config.MediaConfig{}, nil)
 			if err == nil {
 				t.Error("expected error, got nil")
 			}

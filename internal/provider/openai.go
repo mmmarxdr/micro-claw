@@ -3,13 +3,16 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // Compile-time interface assertion.
@@ -87,8 +90,10 @@ type openaiResponse struct {
 // Provider struct and constructor
 // --------------------------------------------------------------------------
 
-const openAIDefaultBaseURL = "https://api.openai.com/v1"
-const openAIDefaultModel = "gpt-4o"
+const (
+	openAIDefaultBaseURL = "https://api.openai.com/v1"
+	openAIDefaultModel   = "gpt-4o"
+)
 
 // OpenAIProvider calls the OpenAI Chat Completions API (or any compatible API
 // such as Ollama via a custom base_url).
@@ -99,6 +104,16 @@ type OpenAIProvider struct {
 	timeout    time.Duration
 	maxRetries int
 	client     *http.Client
+	media      mediaReader // optional; nil → text-only fallback for image blocks
+}
+
+// WithMediaReader wires a mediaReader into the provider so that image blocks
+// can be translated to base64 OpenAI content parts. Callers that do not yet
+// have a store (e.g. text-only test fixtures) leave this unset; the provider
+// falls back gracefully to placeholder text for any image blocks it encounters.
+func (p *OpenAIProvider) WithMediaReader(mr mediaReader) *OpenAIProvider {
+	p.media = mr
+	return p
 }
 
 // NewOpenAIProvider constructs an OpenAIProvider from cfg.
@@ -138,9 +153,11 @@ func NewOpenAIProvider(cfg config.ProviderConfig) (*OpenAIProvider, error) {
 // Simple interface methods
 // --------------------------------------------------------------------------
 
-func (p *OpenAIProvider) Name() string        { return "openai" }
-func (p *OpenAIProvider) Model() string       { return p.model }
-func (p *OpenAIProvider) SupportsTools() bool { return true }
+func (p *OpenAIProvider) Name() string             { return "openai" }
+func (p *OpenAIProvider) Model() string            { return p.model }
+func (p *OpenAIProvider) SupportsTools() bool      { return true }
+func (p *OpenAIProvider) SupportsMultimodal() bool { return true }
+func (p *OpenAIProvider) SupportsAudio() bool      { return true }
 
 // HealthCheck verifies configuration and returns the model name.
 // No HTTP call is made — mirrors the AnthropicProvider pattern for startup-latency consistency.
@@ -149,6 +166,87 @@ func (p *OpenAIProvider) HealthCheck(_ context.Context) (string, error) {
 		return "", fmt.Errorf("openai: missing api_key")
 	}
 	return p.model, nil
+}
+
+// --------------------------------------------------------------------------
+// Multimodal translation helpers
+// --------------------------------------------------------------------------
+
+// translateBlocks converts a content.Blocks slice into the OpenAI chat completions
+// content parts format.
+//
+//   - BlockText  → {"type":"text","text":"..."}
+//   - BlockImage → {"type":"image_url","image_url":{"url":"data:<mime>;base64,<b64>"}}
+//     Bytes are fetched from p.media (mediaReader). If p.media is nil, or GetMedia
+//     returns an error, a text placeholder is substituted and a warning is logged.
+//   - BlockAudio / BlockDocument → OpenAI chat completions does not natively support
+//     these via base64 inline data; fall back to FlattenBlocks placeholder text.
+//
+// Returns nil when bs is empty (caller should emit a plain-string content field).
+func (p *OpenAIProvider) translateBlocks(ctx context.Context, bs content.Blocks) []any {
+	if len(bs) == 0 {
+		return nil
+	}
+
+	parts := make([]any, 0, len(bs))
+	for _, b := range bs {
+		switch b.Type {
+		case content.BlockText:
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": b.Text,
+			})
+
+		case content.BlockImage:
+			imgBytes, mime, err := p.fetchMedia(ctx, b)
+			if err != nil {
+				// Graceful degradation: log and substitute placeholder text.
+				slog.Warn("openai: failed to load media, substituting placeholder",
+					"sha256", b.MediaSHA256,
+					"err", err,
+				)
+				parts = append(parts, map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("[image unavailable: %s]", b.MediaSHA256),
+				})
+				continue
+			}
+			dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(imgBytes)
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": dataURL,
+				},
+			})
+
+		default:
+			// BlockAudio, BlockDocument, and future types: fall back to FlattenBlocks
+			// placeholder. OpenAI chat completions does not support inline audio.
+			placeholder := content.FlattenBlocks(content.Blocks{b})
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": placeholder,
+			})
+		}
+	}
+	return parts
+}
+
+// fetchMedia loads bytes for a media block from p.media.
+// Returns an error if p.media is nil or GetMedia fails.
+func (p *OpenAIProvider) fetchMedia(ctx context.Context, b content.ContentBlock) ([]byte, string, error) {
+	if p.media == nil {
+		return nil, "", fmt.Errorf("no media reader configured")
+	}
+	imgBytes, mime, err := p.media.GetMedia(ctx, b.MediaSHA256)
+	if err != nil {
+		return nil, "", err
+	}
+	// Prefer the MIME from the store response; fall back to block's MIME field.
+	if mime == "" {
+		mime = b.MIME
+	}
+	return imgBytes, mime, nil
 }
 
 // --------------------------------------------------------------------------
@@ -265,7 +363,17 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 				ToolCalls: mapOpenAIToolCallsToWire(m.ToolCalls),
 			})
 		default:
-			msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content})
+			// Emit parts array when the message contains media blocks;
+			// fall back to a plain TextOnly string for text-only messages to
+			// preserve backward compatibility with existing tests and wire format.
+			if m.Content.HasMedia() {
+				msgs = append(msgs, openaiMessage{
+					Role:    m.Role,
+					Content: p.translateBlocks(ctx, m.Content),
+				})
+			} else {
+				msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content.TextOnly()})
+			}
 		}
 	}
 

@@ -1,0 +1,8 @@
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "part one"},
+    {"type": "image", "media_sha256": "abc123", "mime": "image/jpeg", "size": 1024},
+    {"type": "text", "text": "part two"}
+  ]
+}

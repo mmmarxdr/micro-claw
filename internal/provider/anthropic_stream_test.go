@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -651,15 +652,15 @@ func TestAnthropicStream_BuildsRequestLikeChat(t *testing.T) {
 	req := ChatRequest{
 		SystemPrompt: "You are helpful.",
 		Messages: []ChatMessage{
-			{Role: "user", Content: "hi"},
+			{Role: "user", Content: content.TextBlock("hi")},
 			{
 				Role:    "assistant",
-				Content: "I'll help",
+				Content: content.TextBlock("I'll help"),
 				ToolCalls: []ToolCall{
 					{ID: "tc1", Name: "shell_exec", Input: json.RawMessage(`{"cmd":"ls"}`)},
 				},
 			},
-			{Role: "tool", Content: "file1.txt", ToolCallID: "tc1"},
+			{Role: "tool", Content: content.TextBlock("file1.txt"), ToolCallID: "tc1"},
 		},
 		Tools: []ToolDefinition{
 			{

@@ -10,6 +10,7 @@ import (
 	robfigcron "github.com/robfig/cron/v3"
 
 	"microagent/internal/channel"
+	"microagent/internal/content"
 	"microagent/internal/store"
 )
 
@@ -140,7 +141,7 @@ func (s *Scheduler) fireJob(job store.CronJob) {
 	msg := channel.IncomingMessage{
 		ChannelID: "cron:" + job.ID,
 		SenderID:  "cron",
-		Text:      job.Prompt,
+		Content:   content.TextBlock(job.Prompt),
 		Timestamp: time.Now(),
 	}
 

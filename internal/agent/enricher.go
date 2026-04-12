@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"microagent/internal/config"
+	"microagent/internal/content"
 	"microagent/internal/provider"
 	"microagent/internal/store"
 )
@@ -103,7 +104,7 @@ func (e *Enricher) processJob(ctx context.Context, job enrichJob) {
 		Model:        e.model, // use cheap model for enrichment; empty = provider default
 		SystemPrompt: "You are a tag extraction assistant. Return only comma-separated lowercase tags.",
 		Messages: []provider.ChatMessage{
-			{Role: "user", Content: prompt},
+			{Role: "user", Content: content.TextBlock(prompt)},
 		},
 		MaxTokens: 50,
 	}

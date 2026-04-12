@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"microagent/internal/content"
 )
 
 // --------------------------------------------------------------------------
@@ -103,7 +105,7 @@ func TestGeminiStream_TextOnly(t *testing.T) {
 	prov := newGeminiStreamTestProvider(t, ts)
 	sr, err := prov.ChatStream(context.Background(), ChatRequest{
 		SystemPrompt: "You are helpful.",
-		Messages:     []ChatMessage{{Role: "user", Content: "Hi!"}},
+		Messages:     []ChatMessage{{Role: "user", Content: content.TextBlock("Hi!")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -183,7 +185,7 @@ func TestGeminiStream_FunctionCall(t *testing.T) {
 
 	prov := newGeminiStreamTestProvider(t, ts)
 	sr, err := prov.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "List my files"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("List my files")}},
 		Tools: []ToolDefinition{
 			{Name: "shell_exec", Description: "Run shell command", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`)},
 		},
@@ -264,7 +266,7 @@ func TestGeminiStream_MixedContent(t *testing.T) {
 
 	prov := newGeminiStreamTestProvider(t, ts)
 	sr, err := prov.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "Search for test"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("Search for test")}},
 		Tools: []ToolDefinition{
 			{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`)},
 		},
@@ -362,7 +364,7 @@ func TestGeminiStream_HTTPError(t *testing.T) {
 
 			prov := newGeminiStreamTestProvider(t, ts)
 			_, err := prov.ChatStream(context.Background(), ChatRequest{
-				Messages: []ChatMessage{{Role: "user", Content: "test"}},
+				Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("test")}},
 			})
 			if err == nil {
 				t.Fatal("expected error from HTTP error response")
@@ -392,7 +394,7 @@ func TestGeminiStream_EndpointURL(t *testing.T) {
 
 	prov := newGeminiStreamTestProvider(t, ts)
 	sr, err := prov.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "test"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("test")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)
@@ -433,7 +435,7 @@ func TestGeminiStream_MultipleTextChunks(t *testing.T) {
 
 	prov := newGeminiStreamTestProvider(t, ts)
 	sr, err := prov.ChatStream(context.Background(), ChatRequest{
-		Messages: []ChatMessage{{Role: "user", Content: "test"}},
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("test")}},
 	})
 	if err != nil {
 		t.Fatalf("ChatStream() error: %v", err)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"microagent/internal/store"
 )
 
@@ -17,7 +18,7 @@ type BatchExecToolConfig struct {
 	Timeout        time.Duration // Timeout per command (default 30s)
 }
 
-// BatchExecTool runs commands sequentially via Sandbox, indexes each output,
+// BatchExecTool runs commands sequentially via BoundedExec, indexes each output,
 // and returns a compact summary.
 type BatchExecTool struct {
 	store  store.OutputStore
@@ -73,7 +74,7 @@ type batchExecParams struct {
 	StopOnError bool     `json:"stop_on_error"`
 }
 
-// Execute runs the commands sequentially via Sandbox, indexes each output,
+// Execute runs the commands sequentially via BoundedExec, indexes each output,
 // and returns a compact summary.
 func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (ToolResult, error) {
 	var input batchExecParams
@@ -85,7 +86,7 @@ func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (To
 		return ToolResult{IsError: true, Content: "commands array cannot be empty"}, nil
 	}
 
-	sandbox := &Sandbox{
+	sandbox := &BoundedExec{
 		MaxOutputBytes: t.config.MaxOutputBytes,
 		Timeout:        t.config.Timeout,
 		KeepFirstN:     20,
@@ -113,7 +114,7 @@ func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (To
 
 			// Index the error output
 			indexErr := t.store.IndexOutput(ctx, store.ToolOutput{
-				ID:        fmt.Sprintf("batch-%d-%d", time.Now().UnixNano(), i),
+				ID:        uuid.New().String(),
 				ToolName:  t.Name(),
 				Command:   cmd,
 				Content:   fmt.Sprintf("execution error: %v", err),
@@ -133,28 +134,24 @@ func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (To
 
 		// Index the output
 		indexErr := t.store.IndexOutput(ctx, store.ToolOutput{
-			ID:        fmt.Sprintf("batch-%d-%d", time.Now().UnixNano(), i),
+			ID:        uuid.New().String(),
 			ToolName:  t.Name(),
 			Command:   cmd,
-			Content:   result.Output,
+			Content:   result.Summary,
 			Truncated: result.Metrics.Truncated,
 			ExitCode:  result.Metrics.ExitCode,
 			Timestamp: time.Now().UTC(),
 		})
 		if indexErr != nil {
-			// Log but don't fail
-			_ = fmt.Errorf("indexing output: %w", indexErr)
+			slog.Warn("batch_exec: failed to index output", "error", indexErr, "command_index", i)
 		}
 
 		// Track success/failure
 		if result.Metrics.ExitCode == 0 {
 			successCount++
 			// Include summary of successful commands (first few lines)
-			lines := strings.Split(strings.TrimSpace(result.Output), "\n")
-			preview := strings.Join(lines[:min(3, len(lines))], "; ")
-			if len(preview) > 100 {
-				preview = preview[:100] + "..."
-			}
+			lines := strings.Split(strings.TrimSpace(result.Summary), "\n")
+			preview := trimPreviewRunes(strings.Join(lines[:min(3, len(lines))], "; "), 100)
 			summaryLines = append(summaryLines, fmt.Sprintf("[%d] OK: %s", i+1, preview))
 		} else {
 			errorOccurred = true
@@ -183,4 +180,14 @@ func (t *BatchExecTool) Execute(ctx context.Context, params json.RawMessage) (To
 		IsError: errorOccurred,
 		Meta:    meta,
 	}, nil
+}
+
+// trimPreviewRunes truncates s to at most maxRunes Unicode code points, appending
+// "..." if truncation occurred. Safe for multibyte (emoji, CJK, etc.) input.
+func trimPreviewRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }

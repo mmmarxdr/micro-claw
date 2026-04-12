@@ -109,6 +109,11 @@ func (s *SQLiteStore) initSchemaVersioned() error {
 			return fmt.Errorf("migration v4: %w", err)
 		}
 	}
+	if version < 5 {
+		if err := s.migrateV5(); err != nil {
+			return fmt.Errorf("migration v5: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -271,6 +276,45 @@ func (s *SQLiteStore) migrateV4() error {
 
 	if _, err := tx.Exec("UPDATE schema_version SET version = 4"); err != nil {
 		return fmt.Errorf("updating schema version to 4: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// migrateV5 creates the media_blobs content-addressable store table and its
+// last_referenced_at index. Advances schema_version to 5.
+//
+// Timestamps are stored as RFC3339 TEXT to match existing conventions in the
+// conversations and memory tables.
+func (s *SQLiteStore) migrateV5() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS media_blobs (
+			sha256             TEXT PRIMARY KEY,
+			mime               TEXT NOT NULL,
+			size               INTEGER NOT NULL,
+			data               BLOB NOT NULL,
+			created_at         TEXT NOT NULL,
+			last_referenced_at TEXT NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("creating media_blobs table: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_media_last_referenced
+			ON media_blobs(last_referenced_at)
+	`); err != nil {
+		return fmt.Errorf("creating idx_media_last_referenced: %w", err)
+	}
+
+	if _, err := tx.Exec("UPDATE schema_version SET version = 5"); err != nil {
+		return fmt.Errorf("updating schema version to 5: %w", err)
 	}
 
 	return tx.Commit()
