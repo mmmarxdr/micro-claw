@@ -104,6 +104,29 @@ type CronStore interface {
 	UpdateJobRunTimes(ctx context.Context, id string, lastRunAt, nextRunAt time.Time) error
 }
 
+// WebStore is an optional extension of Store for web dashboard operations.
+// Only SQLiteStore implements this interface. Callers type-assert:
+//
+//	ws, ok := myStore.(store.WebStore)
+type WebStore interface {
+	// ListConversationsPaginated returns conversations filtered by channelID prefix
+	// (or all if empty), ordered by updated_at descending, with pagination.
+	// Returns the page slice, total count across all pages, and any error.
+	ListConversationsPaginated(ctx context.Context, channelID string, limit, offset int) ([]Conversation, int, error)
+
+	// CountConversations returns the total number of conversations, optionally
+	// filtered by channelID prefix. Pass "" for all channels.
+	CountConversations(ctx context.Context, channelID string) (int, error)
+
+	// DeleteConversation removes a conversation by its ID (scope_id).
+	// Returns ErrNotFound (wrapped) if no conversation with that ID exists.
+	DeleteConversation(ctx context.Context, scopeID string) error
+
+	// DeleteMemory removes a single memory entry by its rowid within scopeID.
+	// Returns ErrNotFound (wrapped) if no matching entry exists.
+	DeleteMemory(ctx context.Context, scopeID string, entryID int64) error
+}
+
 // SecretsStore is an optional extension of Store for encrypted key-value secrets.
 // Only SQLiteStore implements this interface. Callers type-assert:
 //

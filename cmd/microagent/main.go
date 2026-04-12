@@ -29,6 +29,7 @@ import (
 	"microagent/internal/store"
 	"microagent/internal/tool"
 	"microagent/internal/tui"
+	"microagent/internal/web"
 )
 
 var (
@@ -44,6 +45,7 @@ var (
 	dashboard   = flag.Bool("dashboard", false, "open read-only TUI dashboard and exit")
 	runSetup    = flag.Bool("setup", false, "run the interactive setup wizard and exit")
 	daemon      = flag.Bool("daemon", false, "run as background daemon (no interactive channel; cron only)")
+	webFlag     = flag.Bool("web", false, "also start web dashboard alongside the agent")
 )
 
 // extractFlagValue scans args for "--flag value" or "--flag=value" and returns
@@ -113,6 +115,15 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
 		if err := runDoctorCommand(os.Args[2:], cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "web" {
+		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
+		if err := runWebCommand(os.Args[2:], cfgPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -423,6 +434,29 @@ func main() {
 
 	ag := agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream)).
 		WithCronCommands(cronScheduler, cronSt)
+
+	// Start web dashboard if enabled in config or via --web flag.
+	if cfg.Web.Enabled || *webFlag {
+		webSrv := web.NewServer(web.ServerDeps{
+			Store:     st,
+			Auditor:   auditor,
+			Config:    cfg,
+			StartedAt: time.Now(),
+			Version:   version,
+		})
+		if err := webSrv.Start(); err != nil {
+			slog.Error("failed to start web dashboard", "error", err)
+		} else {
+			slog.Info("web dashboard available", "url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port))
+			defer func() {
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutCancel()
+				if err := webSrv.Shutdown(shutCtx); err != nil {
+					slog.Error("web dashboard shutdown error", "error", err)
+				}
+			}()
+		}
+	}
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

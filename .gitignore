@@ -54,8 +54,12 @@ configs/default.yaml
 TDD_EVIDENCE_*.md
 exploration.md
 
+# Embedded frontend (copied from micro-claw-frontend)
+internal/web/static/assets/
+!internal/web/static/index.html
+
 # ----------------------------------------------------------------------
-# NOTA: Las carpetas .agents y .atl no se incluyen aquí 
-# de forma explícita para que Git las pueda rastrear, 
+# NOTA: Las carpetas .agents y .atl no se incluyen aquí
+# de forma explícita para que Git las pueda rastrear,
 # tal y como fue solicitado, ya que forman parte del workflow.
 # ----------------------------------------------------------------------

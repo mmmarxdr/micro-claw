@@ -212,6 +212,127 @@ func (s *SQLiteStore) ListConversations(ctx context.Context, channelID string, l
 	return convs, nil
 }
 
+// ListConversationsPaginated returns conversations filtered by channelID prefix
+// (or all if empty), ordered by updated_at descending, with pagination support.
+// Returns the page slice, total count, and any error.
+func (s *SQLiteStore) ListConversationsPaginated(ctx context.Context, channelID string, limit, offset int) ([]Conversation, int, error) {
+	// Build filter — empty channelID means all conversations.
+	// Non-empty channelID is matched as a prefix (e.g. "telegram:" matches all
+	// telegram conversations whose id starts with that string).
+	filterSQL := `(? = '' OR channel_id LIKE ?)`
+	likeArg := channelID + "%"
+
+	// Count total matching rows.
+	var total int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM conversations WHERE `+filterSQL,
+		channelID, likeArg,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting conversations: %w", err)
+	}
+
+	// Fetch the requested page.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, channel_id, messages, metadata, created_at, updated_at
+		 FROM conversations
+		 WHERE `+filterSQL+`
+		 ORDER BY updated_at DESC
+		 LIMIT ? OFFSET ?`,
+		channelID, likeArg, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing conversations paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var convs []Conversation
+	for rows.Next() {
+		var conv Conversation
+		var messagesJSON, metadataJSON string
+
+		if err := rows.Scan(
+			&conv.ID, &conv.ChannelID, &messagesJSON, &metadataJSON,
+			&conv.CreatedAt, &conv.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scanning conversation row: %w", err)
+		}
+
+		if err := json.Unmarshal([]byte(messagesJSON), &conv.Messages); err != nil {
+			return nil, 0, fmt.Errorf("unmarshalling messages: %w", err)
+		}
+		if metadataJSON != "" && metadataJSON != "null" {
+			if err := json.Unmarshal([]byte(metadataJSON), &conv.Metadata); err != nil {
+				return nil, 0, fmt.Errorf("unmarshalling metadata: %w", err)
+			}
+		}
+
+		convs = append(convs, conv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterating conversation rows: %w", err)
+	}
+
+	if convs == nil {
+		convs = []Conversation{}
+	}
+	return convs, total, nil
+}
+
+// CountConversations returns the total number of conversations, optionally
+// filtered by channelID prefix (pass "" for all).
+func (s *SQLiteStore) CountConversations(ctx context.Context, channelID string) (int, error) {
+	likeArg := channelID + "%"
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM conversations WHERE (? = '' OR channel_id LIKE ?)`,
+		channelID, likeArg,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting conversations: %w", err)
+	}
+	return count, nil
+}
+
+// DeleteConversation removes a conversation by its ID. Returns ErrNotFound (wrapped)
+// if no conversation with that ID exists.
+func (s *SQLiteStore) DeleteConversation(ctx context.Context, scopeID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM conversations WHERE id = ?`, scopeID,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting conversation %s: %w", scopeID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected for conversation %s: %w", scopeID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("deleting conversation %s: %w", scopeID, ErrNotFound)
+	}
+	return nil
+}
+
+// DeleteMemory removes a single memory entry by its rowid within scopeID.
+// The memory_ad trigger fires automatically, removing the FTS5 entry.
+// Returns ErrNotFound (wrapped) if no matching entry exists.
+func (s *SQLiteStore) DeleteMemory(ctx context.Context, scopeID string, entryID int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory WHERE rowid = ? AND scope_id = ?`, entryID, scopeID,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting memory entry %d: %w", entryID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected for memory entry %d: %w", entryID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("deleting memory entry %d: %w", entryID, ErrNotFound)
+	}
+	return nil
+}
+
 // AppendMemory adds a new memory entry under the given scopeID. The FTS5 trigger fires automatically.
 func (s *SQLiteStore) AppendMemory(ctx context.Context, scopeID string, entry MemoryEntry) error {
 	tagsJSON, err := json.Marshal(entry.Tags)

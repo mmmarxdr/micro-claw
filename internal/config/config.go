@@ -17,6 +17,13 @@ import (
 // from parse errors or permission errors.
 var ErrNoConfig = errors.New("no config file found")
 
+// WebConfig holds configuration for the optional HTTP dashboard server.
+type WebConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Host    string `yaml:"host"`
+}
+
 type Config struct {
 	Agent             AgentConfig    `yaml:"agent"`
 	Provider          ProviderConfig `yaml:"provider"`
@@ -29,6 +36,7 @@ type Config struct {
 	Cron              CronConfig     `yaml:"cron"`
 	Filter            FilterConfig   `yaml:"filter"`
 	Media             MediaConfig    `yaml:"media"`
+	Web               WebConfig      `yaml:"web"`
 	Skills            []string       `yaml:"skills"`
 	SkillsDir         string         `yaml:"skills_dir"`
 	SkillsRegistryURL string         `yaml:"skills_registry_url"`
@@ -393,6 +401,14 @@ func (c *Config) applyDefaults() {
 		c.Media.AllowedMIMEPrefixes = []string{"image/", "audio/", "application/pdf", "text/"}
 	}
 
+	// Web dashboard defaults (Enabled defaults to false).
+	if c.Web.Port == 0 {
+		c.Web.Port = 8080
+	}
+	if c.Web.Host == "" {
+		c.Web.Host = "127.0.0.1"
+	}
+
 	// Context-mode defaults.
 	if c.Agent.ContextMode.Mode == "" {
 		c.Agent.ContextMode.Mode = ContextModeOff
@@ -572,6 +588,17 @@ func (c *Config) validate() error {
 		}
 		if len(c.Media.AllowedMIMEPrefixes) == 0 {
 			return fmt.Errorf("media.allowed_mime_prefixes must not be empty when media.enabled=true")
+		}
+	}
+
+	// Web dashboard validation.
+	if c.Web.Enabled {
+		if c.Web.Port < 1024 || c.Web.Port > 65535 {
+			return fmt.Errorf("web.port must be in [1024, 65535], got %d", c.Web.Port)
+		}
+		// T3.2: port conflict check with WhatsApp webhook port.
+		if c.Channel.Type == "whatsapp" && c.Channel.WebhookPort == c.Web.Port {
+			return fmt.Errorf("web.port (%d) conflicts with channel.webhook_port (%d)", c.Web.Port, c.Channel.WebhookPort)
 		}
 	}
 
