@@ -218,13 +218,19 @@ func runWebCommand(args []string, cfgPath string) error {
 	).WithCronCommands(cronScheduler, cronSt)
 
 	// ---- Web server ----
+	var ml provider.ModelLister
+	if lister, ok := prov.(provider.ModelLister); ok {
+		ml = lister
+	}
+
 	srv := web.NewServer(web.ServerDeps{
-		Store:      st,
-		Auditor:    aud,
-		Config:     cfg,
-		StartedAt:  time.Now(),
-		Version:    version,
-		WebChannel: webCh,
+		Store:       st,
+		Auditor:     aud,
+		Config:      cfg,
+		ModelLister: ml,
+		StartedAt:   time.Now(),
+		Version:     version,
+		WebChannel:  webCh,
 	})
 
 	if err := srv.Start(); err != nil {

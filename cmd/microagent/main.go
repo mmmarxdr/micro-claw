@@ -455,13 +455,20 @@ func main() {
 		ag = agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream)).
 			WithCronCommands(cronScheduler, cronSt)
 
+		// Type-assert provider to ModelLister if supported.
+		var ml provider.ModelLister
+		if lister, ok := prov.(provider.ModelLister); ok {
+			ml = lister
+		}
+
 		webSrv := web.NewServer(web.ServerDeps{
-			Store:      st,
-			Auditor:    auditor,
-			Config:     cfg,
-			StartedAt:  time.Now(),
-			Version:    version,
-			WebChannel: webCh,
+			Store:       st,
+			Auditor:     auditor,
+			Config:      cfg,
+			ModelLister: ml,
+			StartedAt:   time.Now(),
+			Version:     version,
+			WebChannel:  webCh,
 		})
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)

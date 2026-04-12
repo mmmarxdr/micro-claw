@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"microagent/internal/config"
@@ -83,15 +84,19 @@ type openrouterResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// openrouterModelList is used by ListFreeModels.
+// openrouterModelEntry represents a single model from the OpenRouter /api/v1/models endpoint.
+type openrouterModelEntry struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
+	Pricing       struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
+	} `json:"pricing"`
+}
+
 type openrouterModelList struct {
-	Data []struct {
-		ID      string `json:"id"`
-		Pricing struct {
-			Prompt     string `json:"prompt"`
-			Completion string `json:"completion"`
-		} `json:"pricing"`
-	} `json:"data"`
+	Data []openrouterModelEntry `json:"data"`
 }
 
 // --------------------------------------------------------------------------
@@ -371,9 +376,8 @@ func classifyOpenRouterError(statusCode int, body []byte) error {
 	}
 }
 
-// ListFreeModels returns the IDs of all models on OpenRouter where both prompt and
-// completion pricing are "0" (free tier). Not part of the Provider interface.
-func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]string, error) {
+// fetchModels fetches the raw model list from the OpenRouter API.
+func (p *OpenRouterProvider) fetchModels(ctx context.Context) ([]openrouterModelEntry, error) {
 	url := p.baseURL + "/api/v1/models"
 
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -397,9 +401,52 @@ func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]string, erro
 	if err := json.Unmarshal(body, &list); err != nil {
 		return nil, fmt.Errorf("openrouter: parsing models response: %w", err)
 	}
+	return list.Data, nil
+}
+
+// parseCostPerMillion converts the OpenRouter per-token price string to USD per 1M tokens.
+func parseCostPerMillion(s string) float64 {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v * 1_000_000
+}
+
+// ListModels returns all models available on OpenRouter with metadata.
+// Implements the provider.ModelLister interface.
+func (p *OpenRouterProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	entries, err := p.fetchModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	models := make([]ModelInfo, 0, len(entries))
+	for _, m := range entries {
+		promptCost := parseCostPerMillion(m.Pricing.Prompt)
+		completionCost := parseCostPerMillion(m.Pricing.Completion)
+		models = append(models, ModelInfo{
+			ID:             m.ID,
+			Name:           m.Name,
+			ContextLength:  m.ContextLength,
+			PromptCost:     promptCost,
+			CompletionCost: completionCost,
+			Free:           m.Pricing.Prompt == "0" && m.Pricing.Completion == "0",
+		})
+	}
+	return models, nil
+}
+
+// ListFreeModels returns the IDs of all models on OpenRouter where both prompt and
+// completion pricing are "0" (free tier). Not part of the Provider interface.
+func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]string, error) {
+	entries, err := p.fetchModels(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var free []string
-	for _, m := range list.Data {
+	for _, m := range entries {
 		if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
 			free = append(free, m.ID)
 		}

@@ -10,6 +10,7 @@ import (
 	"microagent/internal/channel"
 	"microagent/internal/config"
 	"microagent/internal/mcp"
+	"microagent/internal/provider"
 	"microagent/internal/store"
 )
 
@@ -20,13 +21,14 @@ type MCPLister interface {
 
 // ServerDeps holds the dependencies for the web server.
 type ServerDeps struct {
-	Store      store.Store
-	Auditor    audit.Auditor
-	Config     *config.Config
-	MCPService MCPLister
-	StartedAt  time.Time
-	Version    string
-	WebChannel *channel.WebChannel // nil disables the /ws/chat endpoint
+	Store       store.Store
+	Auditor     audit.Auditor
+	Config      *config.Config
+	MCPService  MCPLister
+	ModelLister provider.ModelLister // nil if provider doesn't support model listing
+	StartedAt   time.Time
+	Version     string
+	WebChannel  *channel.WebChannel // nil disables the /ws/chat endpoint
 }
 
 // Server is the HTTP dashboard server.
@@ -90,6 +92,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/metrics", s.handleGetMetrics)
 	s.mux.HandleFunc("GET /api/metrics/history", s.handleGetMetricsHistory)
 	s.mux.HandleFunc("GET /api/mcp/servers", s.handleListMCPServers)
+	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	// WebSocket endpoints.
 	s.mux.HandleFunc("/ws/metrics", s.handleMetricsWebSocket)
 	s.mux.HandleFunc("/ws/logs", s.handleLogsWebSocket)

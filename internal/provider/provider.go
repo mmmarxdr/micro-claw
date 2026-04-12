@@ -116,3 +116,19 @@ type EmbeddingProvider interface {
 	// The returned slice length depends on the provider's model.
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
+
+// ModelInfo describes a model available from a provider.
+type ModelInfo struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	ContextLength int     `json:"context_length"`
+	PromptCost    float64 `json:"prompt_cost"`    // USD per 1M tokens
+	CompletionCost float64 `json:"completion_cost"` // USD per 1M tokens
+	Free          bool    `json:"free"`
+}
+
+// ModelLister is an optional interface for providers that can enumerate
+// available models. Callers type-assert: ml, ok := prov.(ModelLister)
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
