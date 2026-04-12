@@ -8,6 +8,39 @@ import (
 	"microagent/internal/store"
 )
 
+// apiMessage is the wire shape for a single conversation message sent to the frontend.
+type apiMessage struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// apiConversation is the wire shape for a full conversation sent to the frontend.
+type apiConversation struct {
+	ID        string       `json:"id"`
+	ChannelID string       `json:"channel_id"`
+	Messages  []apiMessage `json:"messages"`
+	CreatedAt string       `json:"created_at"`
+	UpdatedAt string       `json:"updated_at"`
+}
+
+func toAPIConversation(c *store.Conversation) apiConversation {
+	msgs := make([]apiMessage, 0, len(c.Messages))
+	for _, m := range c.Messages {
+		msgs = append(msgs, apiMessage{
+			Role:    m.Role,
+			Content: m.Content.TextOnly(),
+		})
+	}
+	return apiConversation{
+		ID:        c.ID,
+		ChannelID: c.ChannelID,
+		Messages:  msgs,
+		CreatedAt: c.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: c.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
@@ -64,7 +97,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, conv)
+	writeJSON(w, http.StatusOK, toAPIConversation(conv))
 }
 
 func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {

@@ -85,6 +85,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/mcp/servers", s.handleListMCPServers)
 	// WebSocket endpoints.
 	s.mux.HandleFunc("/ws/metrics", s.handleMetricsWebSocket)
+	s.mux.HandleFunc("/ws/logs", s.handleLogsWebSocket)
 	// WebSocket chat endpoint — only when a WebChannel is wired in.
 	if s.deps.WebChannel != nil {
 		s.mux.HandleFunc("/ws/chat", s.deps.WebChannel.HandleWebSocket)

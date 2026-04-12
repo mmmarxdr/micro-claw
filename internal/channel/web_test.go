@@ -170,7 +170,7 @@ func TestWebChannel_Streaming(t *testing.T) {
 	for _, want := range chunks {
 		var got wsMsg
 		readJSON(t, conn, &got)
-		if got.Type != "stream_chunk" {
+		if got.Type != "token" {
 			t.Errorf("type = %q, want stream_chunk", got.Type)
 		}
 		if got.Text != want {
@@ -181,7 +181,7 @@ func TestWebChannel_Streaming(t *testing.T) {
 	// Read stream_end.
 	var end wsMsg
 	readJSON(t, conn, &end)
-	if end.Type != "stream_end" {
+	if end.Type != "done" {
 		t.Errorf("type = %q, want stream_end", end.Type)
 	}
 }
@@ -216,7 +216,7 @@ func TestWebChannel_StreamAbort(t *testing.T) {
 	// Read the chunk.
 	var chunk wsMsg
 	readJSON(t, conn, &chunk)
-	if chunk.Type != "stream_chunk" {
+	if chunk.Type != "token" {
 		t.Errorf("type = %q, want stream_chunk", chunk.Type)
 	}
 
@@ -226,8 +226,8 @@ func TestWebChannel_StreamAbort(t *testing.T) {
 	if errFrame.Type != "error" {
 		t.Errorf("type = %q, want error", errFrame.Type)
 	}
-	if errFrame.Text != "something went wrong" {
-		t.Errorf("text = %q, want %q", errFrame.Text, "something went wrong")
+	if errFrame.Message != "something went wrong" {
+		t.Errorf("message = %q, want %q", errFrame.Message, "something went wrong")
 	}
 }
 

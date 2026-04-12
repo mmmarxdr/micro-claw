@@ -99,6 +99,79 @@ func (a *SQLiteAuditor) Emit(ctx context.Context, event AuditEvent) error {
 	return nil
 }
 
+// LogStreamer is an optional interface for streaming recent audit events as log
+// lines. Only SQLiteAuditor implements this interface.
+type LogStreamer interface {
+	// RecentEvents returns up to limit audit events newer than afterID, ordered
+	// by timestamp ascending. Pass afterID="" to get the most recent limit rows.
+	RecentEvents(ctx context.Context, afterID string, limit int) ([]AuditEvent, error)
+}
+
+// RecentEvents returns up to limit audit events. When afterID is empty the
+// most recent rows are returned ordered newest-first so callers can prime the
+// cursor; when afterID is set, rows with a timestamp strictly after that event
+// are returned ordered oldest-first (polling mode).
+func (a *SQLiteAuditor) RecentEvents(ctx context.Context, afterID string, limit int) ([]AuditEvent, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	if afterID == "" {
+		// Initial load: last `limit` rows ordered newest-first.
+		rows, err = a.db.QueryContext(ctx, `
+			SELECT id, scope_id, event_type, timestamp, duration_ms,
+			       COALESCE(model,''), COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+			       COALESCE(stop_reason,''), COALESCE(iteration,0),
+			       COALESCE(tool_name,''), tool_ok
+			FROM audit_events
+			ORDER BY timestamp DESC
+			LIMIT ?
+		`, limit)
+	} else {
+		// Poll: rows added after the cursor event, oldest-first.
+		rows, err = a.db.QueryContext(ctx, `
+			SELECT id, scope_id, event_type, timestamp, duration_ms,
+			       COALESCE(model,''), COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+			       COALESCE(stop_reason,''), COALESCE(iteration,0),
+			       COALESCE(tool_name,''), tool_ok
+			FROM audit_events
+			WHERE timestamp > (SELECT timestamp FROM audit_events WHERE id = ? LIMIT 1)
+			ORDER BY timestamp ASC
+			LIMIT ?
+		`, afterID, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("audit: RecentEvents query: %w", err)
+	}
+	defer rows.Close()
+
+	var events []AuditEvent
+	for rows.Next() {
+		var (
+			e      AuditEvent
+			toolOK int
+		)
+		if err := rows.Scan(
+			&e.ID, &e.ScopeID, &e.EventType, &e.Timestamp, &e.DurationMs,
+			&e.Model, &e.InputTokens, &e.OutputTokens,
+			&e.StopReason, &e.Iteration,
+			&e.ToolName, &toolOK,
+		); err != nil {
+			return nil, fmt.Errorf("audit: RecentEvents scan: %w", err)
+		}
+		e.ToolOK = toolOK == 1
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit: RecentEvents rows: %w", err)
+	}
+	return events, nil
+}
+
+// Compile-time assertion that SQLiteAuditor implements LogStreamer.
+var _ LogStreamer = (*SQLiteAuditor)(nil)
+
 // Close releases the database connection. Safe to call multiple times.
 func (a *SQLiteAuditor) Close() error {
 	var closeErr error

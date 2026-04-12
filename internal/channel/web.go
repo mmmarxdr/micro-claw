@@ -21,6 +21,7 @@ type wsMsg struct {
 	Text      string `json:"text,omitempty"`
 	ChannelID string `json:"channel_id,omitempty"`
 	SenderID  string `json:"sender_id,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // WebChannel is a Channel + StreamSender backed by WebSocket connections.
@@ -178,7 +179,7 @@ func (sw *webStreamWriter) WriteChunk(text string) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	payload, err := json.Marshal(wsMsg{
-		Type:      "stream_chunk",
+		Type:      "token",
 		Text:      text,
 		ChannelID: sw.channelID,
 	})
@@ -193,7 +194,7 @@ func (sw *webStreamWriter) Finalize() error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	payload, err := json.Marshal(wsMsg{
-		Type:      "stream_end",
+		Type:      "done",
 		ChannelID: sw.channelID,
 	})
 	if err != nil {
@@ -208,7 +209,7 @@ func (sw *webStreamWriter) Abort(e error) error {
 	defer sw.mu.Unlock()
 	payload, err := json.Marshal(wsMsg{
 		Type:      "error",
-		Text:      e.Error(),
+		Message:   e.Error(),
 		ChannelID: sw.channelID,
 	})
 	if err != nil {
