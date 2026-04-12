@@ -437,12 +437,21 @@ func main() {
 
 	// Start web dashboard if enabled in config or via --web flag.
 	if cfg.Web.Enabled || *webFlag {
+		webCh := channel.NewWebChannel()
+		// Add WebChannel to the mux so the agent can receive/send web chat messages.
+		channels = append(channels, webCh)
+		mux = channel.NewMultiplexChannel(channels)
+		// Rebuild the agent with the updated mux (WebChannel included).
+		ag = agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream)).
+			WithCronCommands(cronScheduler, cronSt)
+
 		webSrv := web.NewServer(web.ServerDeps{
-			Store:     st,
-			Auditor:   auditor,
-			Config:    cfg,
-			StartedAt: time.Now(),
-			Version:   version,
+			Store:      st,
+			Auditor:    auditor,
+			Config:     cfg,
+			StartedAt:  time.Now(),
+			Version:    version,
+			WebChannel: webCh,
 		})
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)

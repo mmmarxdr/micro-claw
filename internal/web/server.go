@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"microagent/internal/audit"
+	"microagent/internal/channel"
 	"microagent/internal/config"
 	"microagent/internal/mcp"
 	"microagent/internal/store"
@@ -25,6 +26,7 @@ type ServerDeps struct {
 	MCPService MCPLister
 	StartedAt  time.Time
 	Version    string
+	WebChannel *channel.WebChannel // nil disables the /ws/chat endpoint
 }
 
 // Server is the HTTP dashboard server.
@@ -81,6 +83,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/metrics", s.handleGetMetrics)
 	s.mux.HandleFunc("GET /api/metrics/history", s.handleGetMetricsHistory)
 	s.mux.HandleFunc("GET /api/mcp/servers", s.handleListMCPServers)
+	// WebSocket chat endpoint — only when a WebChannel is wired in.
+	if s.deps.WebChannel != nil {
+		s.mux.HandleFunc("/ws/chat", s.deps.WebChannel.HandleWebSocket)
+	}
 	// Static files with SPA fallback — catch-all.
 	s.mux.Handle("/", s.staticHandler())
 }
