@@ -154,10 +154,23 @@ type ChannelConfig struct {
 }
 
 type ToolsConfig struct {
-	Shell ShellToolConfig `yaml:"shell" json:"shell"`
-	File  FileToolConfig  `yaml:"file"  json:"file"`
-	HTTP  HTTPToolConfig  `yaml:"http"  json:"http"`
-	MCP   MCPConfig       `yaml:"mcp"   json:"mcp"`
+	Shell    ShellToolConfig `yaml:"shell"      json:"shell"`
+	File     FileToolConfig  `yaml:"file"       json:"file"`
+	HTTP     HTTPToolConfig  `yaml:"http"       json:"http"`
+	WebFetch WebFetchConfig  `yaml:"web_fetch"  json:"web_fetch"`
+	MCP      MCPConfig       `yaml:"mcp"        json:"mcp"`
+}
+
+// WebFetchConfig holds configuration for the intelligent web scraper tool.
+// Enabled uses *bool (pointer) so that an explicit `enabled: false` in YAML
+// is distinguishable from the omitted/unset case (nil → defaults to true).
+type WebFetchConfig struct {
+	Enabled         *bool         `yaml:"enabled"           json:"enabled,omitempty"`
+	Timeout         time.Duration `yaml:"timeout"           json:"timeout"`
+	MaxResponseSize string        `yaml:"max_response_size" json:"max_response_size"`
+	BlockedDomains  []string      `yaml:"blocked_domains"   json:"blocked_domains"`
+	JinaEnabled     bool          `yaml:"jina_enabled"      json:"jina_enabled"`
+	JinaAPIKey      string        `yaml:"jina_api_key"      json:"jina_api_key"`
 }
 
 // MCPConfig is the top-level config block for MCP client support.
@@ -300,6 +313,23 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Tools.HTTP.Timeout == 0 {
 		c.Tools.HTTP.Timeout = 15 * time.Second
+	}
+	if c.Tools.WebFetch.Timeout == 0 {
+		c.Tools.WebFetch.Timeout = 20 * time.Second
+	}
+	if c.Tools.WebFetch.MaxResponseSize == "" {
+		c.Tools.WebFetch.MaxResponseSize = "1MB"
+	}
+	// WebFetch.Enabled defaults to true (opt-out, not opt-in).
+	if c.Tools.WebFetch.Enabled == nil {
+		t := true
+		c.Tools.WebFetch.Enabled = &t
+	}
+	// Jina API key: config field → env var fallback.
+	if c.Tools.WebFetch.JinaAPIKey == "" {
+		if envKey := os.Getenv("MICROAGENT_JINA_API_KEY"); envKey != "" {
+			c.Tools.WebFetch.JinaAPIKey = envKey
+		}
 	}
 	if c.Limits.ToolTimeout == 0 {
 		c.Limits.ToolTimeout = 30 * time.Second
@@ -546,6 +576,10 @@ func (c *Config) validate() error {
 		// valid
 	default:
 		return fmt.Errorf("unknown store.type: %s (must be 'file' or 'sqlite')", c.Store.Type)
+	}
+
+	if BoolVal(c.Tools.WebFetch.Enabled) && c.Tools.WebFetch.Timeout <= 0 {
+		return fmt.Errorf("tools.web_fetch.timeout must be positive when web_fetch is enabled")
 	}
 
 	if c.Tools.MCP.Enabled {

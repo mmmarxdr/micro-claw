@@ -31,6 +31,11 @@ func BuildRegistry(cfg config.ToolsConfig) map[string]Tool {
 		registry[ht.Name()] = ht
 	}
 
+	if config.BoolVal(cfg.WebFetch.Enabled) {
+		wf := NewWebFetchTool(cfg.WebFetch)
+		registry[wf.Name()] = wf
+	}
+
 	return registry
 }
 

@@ -126,6 +126,15 @@ tools:
     max_response_size: "512KB"
     blocked_domains: []           # e.g. ["internal.corp.com"] to block specific hosts
 
+  # web_fetch: intelligent web scraper — extracts readable content as Markdown
+  # web_fetch:
+  #   enabled: true
+  #   timeout: 20s
+  #   max_response_size: "1MB"
+  #   blocked_domains: []
+  #   jina_enabled: false    # enable Jina Reader API fallback for JS-heavy pages
+  #   jina_api_key: ""       # optional — also readable from MICROAGENT_JINA_API_KEY env var
+
 # -----------------------------------------------------------------------------
 # Store
 # -----------------------------------------------------------------------------
