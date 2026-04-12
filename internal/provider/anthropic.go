@@ -219,3 +219,50 @@ func (p *AnthropicProvider) parseResponse(apiResp anthropicResponse) (*ChatRespo
 
 	return out, nil
 }
+
+// ListModels fetches the list of available models from the Anthropic API.
+// Implements the provider.ModelLister interface.
+func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	url := "https://api.anthropic.com/v1/models?limit=100"
+	if p.config.BaseURL != "" {
+		url = p.config.BaseURL + "/v1/models?limit=100"
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: creating models request: %w", err)
+	}
+	httpReq.Header.Set("x-api-key", p.config.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: fetching models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("anthropic: models endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			Type        string `json:"type"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("anthropic: parsing models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:   m.ID,
+			Name: m.DisplayName,
+		})
+	}
+	return models, nil
+}

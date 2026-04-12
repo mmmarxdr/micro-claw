@@ -544,3 +544,47 @@ func (p *OpenAIProvider) Embed(ctx context.Context, text string) ([]float32, err
 
 // compile-time check: OpenAIProvider implements EmbeddingProvider.
 var _ EmbeddingProvider = (*OpenAIProvider)(nil)
+
+// ListModels fetches the list of available models from the OpenAI-compatible API.
+// Implements the provider.ModelLister interface.
+func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	url := p.baseURL + "/models"
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("openai: creating models request: %w", err)
+	}
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: fetching models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openai: models endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("openai: parsing models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, ModelInfo{
+			ID:   m.ID,
+			Name: m.ID,
+		})
+	}
+	return models, nil
+}

@@ -500,3 +500,68 @@ func sanitizeSchemaForGemini(schema json.RawMessage) (json.RawMessage, error) {
 
 	return json.Marshal(clean)
 }
+
+// ListModels fetches the list of available models from the Gemini API.
+// Implements the provider.ModelLister interface.
+func (p *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	url := baseURL + "/v1beta/models?key=" + p.config.APIKey
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: creating models request: %w", err)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: fetching models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gemini: models endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Models []struct {
+			Name                       string `json:"name"`
+			DisplayName                string `json:"displayName"`
+			InputTokenLimit            int    `json:"inputTokenLimit"`
+			OutputTokenLimit           int    `json:"outputTokenLimit"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("gemini: parsing models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		// Only include models that support generateContent.
+		supportsChat := false
+		for _, method := range m.SupportedGenerationMethods {
+			if method == "generateContent" {
+				supportsChat = true
+				break
+			}
+		}
+		if !supportsChat {
+			continue
+		}
+		// Strip "models/" prefix from name.
+		id := m.Name
+		if len(id) > 7 && id[:7] == "models/" {
+			id = id[7:]
+		}
+		models = append(models, ModelInfo{
+			ID:            id,
+			Name:          m.DisplayName,
+			ContextLength: m.InputTokenLimit,
+		})
+	}
+	return models, nil
+}
