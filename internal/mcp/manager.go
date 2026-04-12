@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -69,7 +70,8 @@ func connectStdio(ctx context.Context, cfg config.MCPServerConfig) (MCPCaller, e
 	// WithCommandFunc intercepts subprocess creation so we can set Pdeathsig.
 	cmdFuncOpt := transport.WithCommandFunc(func(cmdCtx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 		cmd := exec.CommandContext(cmdCtx, command, args...)
-		cmd.Env = append(cmd.Env, env...)
+		// Start with the parent process env so the subprocess inherits PATH, HOME, etc.
+		cmd.Env = append(os.Environ(), env...)
 		cmd.Env = append(cmd.Env, extraEnv...)
 		setPdeathsig(cmd)
 		return cmd, nil
