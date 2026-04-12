@@ -25,7 +25,11 @@ func (t *ShellTool) Name() string {
 }
 
 func (t *ShellTool) Description() string {
-	return "Execute a shell command on the host system. Only whitelisted commands are allowed unless allow_all is true in config."
+	desc := "Execute a shell command on the host system. Only whitelisted commands are allowed unless allow_all is true in config."
+	if t.config.WorkingDir != "" {
+		desc += fmt.Sprintf(" Working directory: %s.", t.config.WorkingDir)
+	}
+	return desc
 }
 
 func (t *ShellTool) Schema() json.RawMessage {

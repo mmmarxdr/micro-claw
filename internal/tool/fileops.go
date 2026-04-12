@@ -62,7 +62,7 @@ func NewReadFileTool(cfg config.FileToolConfig) *ReadFileTool {
 
 func (t *ReadFileTool) Name() string { return "read_file" }
 func (t *ReadFileTool) Description() string {
-	return "Read the contents of a file. Path is relative to the configured base_path."
+	return fmt.Sprintf("Read the contents of a file. Path is relative to base_path (%s).", t.config.BasePath)
 }
 
 func (t *ReadFileTool) Schema() json.RawMessage {
@@ -119,7 +119,7 @@ func NewWriteFileTool(cfg config.FileToolConfig) *WriteFileTool {
 
 func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
-	return "Write content to a file. Creates parent directories if needed. Path is relative to the configured base_path."
+	return fmt.Sprintf("Write content to a file. Creates parent directories if needed. Path is relative to base_path (%s).", t.config.BasePath)
 }
 
 func (t *WriteFileTool) Schema() json.RawMessage {
@@ -176,7 +176,7 @@ func NewListFilesTool(cfg config.FileToolConfig) *ListFilesTool {
 
 func (t *ListFilesTool) Name() string { return "list_files" }
 func (t *ListFilesTool) Description() string {
-	return "List files and directories at the given path. Path is relative to the configured base_path."
+	return fmt.Sprintf("List files and directories at the given path. Path is relative to base_path (%s).", t.config.BasePath)
 }
 
 func (t *ListFilesTool) Schema() json.RawMessage {
