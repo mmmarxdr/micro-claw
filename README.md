@@ -316,39 +316,77 @@ A **fallback provider** can be configured under `provider.fallback` with the sam
 | `read_file` | Reads a file within the sandbox | `tools.file.base_path` |
 | `write_file` | Writes a file within the sandbox | `tools.file.base_path` |
 | `list_files` | Lists a directory within the sandbox | `tools.file.base_path` |
-| `http_fetch` | HTTP GET/POST to external URLs | `tools.http.blocked_domains` |
+| `http_fetch` | HTTP GET/POST raw responses | `tools.http.blocked_domains` |
+| `web_fetch` | Fetch URL and extract as clean Markdown (~90% fewer tokens) | `tools.web_fetch.jina_enabled` |
 
 All file tools sandbox paths under `base_path`. Path traversal beyond the sandbox is rejected.
 
+`web_fetch` extracts readable content from HTML pages using go-readability and converts to Markdown. Falls back to [Jina Reader API](https://jina.ai/reader/) for JS-heavy pages when `jina_enabled: true`.
+
 ---
 
-## MCP (Model Context Protocol)
+## Integrations (MCP)
 
-Connect external tool servers at runtime without recompiling.
+MCP (Model Context Protocol) lets the agent connect to external services at runtime — no code changes required. MCP servers run as subprocesses or HTTP endpoints.
+
+**Requirements for MCP servers**: Most community servers need **Node.js >= 18** (for `npx`). Some use Python. The agent itself does not require Node — only the MCP servers do.
+
+### Quick example: Gmail
+
+1. Enable [2-Step Verification](https://myaccount.google.com/security) on your Google account
+2. Generate an [App Password](https://myaccount.google.com/apppasswords) (name it "microagent")
+3. Add to your config:
 
 ```yaml
 tools:
   mcp:
     enabled: true
-    connect_timeout: 10s
+    connect_timeout: 30s
     servers:
-      - name: filesystem
+      - name: gmail
         transport: stdio
-        command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-      - name: remote
-        transport: http
-        url: "http://localhost:8080/sse"
-        prefix_tools: true   # tools appear as "remote_<name>"
+        command: ["npx", "-y", "mcp-mail-server"]
+        prefix_tools: true
+        env:
+          IMAP_HOST: "imap.gmail.com"
+          IMAP_PORT: "993"
+          IMAP_SECURE: "true"
+          SMTP_HOST: "smtp.gmail.com"
+          SMTP_PORT: "465"
+          SMTP_SECURE: "true"
+          EMAIL_USER: "you@gmail.com"
+          EMAIL_PASS: "your-app-password-no-spaces"
 ```
 
-Manage MCP servers:
+4. Verify: `microagent mcp test gmail`
+5. Ask the agent: "Show me my unread emails"
+
+### Popular integrations
+
+| Server | Install | What it does |
+|--------|---------|-------------|
+| **Gmail** (IMAP) | `npx -y mcp-mail-server` | Read, send, search, reply to emails |
+| **Google Workspace** | `pip install workspace-mcp` | Gmail + Calendar + Drive + Docs (requires OAuth) |
+| **Google Calendar** | `npx -y @cocal/google-calendar-mcp` | Events, scheduling, free/busy (requires OAuth) |
+| **GitHub** | `npx -y @modelcontextprotocol/server-github` | Issues, PRs, repos, CI |
+| **Filesystem** | `npx -y @modelcontextprotocol/server-filesystem /path` | Sandboxed file access |
+| **Brave Search** | `npx -y @modelcontextprotocol/server-brave-search` | Web search |
+| **Notion** | `npx -y @notionhq/notion-mcp-server` | Pages, databases, blocks |
+| **Slack** | `npx -y @modelcontextprotocol/server-slack` | Channels, messages, threads |
+
+All servers are configured in `tools.mcp.servers[]`. Use `prefix_tools: true` to namespace tool names (recommended when using multiple servers).
+
+### Managing MCP servers
 
 ```bash
-microagent mcp list
+microagent mcp list                    # show configured servers
+microagent mcp test <name>             # live connection test
 microagent mcp add --name X --transport stdio --command "npx ..."
 microagent mcp remove <name>
-microagent mcp test <name>       # connect and list tools
+microagent mcp validate                # check config + env vars
 ```
+
+Or manage from the web dashboard: **Integrations** page (add from catalog, test, remove).
 
 ---
 
