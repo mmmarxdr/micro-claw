@@ -2,79 +2,92 @@
 
 > A minimal, extensible AI agent in Go. Single binary, zero runtime deps.
 
-![Go version](https://img.shields.io/badge/go-1.22+-blue)
-![License](https://img.shields.io/badge/license-TBD%20(MIT)-lightgrey)
+`microagent` connects an LLM to channels (CLI, Telegram, Discord, WhatsApp) and a web dashboard through a built-in tool loop. The agent receives a message, builds context from conversation history and memory, calls the LLM, executes any tool calls, and loops until a final response is produced.
+
+**What's included:**
+
+- 5 LLM providers (OpenRouter, Anthropic, Gemini, OpenAI, Ollama)
+- 4 messaging channels + web dashboard with real-time chat
+- Built-in tools: shell, file I/O, HTTP fetch, MCP protocol
+- Skills system (extend the agent with `.md` files)
+- Scheduled tasks (cron) with natural language
+- TUI dashboard for local monitoring
+- Bearer token auth on the web dashboard (secure by default)
+- Single binary, cross-platform (Linux, macOS, Windows)
 
 ---
 
-## Overview
+## Install
 
-`microagent` connects an LLM provider to one or more channels (CLI, Telegram) through a built-in tool loop. A message arrives on a channel, the agent builds context from conversation history and memory, calls the provider, and executes any tool calls the model requests — looping until the model produces a final text response. Every component (channel, provider, tool, store) is an interface; adding new ones requires zero changes to the core loop.
+### Option A: Download a release (recommended)
 
-For a full architecture breakdown including interfaces, data flows, error handling, and the phased roadmap, see [MICROAGENT.md](./MICROAGENT.md).
+Go to [Releases](https://github.com/mmmarxdr/micro-claw/releases) and download the binary for your platform. Release binaries include the web frontend.
 
----
+```bash
+# Linux (amd64)
+tar -xzf microagent_*_linux_amd64.tar.gz
+chmod +x microagent
+sudo mv microagent /usr/local/bin/
+```
 
-## Prerequisites
+### Option B: Build from source
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Go | 1.22+ | Required to build |
-| gofumpt | latest | Optional — code formatting |
-| golangci-lint | latest | Optional — linting |
+```bash
+git clone https://github.com/mmmarxdr/micro-claw.git
+cd micro-claw
+
+# TUI-only (no Node.js needed)
+make build
+
+# With web frontend (downloads pre-built assets, no Node.js needed)
+make build-full
+
+# Binary is at bin/microagent
+```
+
+### Option C: Go install
+
+```bash
+go install github.com/mmmarxdr/micro-claw/cmd/microagent@latest
+```
+
+> Note: `go install` builds without the web frontend. The TUI and API still work. To add the frontend, see [Web Dashboard](#web-dashboard).
 
 ---
 
 ## Quick Start
 
+**1. Run the setup wizard:**
+
 ```bash
-# 1. Clone
-git clone https://github.com/mmmarxdr/micro-claw.git
-cd micro-claw
-
-# 2. Create your personal config from the example (it is git-ignored)
-cp configs/default.yaml.example configs/default.yaml
-# Edit configs/default.yaml and replace every REPLACE_ME value (see below)
-
-# 3. Run the microagent — it picks up configs/default.yaml automatically
-go run ./cmd/microagent
+microagent
 ```
 
-### Setting up `configs/default.yaml`
+On first run (no config found), an interactive TUI wizard launches automatically. It walks you through:
 
-`configs/default.yaml` is **git-ignored** — it is the right place to store real API keys and tokens. Never commit it.
+| Step | What |
+|------|------|
+| Provider | OpenRouter, Anthropic, Gemini, OpenAI, or Ollama |
+| Model & API key | Pre-filled default + your API key |
+| Channel | CLI, Telegram, or Discord |
+| Store path | Where conversations are saved (default: `~/.microagent/data`) |
 
-1. Copy the example:
-   ```bash
-   cp configs/default.yaml.example configs/default.yaml
-   ```
+The wizard writes `~/.microagent/config.yaml` and starts the agent.
 
-2. Open `configs/default.yaml` and replace the `REPLACE_ME` placeholders:
+**2. Or create a config manually:**
 
-   | Placeholder | Where to get it |
-   |---|---|
-   | `provider.api_key` | [openrouter.ai/keys](https://openrouter.ai/keys) · [console.anthropic.com](https://console.anthropic.com/) · [aistudio.google.com](https://aistudio.google.com/apikey) |
-   | `channel.token` | [@BotFather](https://t.me/BotFather) on Telegram (only needed for Telegram channel) |
-   | `channel.allowed_users` | Your numeric Telegram user ID — send a message to [@userinfobot](https://t.me/userinfobot) to find it |
+```bash
+cp configs/default.yaml.example ~/.microagent/config.yaml
+# Edit the file and replace REPLACE_ME values
+microagent
+```
 
-3. Run:
-   ```bash
-   go run ./cmd/microagent
-   ```
-
-> **Alternative — environment variables:** export the key before running and the agent will use it without reading the file:
-> ```bash
-> export OPENROUTER_API_KEY="sk-or-v1-..."
-> go run ./cmd/microagent
-> ```
-
-Minimal config for a CLI agent with OpenRouter:
+Minimal config for CLI + OpenRouter:
 
 ```yaml
 agent:
   name: "Micro"
   personality: "You are a concise, helpful assistant."
-  max_iterations: 10
 
 provider:
   type: openrouter
@@ -85,164 +98,202 @@ channel:
   type: cli
 
 store:
-  type: file
+  type: sqlite
   path: "~/.microagent/data"
 ```
 
+**3. Start chatting.** Type a message and press Enter. The agent responds, using tools as needed.
+
 ---
 
-## Configuration
+## Web Dashboard
 
-The agent searches for config in order: `--config` flag → `~/.microagent/config.yaml` → `./config.yaml`. String values support `${ENV_VAR}` interpolation. Paths with `~` are expanded to the home directory.
+The web dashboard gives you a browser-based UI with real-time chat, metrics, conversation history, and config management.
 
-### `agent`
+### Start the dashboard
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | `"Micro"` | Agent name, used in logs and prompts |
-| `personality` | string | — | System prompt injected at every turn |
-| `max_iterations` | int | `10` | Max tool-use cycles per user message |
-| `max_tokens_per_turn` | int | `4096` | Max tokens per LLM call |
-| `history_length` | int | `20` | Conversation messages kept in context |
-| `memory_results` | int | `5` | Max memory entries injected into context |
+```bash
+# Standalone (web is the only interface)
+microagent web
 
-### `provider`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | — | Provider implementation (`openrouter`, `anthropic`, `gemini`) |
-| `model` | string | Provider default | Model identifier |
-| `api_key` | string | — | API key; use `${ENV_VAR}` |
-| `timeout` | duration | `60s` | Per-request HTTP timeout |
-| `max_retries` | int | `3` | Retries on 5xx errors |
-| `fallback` | object | — | Optional fallback provider (same fields); activated on rate-limit or unavailability |
-
-### `channel`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | — | Channel implementation (`cli`, `telegram`) |
-| `token` | string | — | Telegram Bot API token (Telegram only) |
-| `allowed_users` | []int64 | — | Telegram user ID whitelist (Telegram only) |
-
-### `tools.shell`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `shell_exec` tool |
-| `allowed_commands` | []string | `[ls, cat, ...]` | Whitelisted base commands |
-| `allow_all` | bool | `false` | Allow any command — use with caution |
-| `working_dir` | string | `"~"` | Working directory for command execution |
-
-### `tools.file`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable file tools (`read_file`, `write_file`, `list_files`) |
-| `base_path` | string | `"~/workspace"` | Sandbox root; all paths are relative to this |
-| `max_file_size` | string | `"1MB"` | Reject reads/writes above this size |
-
-### `tools.http`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `http_fetch` tool |
-| `timeout` | duration | `15s` | Per-request timeout |
-| `max_response_size` | string | `"512KB"` | Truncate responses above this size |
-| `blocked_domains` | []string | `[]` | Domains the tool will never fetch |
-
-### `tools.mcp`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable MCP client |
-| `connect_timeout` | duration | `10s` | Timeout for connecting to each MCP server |
-| `servers[].name` | string | — | Logical name for the server |
-| `servers[].transport` | string | — | `stdio` or `http` |
-| `servers[].command` | []string | — | Command + args for `stdio` transport |
-| `servers[].url` | string | — | URL for `http` (SSE) transport |
-| `servers[].prefix_tools` | bool | `false` | Prefix tool names with the server name |
-
-### `store`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | `"file"` | Storage backend (`file` or `sqlite`) |
-| `path` | string | `"~/.microagent/data"` | Root directory for file store |
-
-### `logging`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `level` | string | `"info"` | Log level: `debug`, `info`, `warn`, `error` |
-| `format` | string | `"text"` | Log format: `text` or `json` |
-
-### `limits`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `tool_timeout` | duration | `30s` | Max time for a single tool execution |
-| `total_timeout` | duration | `120s` | Max time for the entire agent turn |
-
-### `audit`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Write an audit log of all tool executions |
-| `path` | string | `"~/.microagent/audit"` | Directory for audit log files |
-
-### `skills`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `skills` | []string | `[]` | Paths to `.md` skill files loaded at startup |
-| `skills_dir` | string | `~/.microagent/skills` | Directory where `microagent skills add` stores installed skills |
-| `skills_registry_url` | string | `""` | Base URL for short-name skill resolution (e.g. `microagent skills add git-helper`) |
-
-Paths in `skills` support `~` expansion. Example:
-
-```yaml
-skills:
-  - ~/.microagent/skills/git-helper.md
-  - ~/my-skills/react-patterns.md
-
-skills_dir: ~/.microagent/skills
-# skills_registry_url: https://skills.example.com
+# Alongside CLI/Telegram (both work simultaneously)
+microagent --web
 ```
 
-### `cron`
+On startup, the agent generates an auth token and prints it to the console:
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the cron scheduler |
-| `timezone` | string | `"UTC"` | Timezone for cron expressions (e.g. `"America/New_York"`) |
-| `retention_days` | int | `30` | Delete job results older than this many days |
-| `max_results_per_job` | int | `50` | Keep at most this many results per job |
-| `max_concurrent` | int | `4` | Max concurrent agent turns (cron + interactive share this pool) |
+```
+INFO web dashboard available url=http://127.0.0.1:8080 auth_token=a1b2c3d4...
+```
 
-Cron requires `store.type: sqlite`. Example:
+Open the URL in your browser, enter the token, and you're in.
+
+### Auth token options
+
+The dashboard is **always authenticated**. Three ways to set the token:
+
+| Method | Example |
+|--------|---------|
+| Config file | `web.auth_token: "my-secret-token"` |
+| Environment variable | `MICROAGENT_WEB_TOKEN=my-secret-token microagent web` |
+| Auto-generated | Leave empty, token is printed on startup |
+
+For production/VPS, set a fixed token in config or env so it persists across restarts.
+
+### Config
 
 ```yaml
-cron:
+web:
   enabled: true
-  timezone: "America/New_York"
-  retention_days: 30
-  max_results_per_job: 50
+  port: 8080
+  host: "127.0.0.1"        # 0.0.0.0 to expose to network
+  auth_token: ""            # auto-generated if empty
+```
+
+### API endpoints
+
+All `/api/*` and `/ws/*` endpoints require `Authorization: Bearer <token>`. WebSocket endpoints accept `?token=<token>` as an alternative.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | Agent status, uptime, version |
+| `/api/config` | GET | Active config (secrets masked) |
+| `/api/conversations` | GET | List conversations |
+| `/api/conversations/{id}` | GET/DELETE | Get or delete a conversation |
+| `/api/memory` | GET/POST | List or create memory entries |
+| `/api/memory/{id}` | DELETE | Delete a memory entry |
+| `/api/metrics` | GET | Token usage and cost metrics |
+| `/api/mcp/servers` | GET | MCP server status |
+| `/ws/chat` | WS | Real-time chat with the agent |
+| `/ws/metrics` | WS | Live metrics stream |
+| `/ws/logs` | WS | Live audit log stream |
+
+---
+
+## Deploy on a VPS
+
+For running microagent on a server with the web dashboard accessible remotely.
+
+### 1. Install
+
+```bash
+# Download the latest release
+curl -sL https://github.com/mmmarxdr/micro-claw/releases/latest/download/microagent_linux_amd64.tar.gz | tar -xz
+sudo mv microagent /usr/local/bin/
+```
+
+### 2. Configure
+
+```bash
+mkdir -p ~/.microagent
+cat > ~/.microagent/config.yaml << 'EOF'
+agent:
+  name: "Micro"
+  personality: "You are a helpful assistant."
+
+provider:
+  type: openrouter
+  model: google/gemini-2.0-flash-001
+  api_key: ${OPENROUTER_API_KEY}
+  stream: true
+
+channel:
+  type: cli
+
+store:
+  type: sqlite
+  path: "~/.microagent/data"
+
+web:
+  enabled: true
+  port: 8080
+  host: "127.0.0.1"          # keep localhost — Caddy handles external traffic
+  auth_token: ${MICROAGENT_WEB_TOKEN}
+
+audit:
+  enabled: true
+  path: "~/.microagent/audit"
+EOF
+```
+
+### 3. Set secrets
+
+```bash
+# Add to ~/.bashrc or use a secrets manager
+export OPENROUTER_API_KEY="sk-or-v1-..."
+export MICROAGENT_WEB_TOKEN="$(openssl rand -hex 32)"
+echo "Your web token: $MICROAGENT_WEB_TOKEN"
+```
+
+### 4. Reverse proxy with HTTPS (Caddy)
+
+```bash
+sudo apt install caddy
+```
+
+```
+# /etc/caddy/Caddyfile
+agent.yourdomain.com {
+    reverse_proxy localhost:8080
+}
+```
+
+```bash
+sudo systemctl reload caddy
+```
+
+Caddy automatically provisions a Let's Encrypt TLS certificate. Your dashboard is now at `https://agent.yourdomain.com`.
+
+### 5. Run as a systemd service
+
+```ini
+# /etc/systemd/system/microagent.service
+[Unit]
+Description=microagent AI agent
+After=network.target
+
+[Service]
+Type=simple
+User=microagent
+Environment=OPENROUTER_API_KEY=sk-or-v1-...
+Environment=MICROAGENT_WEB_TOKEN=your-fixed-token-here
+ExecStart=/usr/local/bin/microagent web
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo useradd -r -s /bin/false microagent
+sudo systemctl daemon-reload
+sudo systemctl enable --now microagent
+```
+
+### 6. Verify
+
+```bash
+# Check the service
+sudo systemctl status microagent
+
+# Test the API
+curl -H "Authorization: Bearer $MICROAGENT_WEB_TOKEN" https://agent.yourdomain.com/api/status
 ```
 
 ---
 
 ## Providers
 
-| Name | `type` | Env var | Default model | Notes |
-|------|--------|---------|---------------|-------|
-| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openrouter/auto` | Routes to best available model |
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | Direct Anthropic API |
-| Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` | Google Gemini API |
-| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` | OpenAI-compatible API |
-| Ollama | `openai` | — | `llama3` | Local models via OpenAI-compatible endpoint |
+| Name | `type` | Env var | Default model |
+|------|--------|---------|---------------|
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openrouter/auto` |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
+| Ollama | `openai` | -- | `llama3` |
 
-A **fallback provider** can be configured under `provider.fallback`. It uses the same fields and is activated when the primary returns a rate-limit or unavailability error.
+A **fallback provider** can be configured under `provider.fallback` with the same fields. It activates on rate-limit or unavailability.
 
 ---
 
@@ -251,7 +302,7 @@ A **fallback provider** can be configured under `provider.fallback`. It uses the
 | Name | `type` | Required fields | Notes |
 |------|--------|-----------------|-------|
 | CLI | `cli` | None | Reads stdin, writes stdout |
-| Telegram | `telegram` | `token`, `allowed_users` | Requires a Bot API token from @BotFather |
+| Telegram | `telegram` | `token`, `allowed_users` | Bot API token from @BotFather |
 | Discord | `discord` | `token`, `allowed_users` | Discord bot via WebSocket gateway |
 | WhatsApp | `whatsapp` | `token`, `verify_token`, `phone_number_id`, `allowed_phones` | WhatsApp Cloud API webhook |
 
@@ -259,13 +310,13 @@ A **fallback provider** can be configured under `provider.fallback`. It uses the
 
 ## Built-in Tools
 
-| Tool | What it does | Key config |
+| Tool | Description | Key config |
 |------|-------------|------------|
-| `shell_exec` | Runs a whitelisted shell command, returns combined stdout/stderr (10KB max) | `tools.shell.allowed_commands`, `tools.shell.working_dir` |
-| `read_file` | Reads a file relative to `base_path` | `tools.file.base_path`, `tools.file.max_file_size` |
-| `write_file` | Writes a file relative to `base_path`, creates directories as needed | `tools.file.base_path` |
-| `list_files` | Lists a directory relative to `base_path` | `tools.file.base_path` |
-| `http_fetch` | HTTP GET or POST to an external URL, returns response body | `tools.http.timeout`, `tools.http.blocked_domains` |
+| `shell_exec` | Runs a whitelisted shell command | `tools.shell.allowed_commands` |
+| `read_file` | Reads a file within the sandbox | `tools.file.base_path` |
+| `write_file` | Writes a file within the sandbox | `tools.file.base_path` |
+| `list_files` | Lists a directory within the sandbox | `tools.file.base_path` |
+| `http_fetch` | HTTP GET/POST to external URLs | `tools.http.blocked_domains` |
 
 All file tools sandbox paths under `base_path`. Path traversal beyond the sandbox is rejected.
 
@@ -273,11 +324,7 @@ All file tools sandbox paths under `base_path`. Path traversal beyond the sandbo
 
 ## MCP (Model Context Protocol)
 
-MCP lets the agent connect to external tool servers at runtime, without recompiling. Tools from MCP servers appear alongside built-in tools; the agent loop does not distinguish between them.
-
-Supported transports:
-- **`stdio`** — spawns a subprocess and communicates over stdin/stdout
-- **`http`** — connects to an SSE endpoint
+Connect external tool servers at runtime without recompiling.
 
 ```yaml
 tools:
@@ -288,371 +335,263 @@ tools:
       - name: filesystem
         transport: stdio
         command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-        prefix_tools: false
-      - name: myserver
+      - name: remote
         transport: http
         url: "http://localhost:8080/sse"
-        prefix_tools: true   # tools appear as "myserver_<name>"
+        prefix_tools: true   # tools appear as "remote_<name>"
+```
+
+Manage MCP servers:
+
+```bash
+microagent mcp list
+microagent mcp add --name X --transport stdio --command "npx ..."
+microagent mcp remove <name>
+microagent mcp test <name>       # connect and list tools
 ```
 
 ---
 
 ## Skills
 
-Skills are `.md` files that extend the agent with two capabilities:
-
-1. **Prose injection** — the skill's body text is appended to the system prompt at startup, giving the agent domain knowledge or behavioral instructions.
-2. **Shell tools** — fenced ` ```yaml tool ` blocks register fixed shell commands as agent tools. The LLM can call them by name but cannot modify their command — unlike `shell_exec`, skill tools bypass the whitelist because the command is fixed at load time by the user.
-
-### Skill file format
+Skills are `.md` files that inject knowledge into the system prompt and register shell tools.
 
 ````markdown
 ---
 name: git-helper
 description: Git workflow assistant
 version: 1.0.0
-author: you
 ---
 
-You are an expert at Git workflows. Prefer rebase over merge for feature branches.
+You are an expert at Git workflows. Prefer rebase over merge.
 
 ```yaml tool
 name: git_log_pretty
-description: Show recent commits in a readable format
-command: git log --oneline --graph --decorate -20
+description: Show recent commits
+command: git log --oneline --graph -20
 timeout: 10s
 ```
 ````
 
-### Installing skills
-
 ```bash
-# From a URL
 microagent skills add https://example.com/react-patterns.md
-
-# From a local file
-microagent skills add ./my-skill.md
-
-# Short name (requires skills_registry_url in config)
-microagent skills add git-helper
+microagent skills list
+microagent skills info <name>
+microagent skills remove <name>
 ```
 
-> **Security note:** skills installed from URLs write files that execute shell commands with your user privileges. Only install skills from sources you trust. A warning is always printed before any URL fetch.
-
-### Managing skills
-
-```bash
-microagent skills list           # list registered skills
-microagent skills list --store   # also show unregistered files in skills_dir
-microagent skills info <name>    # show frontmatter, prose, and tools
-microagent skills remove <name>  # unregister and delete from store
-microagent skills remove <name> --keep-file  # unregister only
-```
-
-### Tool priority
-
-When two tools share a name, the resolution order is: **built-in > skill > MCP**. A skill tool always wins over an MCP server tool with the same name.
+Tool priority: **built-in > skill > MCP**.
 
 ---
 
 ## Scheduled Tasks (Cron)
 
-The cron system lets you schedule recurring tasks in natural language. Enable it in config (`cron.enabled: true`, requires SQLite store), load `configs/skills/cron.md` as a skill, and the agent will understand scheduling intent.
-
-### Scheduling a task
-
-Tell the agent what you want and when:
+Schedule recurring tasks in natural language. Requires `store.type: sqlite` and `cron.enabled: true`.
 
 ```
-every morning at 9am give me a summary of my unread emails
+> every morning at 9am give me a summary of the weather
 ```
-
-Or use the explicit `/cron` prefix. The agent calls `schedule_task` internally, converts the schedule to a cron expression via an LLM sub-call, and confirms back:
-
-```
-✓ Scheduled: 'give me a summary of my unread emails'
-Schedule: every day at 9:00 AM (cron: 0 9 * * *)
-Next run: Sat, 21 Mar 2026 09:00:00 UTC
-Job ID: a1b2c3d4e5f6
-```
-
-If a required tool or MCP is missing (e.g. you asked about email but have no email MCP configured), the agent warns you and suggests the setup command.
-
-### Managing scheduled tasks
-
-Ask the agent, or use the CLI directly (no running agent needed):
 
 ```bash
-microagent cron list              # show all scheduled jobs
-microagent cron info <id>         # show job details + last 10 results
+microagent cron list              # show all jobs
+microagent cron info <id>         # job details + results
 microagent cron delete <id>       # remove a job
-```
-
-The agent also understands natural requests: "show my scheduled tasks", "cancel the email cron".
-
-### Daemon mode
-
-Run the agent in background mode (no interactive channel — cron only):
-
-```bash
-microagent --daemon
-# or as a systemd service
-```
-
-In daemon mode, job results are stored in `cron_results` and sent back to the originating channel (CLI or Telegram) that created the job.
-
-### cron.md skill
-
-To enable cron UX, add `configs/skills/cron.md` to your skills list:
-
-```yaml
-skills:
-  - configs/skills/cron.md
-```
-
-Without this skill, the agent has no instructions to recognize scheduling intent — the tools exist but the agent won't know when to use them.
-
----
-
-## Running
-
-```bash
-./microagent [flags]
-```
-
-| Flag | Description |
-|------|-------------|
-| `-config <path>` | Path to config YAML (overrides auto-search) |
-| `-version` | Print version and exit |
-| `-dashboard` | Open read-only TUI dashboard and exit |
-| `-setup` | Run the interactive setup wizard and exit |
-| `-daemon` | Run as background daemon (no interactive channel; cron only) |
-
-### Subcommands
-
-```bash
-microagent mcp list                   # list configured MCP servers
-microagent mcp add --name X --transport stdio --command "npx ..."
-microagent mcp remove <name>
-microagent mcp test <name>            # connect and list tools
-microagent mcp validate               # validate MCP config section
-microagent mcp manage                 # interactive TUI management screen
-
-microagent skills add <url|path|name> # install a skill
-microagent skills list [--store]      # list installed skills
-microagent skills remove <name>       # uninstall a skill
-microagent skills info <name>         # show skill details
-
-microagent cron list              # list scheduled cron jobs
-microagent cron info <id>         # show job details and last results
-microagent cron delete <id>       # delete a scheduled job
-microagent --daemon               # run in background mode (cron only)
-
-microagent setup                   # run the interactive setup wizard
-microagent doctor [--config <path>] # validate config, env vars, and store path
-```
-
-All subcommands accept `--config <path>` to override the config file location.
-
-Auto-search order: `~/.microagent/config.yaml` → `./config.yaml`.
-
-### First-run setup wizard
-
-When no config file is found and `microagent` is started in an interactive terminal, it automatically launches a TUI setup wizard instead of exiting with an error.
-
-> **Note**: micro-claw searches for your config in two locations (in order):
-> 1. `~/.microagent/config.yaml` (user home)
-> 2. `./config.yaml` (current directory)
->
-> If you delete one but the other exists, the wizard will not re-launch. Use `./microagent --setup` to force the wizard regardless.
-
-The wizard walks through five steps:
-
-| Step | What it collects |
-|------|-----------------|
-| 1 — Provider | Provider type: `anthropic`, `gemini`, `openrouter`, `openai`, or `ollama` |
-| 2 — Model & API Key | Model identifier (pre-filled with a sensible default) and the API key |
-| 3 — Channel | Channel type: `cli`, `telegram`, or `discord` |
-| 3b — Channel extras | Bot token and allowed user IDs (Telegram/Discord only) |
-| 4 — Store path | Data store directory (default: `~/.microagent/data`) |
-| 5 — Confirm | YAML preview; press Enter to write the config |
-
-The config is written to `~/.microagent/config.yaml`. The agent starts normally once the wizard completes.
-
-**Keyboard controls in the wizard:**
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Advance to next step |
-| `Esc` | Go back one step (or abort at step 1) |
-| `Tab` / `Shift+Tab` | Switch between fields on steps with multiple inputs |
-| `Ctrl+C` | Quit without saving |
-
-To re-run the wizard at any time (e.g. to change provider or fix a broken config):
-
-```bash
-./microagent --setup
-# or use the subcommand:
-./microagent setup
-```
-
-**Non-interactive mode:** if stdin is not a terminal (e.g. piped input, CI), the wizard does not launch. The process prints a message and exits:
-
-```
-No config file found. Create one at ~/.microagent/config.yaml before running in non-interactive mode.
-```
-
-### Configuration Validation
-
-The `microagent doctor` command validates your configuration file, environment variables, and store path accessibility without starting the agent or making any API calls.
-
-```bash
-# Check default config file locations
-microagent doctor
-
-# Check a specific config file
-microagent doctor --config /path/to/config.yaml
-```
-
-**What doctor checks:**
-1. **Config file** — exists and contains valid YAML syntax
-2. **Environment variables** — all `${VAR}` placeholders in the config reference environment variables that are actually set
-3. **Store path** — the `store.path` directory exists, is a directory (not a file), and is writable
-
-**Example output:**
-```
-✓ Config loaded successfully from /home/user/.microagent/config.yaml
-✓ Store path "/home/user/.microagent/data" is accessible  
-✓ All environment variables set: OPENROUTER_API_KEY, TELEGRAM_TOKEN
-```
-
-If issues are found, doctor reports them with clear error messages:
-
-```
-✗ Missing environment variables referenced in config: OPENROUTER_API_KEY
-✗ Store path "/home/user/.microagent/data" does not exist
-```
-
-Use `microagent doctor` to troubleshoot configuration issues before running the agent.
-
-### Dashboard
-
-The `--dashboard` flag opens a read-only TUI dashboard that displays stats and config from the current run. No agent loop is started; the process exits when you quit the dashboard.
-
-```bash
-./microagent --dashboard
-# or with a non-default config:
-./microagent -config /path/to/config.yaml --dashboard
-```
-
-**Tabs:**
-
-| Tab | Content |
-|-----|---------|
-| Overview | Audit DB path, total events, LLM call count, average token usage, tool call count and success rate, timestamp of last event |
-| Audit Events | Scrollable table of recent audit records (ID, type, model, tokens, duration, tool status) |
-| Store | Conversation count, memory entries, and secrets count from the data store |
-| Config | Active provider, model, channel type, store path, and audit path (API key always redacted) |
-| MCP | Configured MCP servers with name, transport, command/URL, and status; press `e` to open the interactive MCP management screen |
-
-**Keyboard controls in the dashboard:**
-
-| Key | Action |
-|-----|--------|
-| `Tab` / `→` | Switch to next tab |
-| `←` | Switch to previous tab |
-| `q` / `Ctrl+C` | Quit |
-
-The dashboard requires an interactive terminal (stdout must be a TTY). Running it without one prints an error and exits:
-
-```
-Dashboard requires an interactive terminal.
+microagent --daemon               # run cron-only (no interactive channel)
 ```
 
 ---
 
-## Testing
-
-**Unit tests** — no external dependencies required:
+## CLI Reference
 
 ```bash
-go test ./...
+microagent                          # start the agent (setup wizard if no config)
+microagent --web                    # start with web dashboard
+microagent --dashboard              # TUI dashboard (read-only)
+microagent --setup                  # re-run setup wizard
+microagent --daemon                 # cron-only background mode
+
+microagent web [--port N] [--host H]  # web-only mode
+microagent setup                      # setup wizard
+microagent doctor                     # validate config
+microagent config                     # show active config
+
+microagent mcp list|add|remove|test|validate|manage
+microagent skills add|list|info|remove
+microagent cron list|info|delete
 ```
 
-**Integration tests** — test the full MCP client stack. The test harness compiles a helper MCP server binary at startup:
+Config search order: `--config` flag > `~/.microagent/config.yaml` > `./config.yaml`.
 
-```bash
-go test -tags=integration ./internal/mcp/... -v -timeout 60s
-```
+All string values support `${ENV_VAR}` interpolation. Paths support `~` expansion.
 
-Integration tests live in `internal/mcp/integration_test.go` behind the `//go:build integration` tag. The helper server source is in `internal/mcp/testdata/server/`.
+---
 
-Or use the contributor script which runs both:
+## Configuration Reference
 
-```bash
-./test.sh
-```
+<details>
+<summary>Full config reference (click to expand)</summary>
+
+### `agent`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | `"Micro"` | Agent name |
+| `personality` | string | -- | System prompt injected at every turn |
+| `max_iterations` | int | `10` | Max tool-use cycles per message |
+| `max_tokens_per_turn` | int | `4096` | Max tokens per LLM call |
+| `history_length` | int | `20` | Conversation messages kept in context |
+| `memory_results` | int | `5` | Max memory entries injected into context |
+
+### `provider`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | -- | `openrouter`, `anthropic`, `gemini`, `openai` |
+| `model` | string | Provider default | Model identifier |
+| `api_key` | string | -- | API key (supports `${ENV_VAR}`) |
+| `timeout` | duration | `60s` | Per-request timeout |
+| `max_retries` | int | `3` | Retries on 5xx errors |
+| `stream` | bool | `true` | Enable streaming responses |
+| `fallback` | object | -- | Fallback provider (same fields) |
+
+### `channel`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | -- | `cli`, `telegram`, `discord`, `whatsapp` |
+| `token` | string | -- | Bot API token (Telegram/Discord) |
+| `allowed_users` | []int64 | -- | User ID whitelist (Telegram/Discord) |
+
+### `web`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable web dashboard (also via `--web` flag) |
+| `port` | int | `8080` | HTTP port |
+| `host` | string | `"127.0.0.1"` | Bind address (`0.0.0.0` for network access) |
+| `auth_token` | string | auto-generated | Bearer token for API/WS auth; also `MICROAGENT_WEB_TOKEN` env var |
+
+### `tools.shell`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable `shell_exec` tool |
+| `allowed_commands` | []string | `[ls, cat, ...]` | Whitelisted commands |
+| `allow_all` | bool | `false` | Allow any command |
+| `working_dir` | string | `"~"` | Working directory |
+
+### `tools.file`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable file tools |
+| `base_path` | string | `"~/workspace"` | Sandbox root |
+| `max_file_size` | string | `"1MB"` | Max file size for read/write |
+
+### `tools.http`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable `http_fetch` tool |
+| `timeout` | duration | `15s` | Per-request timeout |
+| `max_response_size` | string | `"512KB"` | Max response body size |
+| `blocked_domains` | []string | `[]` | Blocked domains |
+
+### `tools.mcp`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable MCP client |
+| `connect_timeout` | duration | `10s` | Connection timeout |
+| `servers[].name` | string | -- | Server logical name |
+| `servers[].transport` | string | -- | `stdio` or `http` |
+| `servers[].command` | []string | -- | Command for stdio transport |
+| `servers[].url` | string | -- | URL for http transport |
+
+### `store`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | `"file"` | `file` or `sqlite` |
+| `path` | string | `"~/.microagent/data"` | Storage directory |
+
+### `logging`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `level` | string | `"info"` | `debug`, `info`, `warn`, `error` |
+| `format` | string | `"text"` | `text` or `json` |
+
+### `limits`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tool_timeout` | duration | `30s` | Max time per tool execution |
+| `total_timeout` | duration | `120s` | Max time per agent turn |
+
+### `audit`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable audit log |
+| `path` | string | `"~/.microagent/audit"` | Audit log directory |
+
+### `cron`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable cron scheduler |
+| `timezone` | string | `"UTC"` | Timezone for expressions |
+| `retention_days` | int | `30` | Delete results older than N days |
+| `max_concurrent` | int | `4` | Max concurrent agent turns |
+
+### `skills`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `skills` | []string | `[]` | Paths to skill files |
+| `skills_dir` | string | `~/.microagent/skills` | Installed skills directory |
+
+</details>
 
 ---
 
 ## Development
 
-### Makefile targets
-
-| Target | What it does |
-|--------|-------------|
-| `make build` | Compile binary with `-ldflags="-s -w"` |
-| `make test` | Run unit tests |
-| `make integration-test` | Run integration tests |
-| `make lint` | Run `golangci-lint` |
-| `make fmt` | Format with `gofumpt` |
-| `make dev-run` | Build and run with `./config.yaml` |
-
-### Code style
-
-- Format with `gofumpt` (stricter than `gofmt`): `gofumpt -w .`
-- Lint with `golangci-lint`: `golangci-lint run`
-- Errors are values — wrap with `%w`, never swallow, never panic on recoverable errors
-- Every exported symbol needs a doc comment
-- Table-driven tests, no external test frameworks
+```bash
+make build          # compile binary (TUI-only)
+make build-full     # compile with web frontend
+make frontend       # download pre-built frontend assets
+make copy-frontend  # copy from local micro-claw-frontend checkout
+make test           # unit tests
+make test-race      # unit tests with race detector
+make lint           # golangci-lint
+make ci             # vet + lint + test-race
+```
 
 ### Project structure
 
 ```
-microagent/
-├── cmd/microagent/      # Entrypoint: config → wire → run; mcp + skills subcommands
-├── internal/
-│   ├── agent/           # Agent loop (loop.go), context builder (context.go)
-│   ├── channel/         # Channel interface + CLI and Telegram implementations
-│   ├── provider/        # Provider interface + OpenRouter/Anthropic/Gemini clients
-│   ├── tool/            # Tool interface, registry, shell/file/http tools
-│   ├── store/           # Store interface + SQLite persistence
-│   ├── mcp/             # MCP client (stdio + http), MCPService (config management)
-│   ├── cron/            # Cron scheduler (robfig/cron/v3), CronChannel, daemon mode
-│   ├── skill/           # Skill loader, parser, shell tool, SkillService (install)
-│   └── config/          # YAML parsing, env var resolution, validation
-└── configs/             # Example config and skill files
+cmd/microagent/       # entrypoint, subcommands
+internal/
+  agent/              # agent loop, context builder
+  channel/            # CLI, Telegram, Discord, WhatsApp, Web
+  provider/           # OpenRouter, Anthropic, Gemini, OpenAI
+  tool/               # shell, file, HTTP, MCP tools
+  store/              # SQLite persistence
+  web/                # HTTP server, REST API, WebSocket, auth
+  mcp/                # MCP client (stdio + http)
+  cron/               # scheduler, daemon mode
+  skill/              # skill loader, parser
+  config/             # YAML config, validation
+  audit/              # audit log
+configs/              # example config + skill files
 ```
+
+For the full architecture breakdown, see [MICROAGENT.md](./MICROAGENT.md).
 
 ---
 
-## Roadmap
+## License
 
-### Completed
-
-- ~~Skill registry~~ — short-name installs, remote fetch, search
-- ~~Discord channel~~ — discordgo WebSocket bot with streaming
-- ~~WhatsApp channel~~ — Cloud API webhook, 4000-char chunking
-- ~~OpenAI / Ollama providers~~ — OpenAI-compatible API support
-- ~~CI/CD pipeline~~ — GitHub Actions, Dockerfile, goreleaser
-- ~~Skill router~~ — tiered lazy loading, autoload/on-demand, 20% token budget
-- ~~Token-aware summarization~~ — 3-pass compression for long conversations
-- ~~Prompt injection guard~~ — 8 regex patterns, XML escaping
-- ~~Tool input validation~~ — JSON schema validation before dispatch
-- ~~Memory budget~~ — 15% context cap for memory entries
-
-### Planned
-
-- **Conversation persistence & native memory** — semantic search, cross-session learning, engram-like native memory system
-- **Multi-user isolation** — separate agent instances per user for shared channels
-- **Observability** — metrics, health checks, production dashboard
+TBD (MIT)
