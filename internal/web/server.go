@@ -15,9 +15,12 @@ import (
 	"microagent/internal/tool"
 )
 
-// MCPLister is the interface for listing MCP server statuses.
-type MCPLister interface {
+// MCPManager is the interface for managing MCP servers.
+type MCPManager interface {
 	List(ctx context.Context) ([]mcp.ServerStatus, error)
+	Add(ctx context.Context, cfg config.MCPServerConfig) error
+	Remove(ctx context.Context, name string) error
+	Test(ctx context.Context, cfg config.MCPServerConfig) ([]string, error)
 }
 
 // ServerDeps holds the dependencies for the web server.
@@ -25,7 +28,7 @@ type ServerDeps struct {
 	Store       store.Store
 	Auditor     audit.Auditor
 	Config      *config.Config
-	MCPService  MCPLister
+	MCPService  MCPManager
 	ModelLister provider.ModelLister   // nil if provider doesn't support model listing
 	Tools       map[string]tool.Tool   // registered tool instances
 	StartedAt   time.Time
@@ -94,6 +97,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/metrics", s.handleGetMetrics)
 	s.mux.HandleFunc("GET /api/metrics/history", s.handleGetMetricsHistory)
 	s.mux.HandleFunc("GET /api/mcp/servers", s.handleListMCPServers)
+	s.mux.HandleFunc("POST /api/mcp/servers", s.handleAddMCPServer)
+	s.mux.HandleFunc("DELETE /api/mcp/servers/{name}", s.handleRemoveMCPServer)
+	s.mux.HandleFunc("POST /api/mcp/servers/{name}/test", s.handleTestMCPServer)
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.mux.HandleFunc("GET /api/tools", s.handleListTools)
 	// WebSocket endpoints.

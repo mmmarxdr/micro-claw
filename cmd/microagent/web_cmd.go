@@ -223,10 +223,14 @@ func runWebCommand(args []string, cfgPath string) error {
 		ml = lister
 	}
 
+	resolvedCfgPath, _ := config.FindConfigPath(cfgPath)
+	mcpSvc := mcp.NewMCPService(resolvedCfgPath)
+
 	srv := web.NewServer(web.ServerDeps{
 		Store:       st,
 		Auditor:     aud,
 		Config:      cfg,
+		MCPService:  mcpSvc,
 		ModelLister: ml,
 		Tools:       toolsRegistry,
 		StartedAt:   time.Now(),

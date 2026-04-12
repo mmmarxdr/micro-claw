@@ -461,10 +461,14 @@ func main() {
 			ml = lister
 		}
 
+		resolvedCfgPath, _ := config.FindConfigPath(*cfgPath)
+		mcpSvc := mcp.NewMCPService(resolvedCfgPath)
+
 		webSrv := web.NewServer(web.ServerDeps{
 			Store:       st,
 			Auditor:     auditor,
 			Config:      cfg,
+			MCPService:  mcpSvc,
 			ModelLister: ml,
 			Tools:       toolsRegistry,
 			StartedAt:   time.Now(),

@@ -12,17 +12,33 @@ import (
 	"microagent/internal/mcp"
 )
 
-// fakeMCPService implements MCPLister.
+// fakeMCPService implements MCPManager.
 type fakeMCPService struct {
-	servers []mcp.ServerStatus
-	err     error
+	servers  []mcp.ServerStatus
+	err      error
+	addErr   error
+	removeErr error
+	testTools []string
+	testErr  error
 }
 
 func (f *fakeMCPService) List(_ context.Context) ([]mcp.ServerStatus, error) {
 	return f.servers, f.err
 }
 
-func newTestServerWithMCP(t *testing.T, st *noWebStore, svc MCPLister) *Server {
+func (f *fakeMCPService) Add(_ context.Context, _ config.MCPServerConfig) error {
+	return f.addErr
+}
+
+func (f *fakeMCPService) Remove(_ context.Context, _ string) error {
+	return f.removeErr
+}
+
+func (f *fakeMCPService) Test(_ context.Context, _ config.MCPServerConfig) ([]string, error) {
+	return f.testTools, f.testErr
+}
+
+func newTestServerWithMCP(t *testing.T, st *noWebStore, svc MCPManager) *Server {
 	t.Helper()
 
 	s := &Server{
