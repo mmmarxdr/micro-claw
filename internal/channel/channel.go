@@ -69,3 +69,10 @@ type StreamSender interface {
 
 // ErrStreamNotSupported is returned when a channel does not support streaming.
 var ErrStreamNotSupported = errors.New("channel does not support streaming")
+
+// TelemetryEmitter is an optional interface for channels that support
+// real-time agent telemetry (tool calls, token usage, elapsed time).
+// Checked via type assertion; channels that don't support it are silently skipped.
+type TelemetryEmitter interface {
+	EmitTelemetry(ctx context.Context, channelID string, frame map[string]any) error
+}

@@ -73,6 +73,16 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		}
 	}
 
+	// Detect telemetry capability once per message.
+	telemetry, hasTelemetry := a.channel.(channel.TelemetryEmitter)
+	if hasTelemetry {
+		_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+			"type": "turn_start",
+		})
+	}
+	turnStart := time.Now()
+	var totalInputTokens, totalOutputTokens int
+
 	scope := userScope(msg.ChannelID, msg.SenderID)
 	convID := "conv_" + scope
 	conv, err := a.store.LoadConversation(ctx, convID)
@@ -153,14 +163,28 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		req := a.buildContext(conv, memories)
 
 		slog.Debug("calling LLM", "iteration", i, "messages", len(req.Messages))
+		if hasTelemetry {
+			label := "Thinking..."
+			if i > 0 {
+				label = fmt.Sprintf("Processing iteration %d...", i+1)
+			}
+			_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+				"type": "thinking",
+				"text": label,
+			})
+		}
 		llmStart := time.Now()
 
 		var resp *provider.ChatResponse
 		var textStreamed bool
 
 		if streamingProv != nil {
+			var te channel.TelemetryEmitter
+			if hasTelemetry {
+				te = telemetry
+			}
 			resp, textStreamed, err = a.processStreamingCall(
-				loopCtx, streamingProv, streamSender, req, msg.ChannelID, i, llmStart,
+				loopCtx, streamingProv, streamSender, req, msg.ChannelID, i, llmStart, te,
 			)
 		} else {
 			resp, err = a.provider.Chat(loopCtx, req)
@@ -190,6 +214,17 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			Model: a.config.Name, InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
 			StopReason: resp.StopReason, Iteration: i,
 		})
+		totalInputTokens += resp.Usage.InputTokens
+		totalOutputTokens += resp.Usage.OutputTokens
+		if hasTelemetry {
+			_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+				"type":          "status",
+				"elapsed_ms":    time.Since(turnStart).Milliseconds(),
+				"input_tokens":  resp.Usage.InputTokens,
+				"output_tokens": resp.Usage.OutputTokens,
+				"iteration":     i + 1,
+			})
+		}
 
 		// Prepend degradation notice to the final text reply (no tool calls remaining).
 		if degraded && len(resp.ToolCalls) == 0 {
@@ -246,6 +281,14 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		slog.Debug("LLM requested tool calls", "count", len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			slog.Info("executing tool", "name", tc.Name, "id", tc.ID)
+			if hasTelemetry {
+				_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+					"type":         "tool_start",
+					"name":         tc.Name,
+					"input":        string(tc.Input),
+					"tool_call_id": tc.ID,
+				})
+			}
 			t, ok := a.tools[tc.Name]
 
 			var result tool.ToolResult
@@ -351,6 +394,16 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				status = "error"
 			}
 			slog.Debug("tool execution complete", "name", tc.Name, "status", status, "result_len", len(result.Content))
+			if hasTelemetry {
+				_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+					"type":         "tool_done",
+					"name":         tc.Name,
+					"output":       truncateTelemetry(result.Content, 500),
+					"tool_call_id": tc.ID,
+					"duration_ms":  toolDuration.Milliseconds(),
+					"is_error":     result.IsError,
+				})
+			}
 			_ = a.auditor.Emit(ctx, audit.AuditEvent{
 				ID: uuid.New().String(), ScopeID: scope,
 				EventType: "tool_use", Timestamp: toolStart, DurationMs: toolDuration.Milliseconds(),
@@ -381,6 +434,16 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				Text:      "(iteration limit reached)",
 			})
 		}
+	}
+
+	if hasTelemetry {
+		_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+			"type":                "turn_end",
+			"elapsed_ms":          time.Since(turnStart).Milliseconds(),
+			"total_input_tokens":  totalInputTokens,
+			"total_output_tokens": totalOutputTokens,
+			"iterations":          maxIters,
+		})
 	}
 
 	conv.UpdatedAt = time.Now()
@@ -438,4 +501,13 @@ func executeWithRecover(ctx context.Context, t tool.Tool, params json.RawMessage
 		}
 	}()
 	return t.Execute(ctx, params)
+}
+
+// truncateTelemetry truncates s to at most maxLen bytes, appending "…" if cut.
+// Used for tool output in telemetry frames to keep payloads small.
+func truncateTelemetry(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }

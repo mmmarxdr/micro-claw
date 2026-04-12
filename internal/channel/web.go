@@ -24,11 +24,33 @@ type wsMsg struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// WebChannel is a Channel + StreamSender backed by WebSocket connections.
-// Each connected client gets a unique channelID "web:<uuid-prefix>" and its
-// own *websocket.Conn stored in the sync.Map.
+// wsConn bundles a WebSocket connection with its write mutex.
+// gorilla/websocket requires serial writes; all callers (Send, BeginStream,
+// EmitTelemetry) share this single mutex so concurrent writes are safe.
+type wsConn struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+// writeJSON marshals v and sends it as a TextMessage under the write lock.
+func (c *wsConn) writeJSON(v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+// close closes the underlying connection.
+func (c *wsConn) close() { c.conn.Close() }
+
+// WebChannel is a Channel + StreamSender + TelemetryEmitter backed by
+// WebSocket connections. Each connected client gets a unique channelID
+// "web:<uuid-prefix>" and its own *wsConn stored in the sync.Map.
 type WebChannel struct {
-	conns    sync.Map // map[string]*websocket.Conn — channelID → conn
+	conns    sync.Map // map[string]*wsConn — channelID → wsConn
 	inbox    chan<- IncomingMessage
 	upgrader websocket.Upgrader
 }
@@ -58,8 +80,8 @@ func (w *WebChannel) Start(ctx context.Context, inbox chan<- IncomingMessage) er
 // Stop closes every active WebSocket connection and drains the connection map.
 func (w *WebChannel) Stop() error {
 	w.conns.Range(func(key, value any) bool {
-		if conn, ok := value.(*websocket.Conn); ok {
-			conn.Close()
+		if c, ok := value.(*wsConn); ok {
+			c.close()
 		}
 		w.conns.Delete(key)
 		return true
@@ -70,20 +92,28 @@ func (w *WebChannel) Stop() error {
 // Send delivers a full (non-streaming) message to the connection identified by
 // msg.ChannelID. Returns an error if the connection is not found.
 func (w *WebChannel) Send(ctx context.Context, msg OutgoingMessage) error {
-	conn, ok := w.conns.Load(msg.ChannelID)
+	val, ok := w.conns.Load(msg.ChannelID)
 	if !ok {
 		return fmt.Errorf("web: connection %s not found", msg.ChannelID)
 	}
-	wsConn := conn.(*websocket.Conn)
-	payload, err := json.Marshal(wsMsg{
+	c := val.(*wsConn)
+	return c.writeJSON(wsMsg{
 		Type:      "message",
 		Text:      msg.Text,
 		ChannelID: msg.ChannelID,
 	})
-	if err != nil {
-		return fmt.Errorf("web: marshal send: %w", err)
+}
+
+// EmitTelemetry implements TelemetryEmitter. It sends a telemetry frame to the
+// identified connection. Returns nil silently if the connection is gone.
+func (w *WebChannel) EmitTelemetry(ctx context.Context, channelID string, frame map[string]any) error {
+	val, ok := w.conns.Load(channelID)
+	if !ok {
+		return nil // silently skip if connection gone
 	}
-	return wsConn.WriteMessage(websocket.TextMessage, payload)
+	c := val.(*wsConn)
+	frame["channel_id"] = channelID
+	return c.writeJSON(frame)
 }
 
 // HandleWebSocket upgrades an HTTP request to a WebSocket connection, assigns
@@ -97,7 +127,8 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	connID := "web:" + uuid.New().String()[:8]
-	w.conns.Store(connID, conn)
+	wc := &wsConn{conn: conn}
+	w.conns.Store(connID, wc)
 	slog.Info("websocket client connected", "channel_id", connID)
 
 	defer func() {
@@ -149,17 +180,18 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 // BeginStream implements StreamSender. It returns a StreamWriter that sends
 // stream_chunk / stream_end / error frames to the identified connection.
 func (w *WebChannel) BeginStream(ctx context.Context, channelID string) (StreamWriter, error) {
-	conn, ok := w.conns.Load(channelID)
+	val, ok := w.conns.Load(channelID)
 	if !ok {
 		return nil, fmt.Errorf("web: connection %s not found", channelID)
 	}
-	return &webStreamWriter{conn: conn.(*websocket.Conn), channelID: channelID}, nil
+	return &webStreamWriter{wc: val.(*wsConn), channelID: channelID}, nil
 }
 
 // Compile-time assertions.
 var (
-	_ Channel      = (*WebChannel)(nil)
-	_ StreamSender = (*WebChannel)(nil)
+	_ Channel          = (*WebChannel)(nil)
+	_ StreamSender     = (*WebChannel)(nil)
+	_ TelemetryEmitter = (*WebChannel)(nil)
 )
 
 // --------------------------------------------------------------------------
@@ -167,53 +199,35 @@ var (
 // --------------------------------------------------------------------------
 
 // webStreamWriter writes incremental token chunks to a single WebSocket client.
-// A mutex is required because gorilla/websocket does not allow concurrent writes.
+// It reuses the per-connection mutex from wsConn so concurrent writes with
+// Send() and EmitTelemetry() are safe.
 type webStreamWriter struct {
-	conn      *websocket.Conn
+	wc        *wsConn
 	channelID string
-	mu        sync.Mutex
 }
 
 // WriteChunk sends a stream_chunk frame.
 func (sw *webStreamWriter) WriteChunk(text string) error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	payload, err := json.Marshal(wsMsg{
+	return sw.wc.writeJSON(wsMsg{
 		Type:      "token",
 		Text:      text,
 		ChannelID: sw.channelID,
 	})
-	if err != nil {
-		return fmt.Errorf("web: marshal chunk: %w", err)
-	}
-	return sw.conn.WriteMessage(websocket.TextMessage, payload)
 }
 
 // Finalize sends a stream_end frame signalling that the stream is complete.
 func (sw *webStreamWriter) Finalize() error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	payload, err := json.Marshal(wsMsg{
+	return sw.wc.writeJSON(wsMsg{
 		Type:      "done",
 		ChannelID: sw.channelID,
 	})
-	if err != nil {
-		return fmt.Errorf("web: marshal finalize: %w", err)
-	}
-	return sw.conn.WriteMessage(websocket.TextMessage, payload)
 }
 
 // Abort sends an error frame.
 func (sw *webStreamWriter) Abort(e error) error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	payload, err := json.Marshal(wsMsg{
+	return sw.wc.writeJSON(wsMsg{
 		Type:      "error",
 		Message:   e.Error(),
 		ChannelID: sw.channelID,
 	})
-	if err != nil {
-		return fmt.Errorf("web: marshal abort: %w", err)
-	}
-	return sw.conn.WriteMessage(websocket.TextMessage, payload)
 }

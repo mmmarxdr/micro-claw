@@ -124,7 +124,7 @@ func TestProcessStreamingCall_TextOnly_WithWriter(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	resp, textStreamed, err := ag.processStreamingCall(
-		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if err != nil {
@@ -178,7 +178,7 @@ func TestProcessStreamingCall_TextOnly_WithoutWriter(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, ch, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	resp, textStreamed, err := ag.processStreamingCall(
-		context.Background(), sp, nil, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, nil, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if err != nil {
@@ -220,7 +220,7 @@ func TestProcessStreamingCall_ToolOnly(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	resp, textStreamed, err := ag.processStreamingCall(
-		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if err != nil {
@@ -272,7 +272,7 @@ func TestProcessStreamingCall_TextThenTools(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	resp, textStreamed, err := ag.processStreamingCall(
-		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if err != nil {
@@ -319,7 +319,7 @@ func TestProcessStreamingCall_Error(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	_, _, err := ag.processStreamingCall(
-		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if err == nil {
@@ -354,7 +354,7 @@ func TestProcessStreamingCall_PreStreamError(t *testing.T) {
 	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
 
 	_, _, err := ag.processStreamingCall(
-		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 	)
 
 	if !errors.Is(err, preErr) {
@@ -395,7 +395,7 @@ func TestProcessStreamingCall_ContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, _, err := ag.processStreamingCall(
-			ctx, sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(),
+			ctx, sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
 		)
 		if err == nil {
 			t.Error("expected error after context cancel")

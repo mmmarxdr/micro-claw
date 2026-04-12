@@ -284,6 +284,55 @@ func TestWebChannel_Send_UnknownChannelID(t *testing.T) {
 	}
 }
 
+func TestWebChannel_EmitTelemetry(t *testing.T) {
+	srv, wc, inbox := newTestServer(t)
+
+	conn := dialWS(t, srv)
+	defer conn.Close()
+
+	// Trigger so we learn the channelID.
+	payload, _ := json.Marshal(wsMsg{Type: "message", Text: "ping"})
+	_ = conn.WriteMessage(websocket.TextMessage, payload)
+
+	var msg IncomingMessage
+	select {
+	case msg = <-inbox:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for inbox message")
+	}
+
+	// EmitTelemetry should succeed and the frame should arrive on the client.
+	frame := map[string]any{
+		"type":         "tool_start",
+		"name":         "shell_exec",
+		"tool_call_id": "tc_001",
+	}
+	if err := wc.EmitTelemetry(context.Background(), msg.ChannelID, frame); err != nil {
+		t.Fatalf("EmitTelemetry: %v", err)
+	}
+
+	var got map[string]any
+	readJSON(t, conn, &got)
+	if got["type"] != "tool_start" {
+		t.Errorf("type = %v, want tool_start", got["type"])
+	}
+	if got["name"] != "shell_exec" {
+		t.Errorf("name = %v, want shell_exec", got["name"])
+	}
+	if got["channel_id"] != msg.ChannelID {
+		t.Errorf("channel_id = %v, want %v", got["channel_id"], msg.ChannelID)
+	}
+}
+
+func TestWebChannel_EmitTelemetry_UnknownChannelID(t *testing.T) {
+	wc := NewWebChannel()
+	// Should return nil silently for unknown channel.
+	err := wc.EmitTelemetry(context.Background(), "web:doesnotexist", map[string]any{"type": "status"})
+	if err != nil {
+		t.Fatalf("expected nil for unknown channelID, got: %v", err)
+	}
+}
+
 func TestWebChannel_IgnoresNonMessageTypes(t *testing.T) {
 	srv, _, inbox := newTestServer(t)
 

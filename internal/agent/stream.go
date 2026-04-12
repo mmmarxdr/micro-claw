@@ -9,6 +9,16 @@ import (
 	"microagent/internal/provider"
 )
 
+// streamTelemetry is a convenience wrapper that emits a telemetry frame when
+// te is non-nil. Errors are silently discarded — telemetry must never block
+// or fail the agent loop.
+func streamTelemetry(ctx context.Context, te channel.TelemetryEmitter, channelID string, frame map[string]any) {
+	if te == nil {
+		return
+	}
+	_ = te.EmitTelemetry(ctx, channelID, frame)
+}
+
 // processStreamingCall sends a streaming LLM request and progressively delivers
 // text deltas to the channel's StreamWriter. Tool call events are buffered
 // internally by the provider and returned in the assembled ChatResponse.
@@ -26,8 +36,8 @@ func (a *Agent) processStreamingCall(
 	channelID string,
 	iteration int,
 	llmStart time.Time,
+	te channel.TelemetryEmitter, // may be nil if channel doesn't support telemetry
 ) (resp *provider.ChatResponse, textStreamed bool, err error) {
-
 	// 1. Initiate the streaming request.
 	result, err := sp.ChatStream(ctx, req)
 	if err != nil {
@@ -62,14 +72,35 @@ func (a *Agent) processStreamingCall(
 				textStreamed = true
 			}
 
-		case provider.StreamEventToolCallStart,
-			provider.StreamEventToolCallDelta,
-			provider.StreamEventToolCallEnd:
-			// Tool call events are handled internally by the provider's
-			// response assembly. Nothing to forward to the channel.
+		case provider.StreamEventToolCallStart:
+			// Forward to telemetry so the UI can show "tool in progress".
+			streamTelemetry(ctx, te, channelID, map[string]any{
+				"type":         "tool_start",
+				"name":         ev.ToolName,
+				"tool_call_id": ev.ToolCallID,
+			})
+
+		case provider.StreamEventToolCallDelta:
+			// Input fragment — not forwarded; tool_start covers the signal.
+
+		case provider.StreamEventToolCallEnd:
+			// Tool call assembly complete — provider will execute after stream ends.
+			streamTelemetry(ctx, te, channelID, map[string]any{
+				"type":         "tool_assembled",
+				"name":         ev.ToolName,
+				"tool_call_id": ev.ToolCallID,
+			})
 
 		case provider.StreamEventUsage:
-			// Usage metadata — no display action needed.
+			// Forward live token counts to the UI.
+			if ev.Usage != nil {
+				streamTelemetry(ctx, te, channelID, map[string]any{
+					"type":          "stream_usage",
+					"input_tokens":  ev.Usage.InputTokens,
+					"output_tokens": ev.Usage.OutputTokens,
+					"elapsed_ms":    time.Since(llmStart).Milliseconds(),
+				})
+			}
 
 		case provider.StreamEventError:
 			if sw != nil {
