@@ -19,9 +19,10 @@ var ErrNoConfig = errors.New("no config file found")
 
 // WebConfig holds configuration for the optional HTTP dashboard server.
 type WebConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Port    int    `yaml:"port"`
-	Host    string `yaml:"host"`
+	Enabled   bool   `yaml:"enabled"`
+	Port      int    `yaml:"port"`
+	Host      string `yaml:"host"`
+	AuthToken string `yaml:"auth_token"` // Bearer token for API/WS auth. Auto-generated if empty.
 }
 
 type Config struct {
@@ -410,6 +411,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Web.Host == "" {
 		c.Web.Host = "127.0.0.1"
+	}
+	// Auth token: config field → env var fallback.
+	if c.Web.AuthToken == "" {
+		if envToken := os.Getenv("MICROAGENT_WEB_TOKEN"); envToken != "" {
+			c.Web.AuthToken = envToken
+		}
 	}
 
 	// Context-mode defaults.

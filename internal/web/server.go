@@ -37,13 +37,20 @@ type Server struct {
 }
 
 // NewServer creates a new Server with all routes registered.
+// The auth token must be set in deps.Config.Web.AuthToken before calling.
 func NewServer(deps ServerDeps) *Server {
 	s := &Server{
 		deps: deps,
 		mux:  http.NewServeMux(),
 	}
 	s.routes()
-	handler := loggingMiddleware(recoveryMiddleware(s.mux))
+
+	var handler http.Handler = s.mux
+	if token := deps.Config.Web.AuthToken; token != "" {
+		handler = authMiddleware(token, handler)
+	}
+	handler = loggingMiddleware(recoveryMiddleware(handler))
+
 	s.srv = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", deps.Config.Web.Host, deps.Config.Web.Port),
 		Handler:      handler,

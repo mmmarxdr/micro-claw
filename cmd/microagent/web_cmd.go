@@ -49,6 +49,15 @@ func runWebCommand(args []string, cfgPath string) error {
 	// Force-enable for this subcommand regardless of config setting.
 	cfg.Web.Enabled = true
 
+	// Ensure auth token is set — generate one if missing.
+	if cfg.Web.AuthToken == "" {
+		tok, err := web.GenerateToken()
+		if err != nil {
+			return fmt.Errorf("web: failed to generate auth token: %w", err)
+		}
+		cfg.Web.AuthToken = tok
+	}
+
 	configureLogging(cfg.Logging)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -221,7 +230,10 @@ func runWebCommand(args []string, cfgPath string) error {
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("web: failed to start server: %w", err)
 	}
-	slog.Info("web dashboard available", "url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port))
+	slog.Info("web dashboard available",
+		"url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port),
+		"auth_token", cfg.Web.AuthToken,
+	)
 
 	// Shutdown on signal.
 	sigCh := make(chan os.Signal, 1)

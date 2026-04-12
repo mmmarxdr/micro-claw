@@ -1,5 +1,10 @@
 version: 2
 project_name: microagent
+
+before:
+  hooks:
+    - make frontend
+
 builds:
   - main: ./cmd/microagent
     binary: microagent

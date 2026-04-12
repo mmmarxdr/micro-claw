@@ -150,6 +150,15 @@ limits:
   total_timeout: 120s
 
 # -----------------------------------------------------------------------------
+# Web dashboard (optional — embedded frontend + REST API + WebSocket chat)
+# -----------------------------------------------------------------------------
+# web:
+#   enabled: false                  # also activatable via --web flag or `microagent web`
+#   port: 8080
+#   host: "127.0.0.1"              # use 0.0.0.0 to expose to the network (requires auth_token)
+#   auth_token: ""                  # auto-generated on startup if empty; also: MICROAGENT_WEB_TOKEN env var
+
+# -----------------------------------------------------------------------------
 # Audit log (records every tool execution)
 # -----------------------------------------------------------------------------
 audit:

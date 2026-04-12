@@ -437,6 +437,16 @@ func main() {
 
 	// Start web dashboard if enabled in config or via --web flag.
 	if cfg.Web.Enabled || *webFlag {
+		// Ensure auth token is set — generate one if missing.
+		if cfg.Web.AuthToken == "" {
+			tok, err := web.GenerateToken()
+			if err != nil {
+				slog.Error("failed to generate web auth token", "error", err)
+				os.Exit(1)
+			}
+			cfg.Web.AuthToken = tok
+		}
+
 		webCh := channel.NewWebChannel()
 		// Add WebChannel to the mux so the agent can receive/send web chat messages.
 		channels = append(channels, webCh)
@@ -456,7 +466,10 @@ func main() {
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)
 		} else {
-			slog.Info("web dashboard available", "url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port))
+			slog.Info("web dashboard available",
+				"url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port),
+				"auth_token", cfg.Web.AuthToken,
+			)
 			defer func() {
 				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer shutCancel()
