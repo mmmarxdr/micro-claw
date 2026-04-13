@@ -222,6 +222,69 @@ func TestMCPToolAdapter_Execute(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestMCPToolAdapter_Execute_RemoteName — verifies that when remoteName is set,
+// the adapter sends the original (unprefixed) name to the MCP server.
+// ---------------------------------------------------------------------------
+
+func TestMCPToolAdapter_Execute_RemoteName(t *testing.T) {
+	t.Run("prefixed adapter sends original name to server", func(t *testing.T) {
+		var gotName string
+		mock := &mockMCPCaller{
+			callToolFn: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				gotName = req.Params.Name
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "ok"}},
+				}, nil
+			},
+		}
+
+		a := &MCPToolAdapter{
+			caller:     mock,
+			remoteName: "get_recent_messages",
+			toolDef: mcp.Tool{
+				Name:        "gmail_get_recent_messages", // prefixed name for registry
+				Description: "get recent messages",
+			},
+		}
+
+		// Registry sees the prefixed name.
+		if a.Name() != "gmail_get_recent_messages" {
+			t.Errorf("Name() = %q, want %q", a.Name(), "gmail_get_recent_messages")
+		}
+
+		// But Execute sends the original name to the server.
+		_, err := a.Execute(context.Background(), json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotName != "get_recent_messages" {
+			t.Errorf("CallTool received name %q, want %q", gotName, "get_recent_messages")
+		}
+	})
+
+	t.Run("adapter without remoteName falls back to toolDef.Name", func(t *testing.T) {
+		var gotName string
+		mock := &mockMCPCaller{
+			callToolFn: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				gotName = req.Params.Name
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "ok"}},
+				}, nil
+			},
+		}
+
+		a := newAdapter(mock, "my_tool", "")
+		_, err := a.Execute(context.Background(), json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotName != "my_tool" {
+			t.Errorf("CallTool received name %q, want %q", gotName, "my_tool")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // TestExtractText
 // ---------------------------------------------------------------------------
 

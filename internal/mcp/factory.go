@@ -145,13 +145,16 @@ func BuildMCPToolsWithConnector(
 
 			adapters := make([]tool.Tool, 0, len(listResult.Tools))
 			for _, t := range listResult.Tools {
+				remoteName := t.Name // original name as the MCP server knows it
 				toolName := t.Name
 				if srv.PrefixTools {
 					toolName = srv.Name + "_" + t.Name
 				}
 				adapters = append(adapters, &MCPToolAdapter{
-					caller: caller,
-					// Store a copy of the tool def with the (possibly prefixed) name.
+					caller:     caller,
+					remoteName: remoteName,
+					// Store a copy of the tool def with the (possibly prefixed) name
+					// for the agent's tool registry.
 					toolDef: mcp.Tool{
 						Name:        toolName,
 						Description: t.Description,

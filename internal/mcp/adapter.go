@@ -24,8 +24,9 @@ type MCPCaller interface {
 // It holds an MCPCaller (the shared client connection to the MCP server) and
 // the tool definition returned by ListTools().
 type MCPToolAdapter struct {
-	caller  MCPCaller
-	toolDef mcp.Tool
+	caller     MCPCaller
+	toolDef    mcp.Tool
+	remoteName string // original tool name as known by the MCP server (without prefix)
 }
 
 // Name returns the tool's name as declared by the MCP server (with optional prefix applied).
@@ -63,9 +64,15 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params json.RawMessage) (t
 		return tool.ToolResult{}, fmt.Errorf("mcp tool %q: unmarshal params: %w", a.toolDef.Name, err)
 	}
 
+	// Use remoteName (the original unprefixed name) when calling the MCP server.
+	// toolDef.Name may have a prefix added for the agent's tool registry.
+	callName := a.remoteName
+	if callName == "" {
+		callName = a.toolDef.Name // fallback for adapters created without remoteName
+	}
 	result, err := a.caller.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      a.toolDef.Name,
+			Name:      callName,
 			Arguments: args,
 		},
 	})
