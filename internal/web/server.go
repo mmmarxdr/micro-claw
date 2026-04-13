@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -54,27 +55,51 @@ func NewServer(deps ServerDeps) *Server {
 	s.routes()
 
 	var handler http.Handler = s.mux
+
+	// Body size limit on POST/PUT/PATCH requests.
+	handler = bodySizeLimitMiddleware(defaultMaxBodySize, handler)
+
+	// Auth — protects /api/* and /ws/* endpoints.
 	if token := deps.Config.Web.AuthToken; token != "" {
 		handler = authMiddleware(token, handler)
 	}
+
+	// CORS — allow same-origin by default; configure allowed_origins for cross-origin.
+	handler = corsMiddleware(deps.Config.Web.AllowedOrigins, handler)
+
+	// Per-IP rate limiting: 120 requests per minute on API/WS endpoints.
+	limiter := newIPRateLimiter(120, time.Minute)
+	handler = rateLimitMiddleware(limiter, handler)
+
+	// Security headers on all responses.
+	handler = securityHeadersMiddleware(handler)
+
+	// Recovery + logging — outermost layers.
 	handler = loggingMiddleware(recoveryMiddleware(handler))
 
 	s.srv = &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", deps.Config.Web.Host, deps.Config.Web.Port),
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           fmt.Sprintf("%s:%d", deps.Config.Web.Host, deps.Config.Web.Port),
+		Handler:        handler,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   60 * time.Second, // increased for streaming WS responses
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB max header size
 	}
 	return s
 }
 
 // Start begins listening in a background goroutine.
+// If TLS cert and key are configured, it starts with TLS.
 func (s *Server) Start() error {
 	go func() {
-		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			// Log but do not crash — caller is responsible for shutdown.
-			_ = err
+		var err error
+		if s.deps.Config.Web.TLSCert != "" && s.deps.Config.Web.TLSKey != "" {
+			err = s.srv.ListenAndServeTLS(s.deps.Config.Web.TLSCert, s.deps.Config.Web.TLSKey)
+		} else {
+			err = s.srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
+			slog.Error("web server error", "error", err)
 		}
 	}()
 	return nil

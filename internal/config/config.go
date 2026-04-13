@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -19,28 +20,32 @@ var ErrNoConfig = errors.New("no config file found")
 
 // WebConfig holds configuration for the optional HTTP dashboard server.
 type WebConfig struct {
-	Enabled   bool   `yaml:"enabled"    json:"enabled"`
-	Port      int    `yaml:"port"       json:"port"`
-	Host      string `yaml:"host"       json:"host"`
-	AuthToken string `yaml:"auth_token" json:"auth_token"` // Bearer token for API/WS auth. Auto-generated if empty.
+	Enabled        bool     `yaml:"enabled"         json:"enabled"`
+	Port           int      `yaml:"port"            json:"port"`
+	Host           string   `yaml:"host"            json:"host"`
+	AuthToken      string   `yaml:"auth_token"      json:"auth_token"`      // Bearer token for API/WS auth. Auto-generated if empty.
+	AllowedOrigins []string `yaml:"allowed_origins"  json:"allowed_origins"` // CORS: allowed origins. Empty or ["*"] = allow all.
+	TLSCert        string   `yaml:"tls_cert"        json:"tls_cert"`        // Path to TLS certificate file (optional).
+	TLSKey         string   `yaml:"tls_key"         json:"tls_key"`         // Path to TLS private key file (optional).
 }
 
 type Config struct {
-	Agent             AgentConfig    `yaml:"agent"               json:"agent"`
-	Provider          ProviderConfig `yaml:"provider"            json:"provider"`
-	Channel           ChannelConfig  `yaml:"channel"             json:"channel"`
-	Tools             ToolsConfig    `yaml:"tools"               json:"tools"`
-	Store             StoreConfig    `yaml:"store"               json:"store"`
-	Logging           LoggingConfig  `yaml:"logging"             json:"logging"`
-	Limits            LimitsConfig   `yaml:"limits"              json:"limits"`
-	Audit             AuditConfig    `yaml:"audit"               json:"audit"`
-	Cron              CronConfig     `yaml:"cron"                json:"cron"`
-	Filter            FilterConfig   `yaml:"filter"              json:"filter"`
-	Media             MediaConfig    `yaml:"media"               json:"media"`
-	Web               WebConfig      `yaml:"web"                 json:"web"`
-	Skills            []string       `yaml:"skills"              json:"skills"`
-	SkillsDir         string         `yaml:"skills_dir"          json:"skills_dir"`
-	SkillsRegistryURL string         `yaml:"skills_registry_url" json:"skills_registry_url"`
+	Agent             AgentConfig         `yaml:"agent"               json:"agent"`
+	Provider          ProviderConfig      `yaml:"provider"            json:"provider"`
+	Channel           ChannelConfig       `yaml:"channel"             json:"channel"`
+	Tools             ToolsConfig         `yaml:"tools"               json:"tools"`
+	Store             StoreConfig         `yaml:"store"               json:"store"`
+	Logging           LoggingConfig       `yaml:"logging"             json:"logging"`
+	Limits            LimitsConfig        `yaml:"limits"              json:"limits"`
+	Audit             AuditConfig         `yaml:"audit"               json:"audit"`
+	Cron              CronConfig          `yaml:"cron"                json:"cron"`
+	Filter            FilterConfig        `yaml:"filter"              json:"filter"`
+	Media             MediaConfig         `yaml:"media"               json:"media"`
+	Web               WebConfig           `yaml:"web"                 json:"web"`
+	Notifications     NotificationsConfig `yaml:"notifications"       json:"notifications"`
+	Skills            []string            `yaml:"skills"              json:"skills"`
+	SkillsDir         string              `yaml:"skills_dir"          json:"skills_dir"`
+	SkillsRegistryURL string              `yaml:"skills_registry_url" json:"skills_registry_url"`
 }
 
 // FilterConfig controls post-execution tool output compression.
@@ -273,6 +278,27 @@ type MediaConfig struct {
 	AllowedMIMEPrefixes []string      `yaml:"allowed_mime_prefixes" json:"allowed_mime_prefixes"`
 }
 
+// NotificationsConfig is the top-level notifications block.
+// YAML key: notifications
+type NotificationsConfig struct {
+	Enabled           bool               `yaml:"enabled"             json:"enabled"`
+	MaxPerMinute      int                `yaml:"max_per_minute"      json:"max_per_minute"`
+	BusBufferSize     int                `yaml:"bus_buffer_size"     json:"bus_buffer_size"`
+	HandlerTimeoutSec int                `yaml:"handler_timeout_sec" json:"handler_timeout_sec"`
+	Rules             []NotificationRule `yaml:"rules"               json:"rules"`
+}
+
+// NotificationRule describes one notification trigger.
+type NotificationRule struct {
+	Name            string `yaml:"name"             json:"name"`
+	EventType       string `yaml:"event_type"       json:"event_type"`
+	JobID           string `yaml:"job_id"           json:"job_id"`            // optional filter
+	TargetChannel   string `yaml:"target_channel"   json:"target_channel"`
+	FallbackChannel string `yaml:"fallback_channel" json:"fallback_channel"`
+	Template        string `yaml:"template"         json:"template"`
+	CooldownSec     int    `yaml:"cooldown_sec"     json:"cooldown_sec"`
+}
+
 func (c *Config) applyDefaults() {
 	if c.Agent.Name == "" {
 		c.Agent.Name = "micro-claw"
@@ -485,6 +511,17 @@ func (c *Config) applyDefaults() {
 	if c.Agent.ContextMode.SandboxKeepLast == 0 {
 		c.Agent.ContextMode.SandboxKeepLast = 10
 	}
+
+	// Notifications defaults.
+	if c.Notifications.MaxPerMinute == 0 {
+		c.Notifications.MaxPerMinute = 30
+	}
+	if c.Notifications.BusBufferSize == 0 {
+		c.Notifications.BusBufferSize = 256
+	}
+	if c.Notifications.HandlerTimeoutSec == 0 {
+		c.Notifications.HandlerTimeoutSec = 5
+	}
 }
 
 // BoolVal safely dereferences a *bool, returning false if nil.
@@ -664,6 +701,25 @@ func (c *Config) validate() error {
 		}
 		if c.Agent.ContextMode.SandboxKeepLast < 0 {
 			return fmt.Errorf("agent.context_mode.sandbox_keep_last must not be negative")
+		}
+	}
+
+	// Notifications validation.
+	if c.Notifications.Enabled {
+		if c.Notifications.MaxPerMinute <= 0 {
+			return fmt.Errorf("notifications.max_per_minute must be positive")
+		}
+		ruleNames := make(map[string]bool, len(c.Notifications.Rules))
+		for _, rule := range c.Notifications.Rules {
+			if ruleNames[rule.Name] {
+				return fmt.Errorf("notifications: duplicate rule name %q", rule.Name)
+			}
+			ruleNames[rule.Name] = true
+			if rule.Template != "" {
+				if _, err := template.New(rule.Name).Parse(rule.Template); err != nil {
+					return fmt.Errorf("notifications: rule %q has invalid template: %w", rule.Name, err)
+				}
+			}
 		}
 	}
 

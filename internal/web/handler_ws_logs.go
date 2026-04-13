@@ -1,10 +1,12 @@
 package web
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"microagent/internal/audit"
 )
@@ -71,20 +73,25 @@ func auditEventToLogEntry(e audit.AuditEvent) wsLogEntry {
 func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("web: ws/logs upgrade error: %v", err)
+		slog.Warn("web: ws/logs upgrade error", "error", err)
 		return
 	}
 	defer conn.Close()
 
+	conn.SetReadLimit(4096)
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+
 	streamer, ok := s.deps.Auditor.(audit.LogStreamer)
 	if !ok {
-		// Audit backend does not support streaming — send a synthetic notice and hold.
 		_ = conn.WriteJSON(wsLogEntry{
 			Time:  time.Now().UTC().Format(time.RFC3339),
 			Level: "INFO",
 			Msg:   "Log streaming not available (audit backend does not support RecentEvents)",
 		})
-		// Block until client disconnects.
 		for {
 			if _, _, err := conn.NextReader(); err != nil {
 				return
@@ -94,10 +101,9 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Send recent history (newest-first from DB; reverse to oldest-first for display).
 	recent, err := streamer.RecentEvents(ctx, "", 100)
 	if err != nil {
-		log.Printf("web: ws/logs initial query error: %v", err)
+		slog.Warn("web: ws/logs initial query error", "error", err)
 	} else {
 		for i := len(recent) - 1; i >= 0; i-- {
 			if err := conn.WriteJSON(auditEventToLogEntry(recent[i])); err != nil {
@@ -114,6 +120,9 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
 
 	// Pump incoming frames to detect client disconnect.
 	done := make(chan struct{})
@@ -132,10 +141,14 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ctx.Done():
 			return
+		case <-pingTicker.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				return
+			}
 		case <-ticker.C:
 			events, err := streamer.RecentEvents(ctx, cursorID, 50)
 			if err != nil {
-				log.Printf("web: ws/logs poll error: %v", err)
+				slog.Warn("web: ws/logs poll error", "error", err)
 				continue
 			}
 			for _, e := range events {

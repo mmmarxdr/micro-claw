@@ -55,13 +55,21 @@ type WebChannel struct {
 	upgrader websocket.Upgrader
 }
 
+const (
+	wsMaxMessageSize = 64 * 1024  // 64 KB max inbound message
+	wsMaxConnections = 50         // max concurrent WebSocket clients
+	wsPongWait       = 60 * time.Second
+	wsPingInterval   = 50 * time.Second // must be less than pongWait
+)
+
 // NewWebChannel creates a WebChannel ready to accept connections.
 // Call Start() before HandleWebSocket connections arrive so the inbox is set.
 func NewWebChannel() *WebChannel {
 	return &WebChannel{
 		upgrader: websocket.Upgrader{
-			// Same-origin is fine: the frontend is served from the same server.
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin:  func(r *http.Request) bool { return true },
+			ReadBufferSize:  4096,
+			WriteBufferSize: 4096,
 		},
 	}
 }
@@ -119,12 +127,33 @@ func (w *WebChannel) EmitTelemetry(ctx context.Context, channelID string, frame 
 // HandleWebSocket upgrades an HTTP request to a WebSocket connection, assigns
 // it a unique channelID, and blocks reading messages until the client disconnects.
 // Register this as: mux.HandleFunc("/ws/chat", webChannel.HandleWebSocket)
+// connCount tracks active connections for the cap.
+func (w *WebChannel) connCount() int {
+	count := 0
+	w.conns.Range(func(_, _ any) bool { count++; return true })
+	return count
+}
+
 func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
+	// Connection cap.
+	if w.connCount() >= wsMaxConnections {
+		http.Error(rw, "too many connections", http.StatusServiceUnavailable)
+		return
+	}
+
 	conn, err := w.upgrader.Upgrade(rw, r, nil)
 	if err != nil {
 		slog.Error("websocket upgrade failed", "error", err)
 		return
 	}
+
+	// Read limits and deadlines.
+	conn.SetReadLimit(wsMaxMessageSize)
+	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
 
 	connID := "web:" + uuid.New().String()[:8]
 	wc := &wsConn{conn: conn}
@@ -135,6 +164,20 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 		w.conns.Delete(connID)
 		conn.Close()
 		slog.Info("websocket client disconnected", "channel_id", connID)
+	}()
+
+	// Ping ticker to detect dead connections.
+	pingTicker := time.NewTicker(wsPingInterval)
+	defer pingTicker.Stop()
+	go func() {
+		for range pingTicker.C {
+			wc.mu.Lock()
+			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+			wc.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
 	}()
 
 	for {
