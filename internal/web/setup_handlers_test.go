@@ -123,19 +123,21 @@ func TestHandleSetupProviders_ReturnsAllProviders(t *testing.T) {
 		t.Error("Content-Type not set")
 	}
 
-	var resp map[string]json.RawMessage
+	var resp struct {
+		Providers map[string]json.RawMessage `json:"providers"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
 	for _, key := range []string{"anthropic", "gemini", "openai", "openrouter", "ollama"} {
-		if _, ok := resp[key]; !ok {
+		if _, ok := resp.Providers[key]; !ok {
 			t.Errorf("missing provider key %q in response", key)
 		}
 	}
 }
 
-func TestHandleSetupProviders_OllamaIsEmptyArray(t *testing.T) {
+func TestHandleSetupProviders_OllamaIsEmptyModels(t *testing.T) {
 	cfg := minimalConfig()
 	s := newSetupTestServer(cfg)
 
@@ -143,21 +145,26 @@ func TestHandleSetupProviders_OllamaIsEmptyArray(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.srv.Handler.ServeHTTP(w, req)
 
-	var resp map[string]json.RawMessage
+	var resp struct {
+		Providers map[string]struct {
+			DisplayName    string            `json:"display_name"`
+			RequiresAPIKey bool              `json:"requires_api_key"`
+			Models         []json.RawMessage `json:"models"`
+		} `json:"providers"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
-	ollamaRaw, ok := resp["ollama"]
+	ollama, ok := resp.Providers["ollama"]
 	if !ok {
 		t.Fatal("missing ollama key")
 	}
-	var ollamaModels []interface{}
-	if err := json.Unmarshal(ollamaRaw, &ollamaModels); err != nil {
-		t.Fatalf("ollama value is not an array: %v", err)
+	if ollama.RequiresAPIKey {
+		t.Error("ollama should not require API key")
 	}
-	if len(ollamaModels) != 0 {
-		t.Errorf("expected empty ollama array, got %d entries", len(ollamaModels))
+	if len(ollama.Models) != 0 {
+		t.Errorf("expected empty ollama models, got %d entries", len(ollama.Models))
 	}
 }
 
@@ -169,15 +176,19 @@ func TestHandleSetupProviders_NoSentinelEntries(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.srv.Handler.ServeHTTP(w, req)
 
-	var resp map[string][]struct {
-		ID string `json:"id"`
+	var resp struct {
+		Providers map[string]struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		} `json:"providers"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
-	for provider, models := range resp {
-		for _, m := range models {
+	for provider, info := range resp.Providers {
+		for _, m := range info.Models {
 			if m.ID == "" {
 				t.Errorf("provider %q has a sentinel entry with empty id", provider)
 			}

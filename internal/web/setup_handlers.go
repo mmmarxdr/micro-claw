@@ -44,19 +44,50 @@ type modelInfoJSON struct {
 	Description string  `json:"description"`
 }
 
+// providerInfoJSON is the JSON representation of a provider with its models.
+type providerInfoJSON struct {
+	DisplayName    string         `json:"display_name"`
+	RequiresAPIKey bool           `json:"requires_api_key"`
+	SupportsBaseURL bool          `json:"supports_base_url"`
+	DefaultBaseURL string         `json:"default_base_url,omitempty"`
+	Models         []modelInfoJSON `json:"models"`
+}
+
+// providerMeta holds static metadata for each supported provider.
+var providerMeta = map[string]struct {
+	DisplayName    string
+	RequiresAPIKey bool
+	SupportsBaseURL bool
+	DefaultBaseURL string
+}{
+	"anthropic":  {DisplayName: "Anthropic", RequiresAPIKey: true},
+	"openai":     {DisplayName: "OpenAI", RequiresAPIKey: true},
+	"gemini":     {DisplayName: "Google Gemini", RequiresAPIKey: true},
+	"deepseek":   {DisplayName: "Deepseek", RequiresAPIKey: true},
+	"qwen":       {DisplayName: "Qwen", RequiresAPIKey: true},
+	"openrouter": {DisplayName: "OpenRouter", RequiresAPIKey: true},
+	"ollama":     {DisplayName: "Ollama", SupportsBaseURL: true, DefaultBaseURL: "http://localhost:11434"},
+}
+
+// providersResponse wraps the provider catalog for JSON serialization.
+type providersResponse struct {
+	Providers map[string]providerInfoJSON `json:"providers"`
+}
+
 // handleGetSetupProviders returns the provider catalog as JSON.
-// Ollama is represented as an empty array (free-text model entry).
+// Each provider includes display metadata and its model list.
+// Ollama is represented with an empty model array (free-text entry).
 // OtherModelSentinel entries (id == "") are excluded.
 // This endpoint bypasses auth middleware.
 func (s *Server) handleGetSetupProviders(w http.ResponseWriter, r *http.Request) {
-	catalog := make(map[string][]modelInfoJSON)
+	result := make(map[string]providerInfoJSON)
 
-	// Include all providers from the catalog, filtering sentinel entries.
 	for prov, models := range setup.ProviderCatalog {
+		meta := providerMeta[prov]
 		entries := make([]modelInfoJSON, 0, len(models))
 		for _, m := range models {
 			if m.ID == "" {
-				continue // skip OtherModelSentinel
+				continue
 			}
 			entries = append(entries, modelInfoJSON{
 				ID:          m.ID,
@@ -67,16 +98,28 @@ func (s *Server) handleGetSetupProviders(w http.ResponseWriter, r *http.Request)
 				Description: m.Description,
 			})
 		}
-		catalog[prov] = entries
+		result[prov] = providerInfoJSON{
+			DisplayName:    meta.DisplayName,
+			RequiresAPIKey: meta.RequiresAPIKey,
+			SupportsBaseURL: meta.SupportsBaseURL,
+			DefaultBaseURL: meta.DefaultBaseURL,
+			Models:         entries,
+		}
 	}
 
-	// Ollama is intentionally absent from ProviderCatalog (free-text only).
-	// Ensure it appears in the response as an empty array.
-	if _, ok := catalog["ollama"]; !ok {
-		catalog["ollama"] = []modelInfoJSON{}
+	// Ollama is absent from ProviderCatalog — add it with empty models.
+	if _, ok := result["ollama"]; !ok {
+		meta := providerMeta["ollama"]
+		result["ollama"] = providerInfoJSON{
+			DisplayName:    meta.DisplayName,
+			RequiresAPIKey: false,
+			SupportsBaseURL: meta.SupportsBaseURL,
+			DefaultBaseURL: meta.DefaultBaseURL,
+			Models:         []modelInfoJSON{},
+		}
 	}
 
-	writeJSON(w, http.StatusOK, catalog)
+	writeJSON(w, http.StatusOK, providersResponse{Providers: result})
 }
 
 // validateKeyRequest is the request body for POST /api/setup/validate-key.
@@ -236,6 +279,9 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	// Reload provider fields in-memory.
 	s.deps.Config.Provider = base.Provider
 	s.deps.Config.Web.AuthToken = authToken
+
+	// Set HttpOnly cookie so the browser is authenticated automatically.
+	setAuthCookie(w, r, authToken)
 
 	writeJSON(w, http.StatusOK, setupCompleteResponse{
 		Success:         true,

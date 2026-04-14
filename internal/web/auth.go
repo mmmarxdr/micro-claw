@@ -55,7 +55,8 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 
 // tokenFromRequest extracts the auth token from the request, checking:
 //  1. Authorization: Bearer <token> header
-//  2. ?token=<token> query parameter (for WebSocket connections)
+//  2. HttpOnly cookie named "auth"
+//  3. ?token=<token> query parameter (for WebSocket connections)
 func tokenFromRequest(r *http.Request) string {
 	// Header first.
 	if auth := r.Header.Get("Authorization"); auth != "" {
@@ -64,11 +65,30 @@ func tokenFromRequest(r *http.Request) string {
 			return auth[len(prefix):]
 		}
 	}
+	// HttpOnly cookie.
+	if c, err := r.Cookie("auth"); err == nil && c.Value != "" {
+		return c.Value
+	}
 	// Query param fallback (WebSocket).
 	if t := r.URL.Query().Get("token"); t != "" {
 		return t
 	}
 	return ""
+}
+
+// setAuthCookie writes an HttpOnly cookie with the auth token.
+// SameSite=Strict prevents CSRF; Path=/ ensures it's sent on all routes.
+// Secure is set when the request arrived over TLS.
+func setAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "auth",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   365 * 24 * 60 * 60, // 1 year
+	})
 }
 
 // tokenMatch performs a constant-time comparison to prevent timing attacks.

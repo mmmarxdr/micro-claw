@@ -727,7 +727,7 @@ store:
 
 func TestApplyDefaults_StorePathDefault(t *testing.T) {
 	cfg := &Config{}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	if cfg.Store.Path != "~/.microagent/data" {
 		t.Errorf("Store.Path = %q, want %q", cfg.Store.Path, "~/.microagent/data")
 	}
@@ -735,7 +735,7 @@ func TestApplyDefaults_StorePathDefault(t *testing.T) {
 
 func TestApplyDefaults_AuditPathDefault(t *testing.T) {
 	cfg := &Config{}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	if cfg.Audit.Path != "~/.microagent/audit" {
 		t.Errorf("Audit.Path = %q, want %q", cfg.Audit.Path, "~/.microagent/audit")
 	}
@@ -746,7 +746,7 @@ func TestApplyDefaults_PreservesExplicitPaths(t *testing.T) {
 		Store: StoreConfig{Path: "/custom/store"},
 		Audit: AuditConfig{Path: "/custom/audit"},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	if cfg.Store.Path != "/custom/store" {
 		t.Errorf("Store.Path = %q, want %q", cfg.Store.Path, "/custom/store")
 	}
@@ -777,7 +777,7 @@ func TestValidate_OllamaEmptyAPIKeyAllowed(t *testing.T) {
 			Model: "llama3.2",
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	if err := cfg.validate(); err != nil {
 		t.Errorf("expected no validation error for ollama with empty api_key, got: %v", err)
 	}
@@ -789,7 +789,7 @@ func TestValidate_AnthropicEmptyAPIKeyStillFails(t *testing.T) {
 			Type: "anthropic",
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	err := cfg.validate()
 	if err == nil {
 		t.Error("expected validation error for anthropic with empty api_key, got nil")
@@ -808,7 +808,7 @@ func TestValidate_OllamaOtherChecksStillActive(t *testing.T) {
 			MaxIterations: -1, // invalid — should still be caught
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	// Override the default MaxIterations to the invalid value
 	cfg.Agent.MaxIterations = -1
 	err := cfg.validate()
@@ -854,7 +854,7 @@ func TestLoad_WhitespaceOnlyFileReturnsErrNoConfig(t *testing.T) {
 
 func TestApplyDefaults_FilterConfigDefaults(t *testing.T) {
 	cfg := &Config{}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 
 	if cfg.Filter.TruncationChars != 8000 {
 		t.Errorf("Filter.TruncationChars = %d, want 8000", cfg.Filter.TruncationChars)
@@ -875,7 +875,7 @@ func TestApplyDefaults_FilterConfig_EnabledSetsGenericTrue(t *testing.T) {
 	cfg := &Config{
 		Filter: FilterConfig{Enabled: true},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 
 	if !cfg.Filter.Levels.Generic {
 		t.Errorf("Filter.Levels.Generic should be true when filter is enabled, got false")
@@ -886,7 +886,7 @@ func TestApplyDefaults_FilterConfig_EnabledSetsGenericTrue(t *testing.T) {
 
 func TestApplyDefaults_NativeMemoryDefaults(t *testing.T) {
 	cfg := &Config{}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 
 	// Enrichment defaults.
 	if cfg.Agent.EnrichMemory != false {
@@ -923,7 +923,7 @@ func TestValidate_NativeMemory_EnrichRatePerMinInvalid(t *testing.T) {
 			EnrichRatePerMin: -1, // invalid
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	cfg.Agent.EnrichRatePerMin = -1 // override applied default
 	cfg.Agent.EnrichMemory = true
 
@@ -945,7 +945,7 @@ func TestValidate_NativeMemory_EmbeddingsRequiresSQLite(t *testing.T) {
 			Embeddings: true,
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 
 	err := cfg.validate()
 	if err == nil {
@@ -965,7 +965,7 @@ func TestValidate_NativeMemory_EmbeddingsWithSQLiteAllowed(t *testing.T) {
 			Embeddings: true,
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 
 	if err := cfg.validate(); err != nil {
 		t.Errorf("expected no error for embeddings=true with sqlite, got: %v", err)
@@ -980,7 +980,7 @@ func TestValidate_NativeMemory_PruneIntervalZeroInvalid(t *testing.T) {
 			PruneInterval: -1,
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	cfg.Agent.PruneInterval = -1 // override default
 
 	err := cfg.validate()
@@ -1000,7 +1000,7 @@ func TestValidate_NativeMemory_PruneRetentionDaysNegativeInvalid(t *testing.T) {
 			PruneRetentionDays: -5,
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	cfg.Agent.PruneRetentionDays = -5 // override default
 
 	err := cfg.validate()
@@ -1030,7 +1030,7 @@ func TestValidate_NativeMemory_PruneThresholdOutOfRange(t *testing.T) {
 					PruneThreshold: tc.threshold,
 				},
 			}
-			cfg.applyDefaults()
+			cfg.ApplyDefaults()
 			cfg.Agent.PruneThreshold = tc.threshold // override default
 
 			err := cfg.validate()
@@ -1052,7 +1052,7 @@ func TestValidate_NativeMemory_ValidThreshold(t *testing.T) {
 			PruneThreshold: 0.5,
 		},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	cfg.Agent.PruneThreshold = 0.5
 
 	if err := cfg.validate(); err != nil {

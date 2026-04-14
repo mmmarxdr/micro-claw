@@ -451,7 +451,10 @@ type NotificationRule struct {
 	CooldownSec     int    `yaml:"cooldown_sec"     json:"cooldown_sec"`
 }
 
-func (c *Config) applyDefaults() {
+// ApplyDefaults fills in zero-valued fields with sensible defaults.
+// Called automatically by Load, but exported for cases where a Config
+// is constructed without loading from file (e.g., setup-only mode).
+func (c *Config) ApplyDefaults() {
 	if c.Agent.Name == "" {
 		c.Agent.Name = "micro-claw"
 	}
@@ -1035,7 +1038,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}

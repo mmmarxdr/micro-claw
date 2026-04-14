@@ -142,7 +142,7 @@ func TestMediaConfig_ValidationEmptyMIMEPrefixes(t *testing.T) {
 		Provider: ProviderConfig{Type: "test_provider", APIKey: "key", Model: "m"},
 		Channel:  ChannelConfig{Type: "cli"},
 	}
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	// Defaults should have enabled media.
 	if !BoolVal(cfg.Media.Enabled) {
 		t.Fatal("expected Media.Enabled to default to true")

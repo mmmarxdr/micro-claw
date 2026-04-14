@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,11 @@ import (
 // full agent loop backed by a WebChannel. Users can chat at /ws/chat.
 // Blocks until SIGINT/SIGTERM.
 func runWebCommand(args []string, cfgPath string) error {
+	// Subcommand: `microagent web token` — print the auth token from config.
+	if len(args) > 0 && args[0] == "token" {
+		return runWebTokenCommand(cfgPath)
+	}
+
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	port := fs.Int("port", 0, "override web dashboard port")
 	host := fs.String("host", "", "override web dashboard host")
@@ -37,7 +43,12 @@ func runWebCommand(args []string, cfgPath string) error {
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return fmt.Errorf("web: failed to load config: %w", err)
+		if !errors.Is(err, config.ErrNoConfig) {
+			return fmt.Errorf("web: failed to load config: %w", err)
+		}
+		// No config file — start in setup-only mode.
+		cfg = &config.Config{}
+		cfg.ApplyDefaults()
 	}
 
 	// Override from flags.
@@ -60,6 +71,13 @@ func runWebCommand(args []string, cfgPath string) error {
 	}
 
 	configureLogging(cfg.Logging)
+
+	// If provider is not configured, run in setup-only mode:
+	// start the web server with only setup endpoints (no agent loop).
+	ok, _ := config.IsProviderConfigured(*cfg)
+	if !ok {
+		return runWebSetupOnly(cfg, cfgPath)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -312,10 +330,7 @@ func runWebCommand(args []string, cfgPath string) error {
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("web: failed to start server: %w", err)
 	}
-	slog.Info("web dashboard available",
-		"url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port),
-		"auth_token", cfg.Web.AuthToken,
-	)
+	printDashboardBanner(cfg.Web.Host, cfg.Web.Port, cfg.Web.AuthToken)
 
 	// Shutdown on signal.
 	sigCh := make(chan os.Signal, 1)
@@ -338,4 +353,88 @@ func runWebCommand(args []string, cfgPath string) error {
 	defer shutCancel()
 	slog.Info("web dashboard shutting down")
 	return srv.Shutdown(shutCtx)
+}
+
+// runWebSetupOnly starts the web server in setup-only mode when no provider is
+// configured. Only setup endpoints are functional — no agent loop runs.
+// Blocks until SIGINT/SIGTERM.
+func runWebSetupOnly(cfg *config.Config, cfgPath string) error {
+	slog.Info("no provider configured — starting in setup-only mode")
+
+	st, err := store.New(cfg.Store)
+	if err != nil {
+		return fmt.Errorf("web setup: failed to initialize store: %w", err)
+	}
+	defer st.Close()
+
+	resolvedCfgPath, _ := config.FindConfigPath(cfgPath)
+
+	srv := web.NewServer(web.ServerDeps{
+		Store:      st,
+		Auditor:    audit.NoopAuditor{},
+		Config:     cfg,
+		ConfigPath: resolvedCfgPath,
+		StartedAt:  time.Now(),
+		Version:    version,
+	})
+
+	if err := srv.Start(); err != nil {
+		return fmt.Errorf("web setup: failed to start server: %w", err)
+	}
+	printSetupBanner(cfg.Web.Host, cfg.Web.Port)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	slog.Info("web setup: shutting down")
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutCancel()
+	return srv.Shutdown(shutCtx)
+}
+
+// printDashboardBanner prints a visible box with the dashboard URL and auth token.
+func printDashboardBanner(host string, port int, token string) {
+	url := fmt.Sprintf("http://%s:%d", host, port)
+	fmt.Println()
+	fmt.Println("  ┌─────────────────────────────────────────────────┐")
+	fmt.Println("  │                                                 │")
+	fmt.Printf("  │  ⚡ Dashboard: %-33s│\n", url)
+	fmt.Printf("  │  🔑 Token:     %-33s│\n", token[:16]+"...")
+	fmt.Println("  │                                                 │")
+	fmt.Println("  │  Token saved in config. Retrieve anytime with:  │")
+	fmt.Println("  │  microagent web token                           │")
+	fmt.Println("  │                                                 │")
+	fmt.Println("  └─────────────────────────────────────────────────┘")
+	fmt.Println()
+}
+
+// printSetupBanner prints a visible box for setup-only mode.
+func printSetupBanner(host string, port int) {
+	url := fmt.Sprintf("http://%s:%d", host, port)
+	fmt.Println()
+	fmt.Println("  ┌─────────────────────────────────────────────────┐")
+	fmt.Println("  │                                                 │")
+	fmt.Printf("  │  ⚡ Setup wizard: %-30s│\n", url)
+	fmt.Println("  │                                                 │")
+	fmt.Println("  │  No config found. Open the URL above to         │")
+	fmt.Println("  │  configure your agent.                          │")
+	fmt.Println("  │                                                 │")
+	fmt.Println("  └─────────────────────────────────────────────────┘")
+	fmt.Println()
+}
+
+// runWebTokenCommand prints the auth token from the config file.
+func runWebTokenCommand(cfgPath string) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("web token: %w", err)
+	}
+	if cfg.Web.AuthToken == "" {
+		fmt.Println("No auth token configured. Start the dashboard to generate one:")
+		fmt.Println("  microagent web")
+		return nil
+	}
+	fmt.Println(cfg.Web.AuthToken)
+	return nil
 }

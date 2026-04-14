@@ -104,13 +104,15 @@ func TestIntegration_SetupFlow_HappyPath(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		var catalog map[string]json.RawMessage
-		if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		var wrapper struct {
+			Providers map[string]json.RawMessage `json:"providers"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 			t.Fatalf("decode providers: %v", err)
 		}
 
 		for _, key := range []string{"anthropic", "gemini", "openai", "openrouter", "ollama"} {
-			if _, ok := catalog[key]; !ok {
+			if _, ok := wrapper.Providers[key]; !ok {
 				t.Errorf("missing provider key %q", key)
 			}
 		}
