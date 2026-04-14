@@ -871,6 +871,7 @@ configs/              # example config + skill files
 ```
 
 For the full architecture breakdown, see [MICROAGENT.md](./MICROAGENT.md).
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mmmarxdr/micro-claw)
 
 ---
 
