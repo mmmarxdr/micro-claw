@@ -39,6 +39,7 @@ type ServerDeps struct {
 	StartedAt   time.Time
 	Version     string
 	WebChannel  *channel.WebChannel // nil disables the /ws/chat endpoint
+	MediaStore  store.MediaStore    // nil when media uploads are not configured
 }
 
 // Server is the HTTP dashboard server.
@@ -148,6 +149,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
+// mediaStore returns the MediaStore if media uploads are enabled, otherwise nil.
+// Callers should check for nil before using the store.
+func (s *Server) mediaStore() store.MediaStore {
+	if s.deps.MediaStore == nil {
+		return nil
+	}
+	if !config.BoolVal(s.deps.Config.Media.Enabled) {
+		return nil
+	}
+	return s.deps.MediaStore
+}
+
 // routes registers all HTTP routes.
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/status", s.handleGetStatus)
@@ -166,11 +179,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mcp/servers/{name}/test", s.handleTestMCPServer)
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.mux.HandleFunc("GET /api/tools", s.handleListTools)
+	// Media upload and retrieval endpoints.
+	s.mux.HandleFunc("POST /api/upload", s.handleUpload)
+	s.mux.HandleFunc("GET /api/media/{sha256}", s.handleGetMedia)
 	// WebSocket endpoints.
 	s.mux.HandleFunc("/ws/metrics", s.handleMetricsWebSocket)
 	s.mux.HandleFunc("/ws/logs", s.handleLogsWebSocket)
 	// WebSocket chat endpoint — only when a WebChannel is wired in.
 	if s.deps.WebChannel != nil {
+		// Wire MediaStore so attachment SHA-256 references can be validated.
+		if s.deps.MediaStore != nil && s.mediaStore() != nil {
+			s.deps.WebChannel.SetMediaStore(s.deps.MediaStore)
+		}
 		s.mux.HandleFunc("/ws/chat", s.deps.WebChannel.HandleWebSocket)
 	}
 	// Static files with SPA fallback — catch-all.

@@ -14,15 +14,25 @@ import (
 	"github.com/gorilla/websocket"
 
 	"microagent/internal/content"
+	"microagent/internal/store"
 )
+
+// wsAttachment describes a media attachment referenced in a wsMsg.
+type wsAttachment struct {
+	SHA256   string `json:"sha256"`
+	MIME     string `json:"mime"`
+	Size     int64  `json:"size"`
+	Filename string `json:"filename,omitempty"`
+}
 
 // wsMsg is the wire format for all WebSocket messages (both directions).
 type wsMsg struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	ChannelID string `json:"channel_id,omitempty"`
-	SenderID  string `json:"sender_id,omitempty"`
-	Message   string `json:"message,omitempty"`
+	Type        string         `json:"type"`
+	Text        string         `json:"text,omitempty"`
+	ChannelID   string         `json:"channel_id,omitempty"`
+	SenderID    string         `json:"sender_id,omitempty"`
+	Message     string         `json:"message,omitempty"`
+	Attachments []wsAttachment `json:"attachments,omitempty"`
 }
 
 // wsConn bundles a WebSocket connection with its write mutex.
@@ -51,9 +61,17 @@ func (c *wsConn) close() { c.conn.Close() }
 // WebSocket connections. Each connected client gets a unique channelID
 // "web:<uuid-prefix>" and its own *wsConn stored in the sync.Map.
 type WebChannel struct {
-	conns    sync.Map // map[string]*wsConn — channelID → wsConn
-	inbox    chan<- IncomingMessage
-	upgrader websocket.Upgrader
+	conns      sync.Map // map[string]*wsConn — channelID → wsConn
+	inbox      chan<- IncomingMessage
+	upgrader   websocket.Upgrader
+	mediaStore store.MediaStore // optional; nil when media uploads are not configured
+}
+
+// SetMediaStore wires a MediaStore into the WebChannel so that attachment
+// SHA-256 references can be validated in HandleWebSocket. Call before the
+// first connection arrives (e.g. after NewServer wires its dependencies).
+func (w *WebChannel) SetMediaStore(ms store.MediaStore) {
+	w.mediaStore = ms
 }
 
 const (
@@ -216,7 +234,12 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if incoming.Type != "message" || incoming.Text == "" {
+		if incoming.Type != "message" {
+			continue
+		}
+
+		// Require either text or at least one attachment.
+		if incoming.Text == "" && len(incoming.Attachments) == 0 {
 			continue
 		}
 
@@ -225,11 +248,58 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Build the content.Blocks for this message.
+		var blocks content.Blocks
+
+		// Text block comes first (if any).
+		if incoming.Text != "" {
+			blocks = append(blocks, content.ContentBlock{
+				Type: content.BlockText,
+				Text: incoming.Text,
+			})
+		}
+
+		// Resolve attachments.
+		if len(incoming.Attachments) > 0 {
+			if w.mediaStore == nil {
+				// No media store — send a single error frame and fall through
+				// to deliver any text-only content.
+				_ = wc.writeJSON(wsMsg{
+					Type: "error",
+					Text: "media store not configured; attachments cannot be resolved",
+				})
+			} else {
+				for _, att := range incoming.Attachments {
+					_, _, getErr := w.mediaStore.GetMedia(r.Context(), att.SHA256)
+					if getErr != nil {
+						slog.Warn("websocket: attachment not found", "sha256", att.SHA256, "channel_id", connID)
+						_ = wc.writeJSON(wsMsg{
+							Type: "error",
+							Text: "attachment not found: " + att.SHA256,
+						})
+						continue
+					}
+					blocks = append(blocks, content.ContentBlock{
+						Type:        content.BlockTypeFromMIME(att.MIME),
+						MediaSHA256: att.SHA256,
+						MIME:        att.MIME,
+						Size:        att.Size,
+						Filename:    att.Filename,
+					})
+				}
+			}
+		}
+
+		// Skip if nothing survived (no text and all attachments failed).
+		if len(blocks) == 0 {
+			continue
+		}
+
 		msg := IncomingMessage{
 			ID:        uuid.New().String()[:8],
 			ChannelID: connID,
 			SenderID:  incoming.SenderID,
-			Content:   content.TextBlock(incoming.Text),
+			Content:   blocks,
 			Timestamp: time.Now(),
 		}
 

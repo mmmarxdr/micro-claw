@@ -107,6 +107,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		}
 	}
 
+	// Content carries full Blocks (text + media) — do not flatten here.
 	conv.Messages = append(conv.Messages, provider.ChatMessage{
 		Role:    "user",
 		Content: msg.Content,

@@ -297,6 +297,33 @@ func TestFlattenBlocks_OnlyNonText(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// BlockTypeFromMIME
+// ---------------------------------------------------------------------------
+
+func TestBlockTypeFromMIME(t *testing.T) {
+	tests := []struct {
+		mime string
+		want BlockType
+	}{
+		{"image/png", BlockImage},
+		{"image/jpeg", BlockImage},
+		{"audio/ogg", BlockAudio},
+		{"audio/mpeg", BlockAudio},
+		{"application/pdf", BlockDocument},
+		{"text/plain", BlockDocument},
+		{"unknown/x-binary", BlockDocument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mime, func(t *testing.T) {
+			got := BlockTypeFromMIME(tt.mime)
+			if got != tt.want {
+				t.Errorf("BlockTypeFromMIME(%q) = %q, want %q", tt.mime, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFlattenBlocks_Empty(t *testing.T) {
 	got := FlattenBlocks(nil)
 	if got != "" {

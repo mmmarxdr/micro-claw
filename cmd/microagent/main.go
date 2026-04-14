@@ -503,6 +503,7 @@ func main() {
 		resolvedCfgPath, _ := config.FindConfigPath(*cfgPath)
 		mcpSvc := mcp.NewMCPService(resolvedCfgPath)
 
+		mediaStore, _ := st.(store.MediaStore)
 		webSrv := web.NewServer(web.ServerDeps{
 			Store:       st,
 			Auditor:     auditor,
@@ -514,6 +515,7 @@ func main() {
 			StartedAt:   time.Now(),
 			Version:     version,
 			WebChannel:  webCh,
+			MediaStore:  mediaStore,
 		})
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)

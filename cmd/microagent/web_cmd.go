@@ -294,6 +294,7 @@ func runWebCommand(args []string, cfgPath string) error {
 	resolvedCfgPath, _ := config.FindConfigPath(cfgPath)
 	mcpSvc := mcp.NewMCPService(resolvedCfgPath)
 
+	mediaStore, _ := st.(store.MediaStore)
 	srv := web.NewServer(web.ServerDeps{
 		Store:       st,
 		Auditor:     aud,
@@ -305,6 +306,7 @@ func runWebCommand(args []string, cfgPath string) error {
 		StartedAt:   time.Now(),
 		Version:     version,
 		WebChannel:  webCh,
+		MediaStore:  mediaStore,
 	})
 
 	if err := srv.Start(); err != nil {

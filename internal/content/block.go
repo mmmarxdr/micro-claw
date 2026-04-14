@@ -3,6 +3,7 @@ package content
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // BlockType identifies the kind of content in a Block.
@@ -64,6 +65,19 @@ func (bs Blocks) HasMedia() bool {
 		}
 	}
 	return false
+}
+
+// BlockTypeFromMIME returns the BlockType corresponding to a MIME type.
+// "image/*" → BlockImage, "audio/*" → BlockAudio, everything else → BlockDocument.
+func BlockTypeFromMIME(mime string) BlockType {
+	switch {
+	case strings.HasPrefix(mime, "image/"):
+		return BlockImage
+	case strings.HasPrefix(mime, "audio/"):
+		return BlockAudio
+	default:
+		return BlockDocument
+	}
 }
 
 // TextBlock is a convenience constructor that returns a single-block Blocks
