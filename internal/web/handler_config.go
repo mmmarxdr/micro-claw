@@ -10,6 +10,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.Channel.Token = maskSecret(cfg.Channel.Token)
 	cfg.Channel.AccessToken = maskSecret(cfg.Channel.AccessToken)
 	cfg.Channel.VerifyToken = maskSecret(cfg.Channel.VerifyToken)
+	cfg.Web.AuthToken = maskSecret(cfg.Web.AuthToken)
 	if cfg.Provider.Fallback != nil {
 		fb := *cfg.Provider.Fallback
 		fb.APIKey = maskSecret(fb.APIKey)

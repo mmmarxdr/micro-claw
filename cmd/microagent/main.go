@@ -518,9 +518,13 @@ func main() {
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)
 		} else {
+			tokenHint := cfg.Web.AuthToken
+			if len(tokenHint) > 8 {
+				tokenHint = tokenHint[:8] + "..."
+			}
 			slog.Info("web dashboard available",
 				"url", fmt.Sprintf("http://%s:%d", cfg.Web.Host, cfg.Web.Port),
-				"auth_token", cfg.Web.AuthToken,
+				"auth_token", tokenHint,
 			)
 			defer func() {
 				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)

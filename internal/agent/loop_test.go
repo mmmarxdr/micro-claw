@@ -442,7 +442,7 @@ func TestProcessMessage_UnknownTool(t *testing.T) {
 	foundNotFound := false
 	for _, msg := range st.conv.Messages {
 		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "not found") {
-			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">") {
 				foundNotFound = true
 			}
 			break
@@ -483,7 +483,7 @@ func TestProcessMessage_ToolGoError(t *testing.T) {
 	foundErr := false
 	for _, msg := range st.conv.Messages {
 		if msg.Role == "tool" && strings.Contains(msg.Content.TextOnly(), "disk full") {
-			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">") {
 				foundErr = true
 			}
 			break
@@ -526,7 +526,7 @@ func TestProcessMessage_ToolPanic(t *testing.T) {
 	foundCrash := false
 	for _, msg := range st.conv.Messages {
 		if msg.Role == "tool" && (strings.Contains(msg.Content.TextOnly(), "crashed") || strings.Contains(msg.Content.TextOnly(), "test panic")) {
-			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">\n") {
+			if strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"error\">") {
 				foundCrash = true
 			}
 			break
@@ -574,8 +574,9 @@ func TestProcessMessage_MultipleToolCalls(t *testing.T) {
 
 	for _, msg := range st.conv.Messages {
 		if msg.Role == "tool" {
-			if !strings.HasPrefix(msg.Content.TextOnly(), "<tool_result status=\"success\">\n") || !strings.HasSuffix(msg.Content.TextOnly(), "\n</tool_result>") {
-				t.Errorf("expected tool_result xml wrapping with success status, got: %q", msg.Content.TextOnly())
+			txt := msg.Content.TextOnly()
+			if !strings.HasPrefix(txt, "<tool_result status=\"success\">") || !strings.HasSuffix(txt, "</tool_result>") {
+				t.Errorf("expected tool_result xml wrapping with success status, got: %q", txt)
 			}
 		}
 	}

@@ -256,8 +256,9 @@ func (cm *ContextManager) emitCompactionEvent(tokensBefore, tokensAfter, turnsSu
 		return
 	}
 	cm.bus.Emit(notify.Event{
-		Type: notify.EventContextCompacted,
-		Text: fmt.Sprintf("Context compacted: %d → %d tokens", tokensBefore, tokensAfter),
+		Type:   notify.EventContextCompacted,
+		Origin: notify.OriginAgent,
+		Text:   fmt.Sprintf("Context compacted: %d → %d tokens", tokensBefore, tokensAfter),
 		Meta: map[string]string{
 			"tokens_before":    fmt.Sprintf("%d", tokensBefore),
 			"tokens_after":     fmt.Sprintf("%d", tokensAfter),

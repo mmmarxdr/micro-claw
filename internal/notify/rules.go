@@ -23,6 +23,7 @@ type RulesEngine struct {
 	sender    *NotificationSender
 	mu        sync.Mutex
 	lastFired map[string]time.Time // key: rule.Name → last fire timestamp
+	sem       chan struct{}         // semaphore: limits concurrent notification sends
 }
 
 // NewRulesEngine creates a RulesEngine with pre-compiled templates.
@@ -45,6 +46,7 @@ func NewRulesEngine(rules []config.NotificationRule, sender *NotificationSender)
 		rules:     compiled,
 		sender:    sender,
 		lastFired: make(map[string]time.Time, len(rules)),
+		sem:       make(chan struct{}, 10),
 	}, nil
 }
 
@@ -80,9 +82,11 @@ func (r *RulesEngine) Handle(event Event) {
 		r.lastFired[rule.Name] = time.Now()
 		r.mu.Unlock()
 
-		// 4. Dispatch fire-and-forget.
+		// 4. Dispatch fire-and-forget (bounded by semaphore to limit concurrency).
 		ruleSnap := rule.NotificationRule // capture loop variable
+		r.sem <- struct{}{}
 		go func() {
+			defer func() { <-r.sem }()
 			if err := r.sender.Send(context.Background(), ruleSnap, event); err != nil {
 				slog.Warn("notify: rule send failed",
 					"rule", ruleSnap.Name,

@@ -47,6 +47,8 @@ type Scheduler struct {
 	retentionDays int
 	maxPerJob     int
 	bus           notify.Bus
+	ctx           context.Context    // lifecycle context; set by Start, used by fireJob
+	cancelCtx     context.CancelFunc // cancels ctx on Stop
 }
 
 // NewScheduler constructs a Scheduler. If tz is nil, time.UTC is used.
@@ -75,6 +77,7 @@ func (s *Scheduler) WithBus(bus notify.Bus) *Scheduler {
 // Non-blocking: the robfig scheduler runs in its own goroutines.
 func (s *Scheduler) Start(ctx context.Context, inbox chan<- channel.IncomingMessage) error {
 	s.inbox = inbox
+	s.ctx, s.cancelCtx = context.WithCancel(ctx)
 	s.cron = robfigcron.New(robfigcron.WithLocation(s.tz))
 
 	jobs, err := s.cronStore.ListJobs(ctx)
@@ -102,6 +105,9 @@ func (s *Scheduler) Start(ctx context.Context, inbox chan<- channel.IncomingMess
 
 // Stop halts the scheduler and blocks until all running job goroutines finish.
 func (s *Scheduler) Stop() {
+	if s.cancelCtx != nil {
+		s.cancelCtx()
+	}
 	if s.cron == nil {
 		return
 	}
@@ -220,8 +226,12 @@ func (s *Scheduler) fireJob(job store.CronJob) {
 		})
 	}
 
-	// Update run times (best-effort).
-	ctx := context.Background()
+	// Update run times (best-effort). Use scheduler lifecycle context so store
+	// calls are cancelled on shutdown rather than using context.Background().
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := time.Now()
 
 	// Compute next run from schedule.

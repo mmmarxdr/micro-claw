@@ -167,6 +167,11 @@ func (b *EventBus) worker() {
 }
 
 // callWithTimeout calls fn(event) and abandons it if it exceeds handlerTimeout.
+// NOTE: when the timeout fires, the goroutine running fn(event) is abandoned and
+// will continue running until fn returns on its own. Handlers that launch internal
+// goroutines (e.g. RulesEngine.Handle) return quickly and are not affected. Only
+// handlers that block for long durations without respecting a context will leak.
+// To make handlers context-aware, extend the Bus interface to pass a context.
 func (b *EventBus) callWithTimeout(fn func(Event), event Event) {
 	done := make(chan struct{})
 	go func() {

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -455,10 +455,12 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					slog.Warn("potential prompt injection detected in tool result", "tool", tc.Name)
 				}
 			}
-			safeContent := html.EscapeString(resultContent)
+			// Wrap in CDATA so the LLM receives content verbatim (no HTML entity corruption).
+			// "]]>" must be escaped inside CDATA by splitting the section.
+			cdataContent := strings.ReplaceAll(resultContent, "]]>", "]]]]><![CDATA[>")
 			conv.Messages = append(conv.Messages, provider.ChatMessage{
 				Role:       "tool",
-				Content:    content.TextBlock(fmt.Sprintf("<tool_result status=\"%s\">\n%s\n</tool_result>", status, safeContent)),
+				Content:    content.TextBlock(fmt.Sprintf("<tool_result status=\"%s\"><![CDATA[%s]]></tool_result>", status, cdataContent)),
 				ToolCallID: tc.ID,
 			})
 		}
