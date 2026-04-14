@@ -10,6 +10,7 @@ import (
 	"microagent/internal/config"
 	"microagent/internal/notify"
 	"microagent/internal/provider"
+	"microagent/internal/rag"
 	"microagent/internal/skill"
 	"microagent/internal/store"
 	"microagent/internal/tool"
@@ -98,6 +99,12 @@ type Agent struct {
 	inbox           chan channel.IncomingMessage
 	channelName     string
 	bus             notify.Bus
+
+	// RAG fields — nil when RAG is not wired.
+	ragStore     rag.DocumentStore
+	ragEmbedFn   func(context.Context, string) ([]float32, error)
+	ragMaxChunks int
+	ragMaxTokens int
 }
 
 func New(
@@ -256,6 +263,27 @@ func (a *Agent) WithCurator(c *Curator) { a.curator = c }
 
 // WithConsolidator sets the Consolidator on the agent. Call after New(), before Run().
 func (a *Agent) WithConsolidator(c *Consolidator) { a.consolidator = c }
+
+// WithRAGStore wires a DocumentStore into the agent for automatic retrieval-augmented
+// generation. On every turn the agent will search for relevant chunks from st and
+// inject them into the system prompt.
+//
+//   - embedFn may be nil (FTS-only search without vector reranking).
+//   - maxChunks is the number of top chunks to retrieve per turn (default 5).
+//   - maxTokens is the token budget for the RAG section in the prompt (default 10000).
+func (a *Agent) WithRAGStore(st rag.DocumentStore, embedFn func(context.Context, string) ([]float32, error), maxChunks, maxTokens int) *Agent {
+	a.ragStore = st
+	a.ragEmbedFn = embedFn
+	if maxChunks <= 0 {
+		maxChunks = 5
+	}
+	if maxTokens <= 0 {
+		maxTokens = 10000
+	}
+	a.ragMaxChunks = maxChunks
+	a.ragMaxTokens = maxTokens
+	return a
+}
 
 // Enricher returns the agent's async enrichment worker. May be nil.
 func (a *Agent) Enricher() *Enricher { return a.enricher }

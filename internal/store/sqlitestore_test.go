@@ -956,8 +956,8 @@ func TestIntegration_Scenario5_IdempotentMigration(t *testing.T) {
 	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("reading schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("Scenario 5: expected version=8 after re-run, got %d", version)
+	if version != 9 {
+		t.Errorf("Scenario 5: expected version=9 after re-run, got %d", version)
 	}
 
 	results, err := s.SearchMemory(ctx, "scope1", "data", 5)

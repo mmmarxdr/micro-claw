@@ -25,6 +25,7 @@ import (
 	"microagent/internal/mcp"
 	"microagent/internal/notify"
 	"microagent/internal/provider"
+	"microagent/internal/rag"
 	"microagent/internal/setup"
 	"microagent/internal/skill"
 	"microagent/internal/store"
@@ -471,6 +472,11 @@ func main() {
 		WithBus(notifyBus).
 		WithCronCommands(cronScheduler, cronSt)
 	wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
+	ragWorker := wireRAG(cfg, st, prov, ag, toolsRegistry)
+	if ragWorker != nil {
+		ragWorker.Start(ctx)
+		defer ragWorker.Stop()
+	}
 
 	// Start web dashboard if enabled in config or via --web flag.
 	if cfg.Web.Enabled || *webFlag {
@@ -493,6 +499,21 @@ func main() {
 			WithBus(notifyBus).
 			WithCronCommands(cronScheduler, cronSt)
 		wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
+		// Re-wire RAG into the rebuilt agent (web path).
+		if ragWorker != nil {
+			ragCfg := cfg.RAG
+			sqlStore, ok := st.(*store.SQLiteStore)
+			if ok {
+				docStore := rag.NewSQLiteDocumentStore(sqlStore.DB(), ragCfg.MaxDocuments, ragCfg.MaxChunks)
+				var embedFn func(ctx context.Context, text string) ([]float32, error)
+				if ep, ok2 := prov.(provider.EmbeddingProvider); ok2 {
+					embedFn = func(ctx context.Context, text string) ([]float32, error) {
+						return ep.Embed(ctx, text)
+					}
+				}
+				ag.WithRAGStore(docStore, embedFn, ragCfg.TopK, ragCfg.MaxContextTokens)
+			}
+		}
 
 		// Type-assert provider to ModelLister if supported.
 		var ml provider.ModelLister

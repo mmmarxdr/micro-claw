@@ -47,6 +47,7 @@ type Config struct {
 	Skills            []string            `yaml:"skills"              json:"skills"`
 	SkillsDir         string              `yaml:"skills_dir"          json:"skills_dir"`
 	SkillsRegistryURL string              `yaml:"skills_registry_url" json:"skills_registry_url"`
+	RAG               RAGConfig           `yaml:"rag"                 json:"rag"`
 }
 
 // FilterConfig controls post-execution tool output compression.
@@ -397,6 +398,18 @@ type MediaConfig struct {
 	AllowedMIMEPrefixes []string      `yaml:"allowed_mime_prefixes" json:"allowed_mime_prefixes"`
 }
 
+// RAGConfig holds configuration for the Retrieval-Augmented Generation subsystem.
+// YAML key: rag
+type RAGConfig struct {
+	Enabled          bool `yaml:"enabled"             json:"enabled"`
+	ChunkSize        int  `yaml:"chunk_size"          json:"chunk_size"`         // default 512
+	ChunkOverlap     int  `yaml:"chunk_overlap"       json:"chunk_overlap"`      // default 64
+	TopK             int  `yaml:"top_k"               json:"top_k"`              // default 5
+	MaxDocuments     int  `yaml:"max_documents"       json:"max_documents"`      // default 500
+	MaxChunks        int  `yaml:"max_chunks"          json:"max_chunks"`         // default 100000
+	MaxContextTokens int  `yaml:"max_context_tokens"  json:"max_context_tokens"` // default 10000
+}
+
 // NotificationsConfig is the top-level notifications block.
 // YAML key: notifications
 type NotificationsConfig struct {
@@ -643,6 +656,26 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Notifications.HandlerTimeoutSec == 0 {
 		c.Notifications.HandlerTimeoutSec = 5
+	}
+
+	// RAG defaults.
+	if c.RAG.ChunkSize == 0 {
+		c.RAG.ChunkSize = 512
+	}
+	if c.RAG.ChunkOverlap == 0 {
+		c.RAG.ChunkOverlap = 64
+	}
+	if c.RAG.TopK == 0 {
+		c.RAG.TopK = 5
+	}
+	if c.RAG.MaxDocuments == 0 {
+		c.RAG.MaxDocuments = 500
+	}
+	if c.RAG.MaxChunks == 0 {
+		c.RAG.MaxChunks = 100000
+	}
+	if c.RAG.MaxContextTokens == 0 {
+		c.RAG.MaxContextTokens = 10000
 	}
 }
 

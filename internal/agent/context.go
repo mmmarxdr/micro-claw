@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"microagent/internal/provider"
+	"microagent/internal/rag"
 	"microagent/internal/store"
 )
 
 // buildSystemPrompt assembles the full system prompt string from personality,
-// security directive, autoload skill prose, skill index, and the memory section.
-func (a *Agent) buildSystemPrompt(memories []store.MemoryEntry) string {
+// security directive, autoload skill prose, skill index, memory section,
+// and (optionally) a RAG section with relevant document chunks.
+func (a *Agent) buildSystemPrompt(memories []store.MemoryEntry, ragResults []rag.SearchResult) string {
 	sysPrompt := a.config.Personality
 
 	// Security directive for tool results
@@ -43,7 +45,42 @@ func (a *Agent) buildSystemPrompt(memories []store.MemoryEntry) string {
 		sysPrompt += buildMemorySection(memories, a.config.MaxContextTokens)
 	}
 
+	if ragSection := buildRAGSection(ragResults, a.ragMaxTokens); ragSection != "" {
+		sysPrompt += "\n\n" + ragSection
+	}
+
 	return sysPrompt
+}
+
+// buildRAGSection formats RAG search results into a "## Relevant Documents:" block.
+// maxTokens limits the total token budget for the section; 0 means no limit.
+// Returns an empty string when results is nil or empty.
+func buildRAGSection(results []rag.SearchResult, maxTokens int) string {
+	if len(results) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Relevant Documents:")
+
+	usedTokens := EstimateTokens(sb.String())
+
+	for _, r := range results {
+		// chunk index is 0-based; display 1-based for readability.
+		header := fmt.Sprintf("\n### %s (chunk %d)\n", r.DocTitle, r.Chunk.Index+1)
+		body := r.Chunk.Content + "\n"
+		entry := header + body
+		entryTokens := EstimateTokens(entry)
+
+		if maxTokens > 0 && usedTokens+entryTokens > maxTokens {
+			break
+		}
+
+		sb.WriteString(entry)
+		usedTokens += entryTokens
+	}
+
+	return sb.String()
 }
 
 // buildToolDefs returns a ToolDefinition slice built from the agent's registered tools.
@@ -64,7 +101,7 @@ func (a *Agent) buildContext(
 	memories []store.MemoryEntry,
 ) provider.ChatRequest {
 	return provider.ChatRequest{
-		SystemPrompt: a.buildSystemPrompt(memories),
+		SystemPrompt: a.buildSystemPrompt(memories, nil),
 		Messages:     conv.Messages,
 		Tools:        a.buildToolDefs(),
 		MaxTokens:    a.config.MaxTokensPerTurn,

@@ -133,6 +133,11 @@ func (s *SQLiteStore) initSchemaVersioned() error {
 			return fmt.Errorf("migration v8: %w", err)
 		}
 	}
+	if version < 9 {
+		if err := s.migrateV9(); err != nil {
+			return fmt.Errorf("migration v9: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -480,6 +485,81 @@ func (s *SQLiteStore) migrateV8() error {
 
 	if _, err := tx.Exec("UPDATE schema_version SET version = 8"); err != nil {
 		return fmt.Errorf("updating schema version to 8: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// migrateV9 creates the RAG document storage tables: documents,
+// document_chunks, and the document_chunks_fts FTS5 virtual table with sync
+// triggers (dc_ai, dc_ad, dc_au). Advances schema_version to 9.
+//
+// All CREATE statements use IF NOT EXISTS so this migration is safe to run on
+// a database that already has these tables.
+func (s *SQLiteStore) migrateV9() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS documents (
+			id            TEXT PRIMARY KEY,
+			namespace     TEXT NOT NULL DEFAULT 'global',
+			title         TEXT NOT NULL,
+			source_sha256 TEXT,
+			mime          TEXT,
+			chunk_count   INTEGER DEFAULT 0,
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS document_chunks (
+			id          TEXT PRIMARY KEY,
+			doc_id      TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+			idx         INTEGER NOT NULL,
+			content     TEXT NOT NULL,
+			embedding   BLOB,
+			token_count INTEGER DEFAULT 0,
+			UNIQUE(doc_id, idx)
+		)`,
+
+		`CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+			content,
+			content=document_chunks,
+			content_rowid=rowid
+		)`,
+
+		`CREATE TRIGGER IF NOT EXISTS dc_ai
+			AFTER INSERT ON document_chunks BEGIN
+				INSERT INTO document_chunks_fts(rowid, content)
+				VALUES (new.rowid, new.content);
+			END`,
+
+		`CREATE TRIGGER IF NOT EXISTS dc_ad
+			AFTER DELETE ON document_chunks BEGIN
+				INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content)
+				VALUES ('delete', old.rowid, old.content);
+			END`,
+
+		`CREATE TRIGGER IF NOT EXISTS dc_au
+			AFTER UPDATE ON document_chunks BEGIN
+				INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content)
+				VALUES ('delete', old.rowid, old.content);
+				INSERT INTO document_chunks_fts(rowid, content)
+				VALUES (new.rowid, new.content);
+			END`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rag schema: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec("UPDATE schema_version SET version = 9"); err != nil {
+		return fmt.Errorf("updating schema version to 9: %w", err)
 	}
 
 	return tx.Commit()

@@ -464,7 +464,7 @@ func TestBuildSystemPrompt_IncludesPersonality(t *testing.T) {
 		tools:  map[string]tool.Tool{},
 		skills: nil,
 	}
-	got := a.buildSystemPrompt(nil)
+	got := a.buildSystemPrompt(nil, nil)
 	if !strings.Contains(got, "You are a helpful assistant.") {
 		t.Errorf("expected personality in system prompt, got: %q", got)
 	}
@@ -482,7 +482,7 @@ func TestBuildSystemPrompt_IncludesMemorySection(t *testing.T) {
 	memories := []store.MemoryEntry{
 		{Content: "remember this important fact"},
 	}
-	got := a.buildSystemPrompt(memories)
+	got := a.buildSystemPrompt(memories, nil)
 	if !strings.Contains(got, "remember this important fact") {
 		t.Errorf("expected memory content in system prompt, got: %q", got)
 	}
@@ -499,11 +499,11 @@ func TestBuildSystemPrompt_NoMemorySectionWhenEmpty(t *testing.T) {
 		tools:  map[string]tool.Tool{},
 		skills: nil,
 	}
-	got := a.buildSystemPrompt(nil)
+	got := a.buildSystemPrompt(nil, nil)
 	if strings.Contains(got, "## Relevant Context:") {
 		t.Errorf("should not include memory section when memories is nil, got: %q", got)
 	}
-	got2 := a.buildSystemPrompt([]store.MemoryEntry{})
+	got2 := a.buildSystemPrompt([]store.MemoryEntry{}, nil)
 	if strings.Contains(got2, "## Relevant Context:") {
 		t.Errorf("should not include memory section when memories is empty, got: %q", got2)
 	}
@@ -575,7 +575,7 @@ func TestBuildContext_EqualsAssemblingBothMethods(t *testing.T) {
 	req := a.buildContext(conv, memories)
 
 	// Build manually via the two extracted methods.
-	wantSystemPrompt := a.buildSystemPrompt(memories)
+	wantSystemPrompt := a.buildSystemPrompt(memories, nil)
 	wantTools := a.buildToolDefs()
 
 	if req.SystemPrompt != wantSystemPrompt {

@@ -18,6 +18,7 @@ import (
 	"microagent/internal/filter"
 	"microagent/internal/notify"
 	"microagent/internal/provider"
+	"microagent/internal/rag"
 	"microagent/internal/store"
 	"microagent/internal/tool"
 )
@@ -116,7 +117,27 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 	// Context management via ContextManager (smart, legacy, or none strategy).
 	// The ContextManager is always present after New() — strategy controls behavior.
 	memories, _ := a.store.SearchMemory(ctx, scope, msg.Content.TextOnly(), a.config.MemoryResults)
-	systemPrompt := a.buildSystemPrompt(memories)
+
+	// RAG: search for relevant document chunks when a DocumentStore is wired.
+	var ragResults []rag.SearchResult
+	if a.ragStore != nil {
+		queryText := msg.Content.TextOnly()
+		var queryVec []float32
+		if a.ragEmbedFn != nil {
+			if vec, err := a.ragEmbedFn(ctx, queryText); err == nil {
+				queryVec = vec
+			}
+		}
+		limit := a.ragMaxChunks
+		if limit <= 0 {
+			limit = 5
+		}
+		if results, err := a.ragStore.SearchChunks(ctx, queryText, queryVec, limit); err == nil {
+			ragResults = results
+		}
+	}
+
+	systemPrompt := a.buildSystemPrompt(memories, ragResults)
 	toolDefs := a.buildToolDefs()
 	conv.Messages = a.contextMgr.Manage(ctx, systemPrompt, toolDefs, conv.Messages)
 
