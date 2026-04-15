@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+
+	"microagent/internal/store"
 )
 
 // uploadResponse is the JSON response body for a successful upload.
@@ -124,6 +126,58 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data) //nolint:errcheck
+}
+
+// handleListMedia handles GET /api/media — returns metadata for all stored blobs.
+func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
+	ms := s.mediaStore()
+	if ms == nil {
+		writeError(w, http.StatusServiceUnavailable, "media uploads are disabled")
+		return
+	}
+
+	items, err := ms.ListMedia(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list media")
+		return
+	}
+
+	if items == nil {
+		items = []store.MediaMeta{}
+	}
+
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleDeleteMedia handles DELETE /api/media/{sha256} — removes a stored blob.
+func (s *Server) handleDeleteMedia(w http.ResponseWriter, r *http.Request) {
+	ms := s.mediaStore()
+	if ms == nil {
+		writeError(w, http.StatusServiceUnavailable, "media uploads are disabled")
+		return
+	}
+
+	sha := pathParam(r, "sha256")
+
+	if len(sha) != 64 {
+		writeError(w, http.StatusBadRequest, "invalid sha256: must be 64 hex characters")
+		return
+	}
+	if _, err := hex.DecodeString(sha); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid sha256: not valid hex")
+		return
+	}
+
+	if err := ms.DeleteMedia(r.Context(), sha); err != nil {
+		if err == store.ErrMediaNotFound {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete media")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // mimeAllowed reports whether mime matches any of the allowed prefix patterns.

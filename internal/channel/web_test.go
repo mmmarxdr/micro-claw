@@ -55,6 +55,14 @@ func (m *mockMediaStore) PruneUnreferencedMedia(_ context.Context, _ time.Durati
 	return 0, nil
 }
 
+func (m *mockMediaStore) ListMedia(_ context.Context) ([]store.MediaMeta, error) {
+	return nil, nil
+}
+
+func (m *mockMediaStore) DeleteMedia(_ context.Context, _ string) error {
+	return nil
+}
+
 // newTestServerWithMediaStore creates a WebChannel with a MediaStore wired in.
 func newTestServerWithMediaStore(t *testing.T, ms store.MediaStore) (*httptest.Server, *WebChannel, <-chan IncomingMessage) {
 	t.Helper()

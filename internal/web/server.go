@@ -193,9 +193,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mcp/servers/{name}/test", s.handleTestMCPServer)
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.mux.HandleFunc("GET /api/tools", s.handleListTools)
-	// Media upload and retrieval endpoints.
+	// Media upload, retrieval, listing, and deletion endpoints.
 	s.mux.HandleFunc("POST /api/upload", s.handleUpload)
+	s.mux.HandleFunc("GET /api/media", s.handleListMedia)
 	s.mux.HandleFunc("GET /api/media/{sha256}", s.handleGetMedia)
+	s.mux.HandleFunc("DELETE /api/media/{sha256}", s.handleDeleteMedia)
 	// WebSocket endpoints.
 	s.mux.HandleFunc("/ws/metrics", s.handleMetricsWebSocket)
 	s.mux.HandleFunc("/ws/logs", s.handleLogsWebSocket)

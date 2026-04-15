@@ -53,6 +53,14 @@ func (f *fakeMediaStore) PruneUnreferencedMedia(_ context.Context, _ time.Durati
 	return 0, nil
 }
 
+func (f *fakeMediaStore) ListMedia(_ context.Context) ([]store.MediaMeta, error) {
+	return nil, nil
+}
+
+func (f *fakeMediaStore) DeleteMedia(_ context.Context, _ string) error {
+	return nil
+}
+
 // buildMediaConfig returns a MediaConfig with sensible test defaults (media enabled).
 func buildMediaConfig(maxAttach, maxMsg int64, prefixes []string) config.MediaConfig {
 	enabled := true

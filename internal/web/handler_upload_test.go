@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +19,15 @@ import (
 
 // testMediaStore is a controllable MediaStore for upload handler tests.
 type testMediaStore struct {
-	sha     string
-	err     error
-	getData []byte
-	getMIME string
-	getErr  error
+	sha       string
+	err       error
+	getData   []byte
+	getMIME   string
+	getErr    error
+	listData  []store.MediaMeta
+	listErr   error
+	deleteErr error
+	deleteSHA string
 }
 
 func (m *testMediaStore) StoreMedia(_ context.Context, _ []byte, _ string) (string, error) {
@@ -43,6 +48,20 @@ func (m *testMediaStore) TouchMedia(_ context.Context, _ string) error { return 
 
 func (m *testMediaStore) PruneUnreferencedMedia(_ context.Context, _ time.Duration) (int, error) {
 	return 0, nil
+}
+
+func (m *testMediaStore) ListMedia(_ context.Context) ([]store.MediaMeta, error) {
+	return m.listData, m.listErr
+}
+
+func (m *testMediaStore) DeleteMedia(_ context.Context, sha string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	if m.deleteSHA != "" && m.deleteSHA != sha {
+		return store.ErrMediaNotFound
+	}
+	return nil
 }
 
 // buildUploadRequest creates a multipart form request with the given file content.
@@ -300,6 +319,123 @@ func TestHandleGetMedia_MalformedSHA_Returns400(t *testing.T) {
 	s := newUploadTestServer(t, ms)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/media/not-a-sha256", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleListMedia tests
+// ---------------------------------------------------------------------------
+
+func TestHandleListMedia_ReturnsItems(t *testing.T) {
+	ms := &testMediaStore{
+		listData: []store.MediaMeta{
+			{SHA256: "aaa", MIME: "image/png", Size: 1024, CreatedAt: "2026-04-14T10:00:00Z", LastReferencedAt: "2026-04-14T10:00:00Z"},
+			{SHA256: "bbb", MIME: "text/plain", Size: 512, CreatedAt: "2026-04-14T09:00:00Z", LastReferencedAt: "2026-04-14T09:00:00Z"},
+		},
+	}
+	s := newUploadTestServer(t, ms)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var items []store.MediaMeta
+	if err := json.NewDecoder(rr.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].SHA256 != "aaa" {
+		t.Errorf("first item sha256 = %q, want aaa", items[0].SHA256)
+	}
+}
+
+func TestHandleListMedia_EmptyReturnsEmptyArray(t *testing.T) {
+	ms := &testMediaStore{}
+	s := newUploadTestServer(t, ms)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	body := strings.TrimSpace(rr.Body.String())
+	if body != "[]" {
+		t.Errorf("body = %q, want []", body)
+	}
+}
+
+func TestHandleListMedia_DisabledStore_Returns503(t *testing.T) {
+	cfg := minimalConfig()
+	s := &Server{
+		deps: ServerDeps{
+			Store:     &noWebStore{},
+			Config:    cfg,
+			StartedAt: time.Now(),
+		},
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleDeleteMedia tests
+// ---------------------------------------------------------------------------
+
+func TestHandleDeleteMedia_KnownSHA_Returns204(t *testing.T) {
+	sha := fmt.Sprintf("%064x", 42)
+	ms := &testMediaStore{deleteSHA: sha}
+	s := newUploadTestServer(t, ms)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/media/"+sha, nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDeleteMedia_UnknownSHA_Returns404(t *testing.T) {
+	ms := &testMediaStore{deleteErr: store.ErrMediaNotFound}
+	s := newUploadTestServer(t, ms)
+
+	sha := fmt.Sprintf("%064x", 99)
+	req := httptest.NewRequest(http.MethodDelete, "/api/media/"+sha, nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDeleteMedia_MalformedSHA_Returns400(t *testing.T) {
+	ms := &testMediaStore{}
+	s := newUploadTestServer(t, ms)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/media/not-valid", nil)
 	rr := httptest.NewRecorder()
 	s.mux.ServeHTTP(rr, req)
 

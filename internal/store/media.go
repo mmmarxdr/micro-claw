@@ -48,4 +48,21 @@ type MediaStore interface {
 	// than olderThan and that are not referenced by any stored conversation.
 	// Returns the number of blobs deleted.
 	PruneUnreferencedMedia(ctx context.Context, olderThan time.Duration) (deleted int, err error)
+
+	// ListMedia returns metadata for all stored blobs, ordered by creation
+	// time descending (newest first). The blob data itself is NOT included.
+	ListMedia(ctx context.Context) ([]MediaMeta, error)
+
+	// DeleteMedia removes a blob by its SHA-256 hex digest.
+	// Returns ErrMediaNotFound if the digest is unknown.
+	DeleteMedia(ctx context.Context, sha256 string) error
+}
+
+// MediaMeta holds metadata about a stored media blob (without the data).
+type MediaMeta struct {
+	SHA256           string `json:"sha256"`
+	MIME             string `json:"mime"`
+	Size             int64  `json:"size"`
+	CreatedAt        string `json:"created_at"`
+	LastReferencedAt string `json:"last_referenced_at"`
 }

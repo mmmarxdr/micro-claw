@@ -37,6 +37,14 @@ func (m *mockMediaStore) PruneUnreferencedMedia(ctx context.Context, olderThan t
 	return 0, nil
 }
 
+func (m *mockMediaStore) ListMedia(_ context.Context) ([]store.MediaMeta, error) {
+	return nil, nil
+}
+
+func (m *mockMediaStore) DeleteMedia(_ context.Context, _ string) error {
+	return nil
+}
+
 // Compile-time assertions.
 var (
 	_ store.Store      = (*mockMediaStore)(nil)

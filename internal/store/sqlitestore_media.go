@@ -167,6 +167,50 @@ func (s *SQLiteStore) PruneUnreferencedMedia(ctx context.Context, olderThan time
 	return int(n), nil
 }
 
+// ListMedia returns metadata for all stored blobs, ordered by creation time
+// descending (newest first). The blob data itself is NOT returned.
+func (s *SQLiteStore) ListMedia(ctx context.Context) ([]MediaMeta, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sha256, mime, size, created_at, last_referenced_at
+		 FROM media_blobs ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing media blobs: %w", err)
+	}
+	defer rows.Close()
+
+	var result []MediaMeta
+	for rows.Next() {
+		var m MediaMeta
+		if err := rows.Scan(&m.SHA256, &m.MIME, &m.Size, &m.CreatedAt, &m.LastReferencedAt); err != nil {
+			return nil, fmt.Errorf("scanning media row: %w", err)
+		}
+		result = append(result, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating media rows: %w", err)
+	}
+	return result, nil
+}
+
+// DeleteMedia removes a blob by its SHA-256 hex digest.
+// Returns ErrMediaNotFound if the digest is unknown.
+func (s *SQLiteStore) DeleteMedia(ctx context.Context, sha256hex string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM media_blobs WHERE sha256 = ?`, sha256hex)
+	if err != nil {
+		return fmt.Errorf("deleting media blob %s: %w", sha256hex, err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected for delete %s: %w", sha256hex, err)
+	}
+	if n == 0 {
+		return ErrMediaNotFound
+	}
+	return nil
+}
+
 // touchMediaBatch updates last_referenced_at for a slice of sha256 digests in
 // a single UPDATE ... WHERE sha256 IN (...) statement. Missing sha256s are
 // silently ignored (no ErrMediaNotFound — this is a best-effort batch path).

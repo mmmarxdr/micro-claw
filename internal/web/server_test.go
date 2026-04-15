@@ -27,6 +27,14 @@ func (f *fakeMediaStore) PruneUnreferencedMedia(_ context.Context, _ time.Durati
 	return 0, nil
 }
 
+func (f *fakeMediaStore) ListMedia(_ context.Context) ([]store.MediaMeta, error) {
+	return nil, nil
+}
+
+func (f *fakeMediaStore) DeleteMedia(_ context.Context, _ string) error {
+	return nil
+}
+
 func TestNewServer_NilMediaStore_NoFanic(t *testing.T) {
 	cfg := minimalConfig()
 	s := &Server{
