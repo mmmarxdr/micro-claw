@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -54,6 +55,12 @@ type Server struct {
 	mux         *http.ServeMux
 	wsUpgrader  websocket.Upgrader
 	rateLimiter *ipRateLimiter
+	// configMu guards read-modify-write sequences on s.deps.Config.
+	// Acquired as a full mutex (not RWMutex) because PUT is the only writer
+	// and concurrent GET handlers do an unguarded pointer read that is safe
+	// on 64-bit platforms (pointer swap is atomic). If multiple writers are
+	// added in the future, promote to sync.RWMutex.
+	configMu sync.Mutex
 }
 
 // NewServer creates a new Server with all routes registered.
@@ -179,6 +186,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /api/status", s.handleGetStatus)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
+	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/conversations", s.handleListConversations)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
