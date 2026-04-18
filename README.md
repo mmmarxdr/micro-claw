@@ -5,7 +5,8 @@
 <!-- SCREENSHOT: web dashboard chat view OR the TUI in action.
      Recommended size: 1600x900, .png, commit it to docs/assets/daimon.png -->
 
-![Daimon](docs/assets/daimon.png)
+<img width="1541" height="925" alt="image" src="https://github.com/user-attachments/assets/ba522b15-055e-4d18-bb8f-d6d853f239d2" />
+
 
 > **Naming note.** The project is **Daimon**. During the 0.x phase the CLI
 > binary is still published as `microagent` from the legacy package name —
