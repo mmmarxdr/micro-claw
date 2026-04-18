@@ -300,7 +300,7 @@ func runWebCommand(args []string, cfgPath string) error {
 	ag := agent.New(
 		cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, aud,
 		toolsRegistry, autoloadSkills, skillIndex,
-		cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream),
+		cfg.Cron.MaxConcurrent, config.BoolVal(activeProv.Stream),
 	).WithBus(notifyBus).WithCronCommands(cronScheduler, cronSt)
 	wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
 

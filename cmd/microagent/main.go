@@ -478,7 +478,7 @@ func main() {
 		cronChannelRef.WithBus(notifyBus)
 	}
 
-	ag := agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream)).
+	ag := agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(activeProv.Stream)).
 		WithBus(notifyBus).
 		WithCronCommands(cronScheduler, cronSt)
 	wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
@@ -505,7 +505,7 @@ func main() {
 		channels = append(channels, webCh)
 		mux = channel.NewMultiplexChannel(channels)
 		// Rebuild the agent with the updated mux (WebChannel included).
-		ag = agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(cfg.Provider.Stream)).
+		ag = agent.New(cfg.Agent, cfg.Limits, cfg.Filter, mux, prov, st, auditor, toolsRegistry, autoloadSkills, skillIndex, cfg.Cron.MaxConcurrent, config.BoolVal(activeProv.Stream)).
 			WithBus(notifyBus).
 			WithCronCommands(cronScheduler, cronSt)
 		wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
