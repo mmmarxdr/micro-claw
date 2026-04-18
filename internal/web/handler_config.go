@@ -147,7 +147,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Write to disk atomically (config path may be empty in tests — skip if so).
 	if cfgPath != "" {
-		if err := atomicWriteConfig(cfgPath, &merged); err != nil {
+		if err := config.AtomicWriteConfig(cfgPath, &merged); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", err))
 			return
 		}

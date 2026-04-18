@@ -1675,3 +1675,87 @@ agent:
 		}
 	}
 }
+
+// TestAtomicWriteConfig_BackupOnFirstV2Save covers T-69/T-70 backup semantics.
+//
+// Case A: v1 file on disk → atomicWriteConfig with v2 config → .v1.bak created
+//         with original v1 content, path now contains v2 content.
+// Case B: v2 file already on disk → atomicWriteConfig again → NO new .v1.bak
+//         (backup is once-per-file-upgrade, not per-save).
+// Case C: file does not exist (fresh install) → atomicWriteConfig → NO .v1.bak.
+func TestAtomicWriteConfig_BackupOnFirstV2Save(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	bakPath := cfgPath + ".v1.bak"
+
+	v1YAML := []byte(`provider:
+  type: openrouter
+  model: anthropic/claude-haiku-4.5
+  api_key: sk-or-v1key
+agent:
+  name: TestAgent
+`)
+
+	v2Cfg := &Config{
+		Providers: map[string]ProviderCredentials{
+			"openrouter": {APIKey: "sk-or-v2key"},
+		},
+		Models: ModelsConfig{
+			Default: ModelRef{Provider: "openrouter", Model: "anthropic/claude-haiku-4.5"},
+		},
+	}
+
+	// ── Case A: v1 on disk ──────────────────────────────────────────────────
+	if err := os.WriteFile(cfgPath, v1YAML, 0o600); err != nil {
+		t.Fatalf("write v1 file: %v", err)
+	}
+
+	if err := AtomicWriteConfig(cfgPath, v2Cfg); err != nil {
+		t.Fatalf("AtomicWriteConfig (case A): %v", err)
+	}
+
+	// Backup must exist and contain original v1 content.
+	bakData, err := os.ReadFile(bakPath)
+	if err != nil {
+		t.Fatalf("case A: .v1.bak not created: %v", err)
+	}
+	if string(bakData) != string(v1YAML) {
+		t.Errorf("case A: .v1.bak content mismatch\ngot:  %q\nwant: %q", string(bakData), string(v1YAML))
+	}
+
+	// Main file must now contain v2 content (has "providers:" key).
+	written, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("case A: read written config: %v", err)
+	}
+	if !strings.Contains(string(written), "providers:") {
+		t.Errorf("case A: written config missing 'providers:' key:\n%s", string(written))
+	}
+
+	// ── Case B: v2 already on disk (no re-backup) ───────────────────────────
+	// Remove the bak to check it isn't re-created.
+	if err := os.Remove(bakPath); err != nil {
+		t.Fatalf("remove .v1.bak for case B: %v", err)
+	}
+
+	if err := AtomicWriteConfig(cfgPath, v2Cfg); err != nil {
+		t.Fatalf("AtomicWriteConfig (case B): %v", err)
+	}
+
+	if _, err := os.Stat(bakPath); err == nil {
+		t.Error("case B: .v1.bak was re-created; backup should only happen on first v2 save")
+	}
+
+	// ── Case C: fresh install (file does not exist) ──────────────────────────
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatalf("remove config for case C: %v", err)
+	}
+
+	if err := AtomicWriteConfig(cfgPath, v2Cfg); err != nil {
+		t.Fatalf("AtomicWriteConfig (case C): %v", err)
+	}
+
+	if _, err := os.Stat(bakPath); err == nil {
+		t.Error("case C: .v1.bak created for fresh install; should not exist")
+	}
+}

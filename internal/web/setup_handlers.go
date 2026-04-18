@@ -284,7 +284,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	base.Web.AuthToken = authToken
 
 	// Atomic write: temp file + rename.
-	if err := atomicWriteConfig(cfgPath, &base); err != nil {
+	if err := config.AtomicWriteConfig(cfgPath, &base); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", err))
 		return
 	}
@@ -341,7 +341,7 @@ func (s *Server) handleSetupReset(w http.ResponseWriter, r *http.Request) {
 	base.Models.Default = config.ModelRef{}
 	base.Provider = nil // nil out any legacy pointer too
 
-	if err := atomicWriteConfig(cfgPath, &base); err != nil {
+	if err := config.AtomicWriteConfig(cfgPath, &base); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", err))
 		return
 	}
@@ -354,37 +354,3 @@ func (s *Server) handleSetupReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "needs_setup": true})
 }
 
-// atomicWriteConfig marshals cfg to YAML and writes it atomically using a
-// temp file in the same directory followed by os.Rename.
-func atomicWriteConfig(path string, cfg *config.Config) error {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()          //nolint:errcheck
-		os.Remove(tmpName)   //nolint:errcheck
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	return nil
-}

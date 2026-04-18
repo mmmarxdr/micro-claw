@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"testing"
 )
 
@@ -93,6 +95,28 @@ func TestMigrateLegacyProvider_Mixed_V2Wins(t *testing.T) {
 	// Legacy openrouter key must NOT have been injected.
 	if _, ok := cfg.Providers["openrouter"]; ok {
 		t.Error("Providers[openrouter] should NOT exist — v2 wins and legacy block is discarded")
+	}
+}
+
+// TestMigrateLegacyProvider_InfoLog — T-71: INFO log is emitted when migration runs.
+func TestMigrateLegacyProvider_InfoLog(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	cfg := &Config{
+		Provider: &ProviderConfig{
+			Type:   "openrouter",
+			Model:  "anthropic/claude-haiku-4.5",
+			APIKey: "sk-or-test",
+		},
+	}
+
+	migrateLegacyProvider(cfg)
+
+	if got := buf.String(); got == "" {
+		t.Error("expected a log message during v1→v2 migration, got none")
 	}
 }
 
