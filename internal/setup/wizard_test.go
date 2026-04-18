@@ -290,8 +290,8 @@ func TestBuildConfig_UsesModelSelectorValue(t *testing.T) {
 	m.modelSelector = newModelSelectorModel("anthropic", 80)
 	m.modelSelector.cursor = 1
 	cfg := m.buildConfig()
-	if cfg.Provider.Model != "claude-opus-4-6" {
-		t.Errorf("buildConfig().Provider.Model = %q, want %q", cfg.Provider.Model, "claude-opus-4-6")
+	if cfg.Models.Default.Model != "claude-opus-4-6" {
+		t.Errorf("buildConfig().Models.Default.Model = %q, want %q", cfg.Models.Default.Model, "claude-opus-4-6")
 	}
 }
 

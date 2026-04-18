@@ -264,15 +264,16 @@ func main() {
 		}
 	}
 
-	prov, err := buildProvider(cfg.Provider)
+	activeProv := config.ResolveActiveProvider(*cfg)
+	prov, err := buildProvider(activeProv)
 	if err != nil {
 		slog.Error("failed to create provider", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("provider initialized", "name", prov.Name(), "configured_model", cfg.Provider.Model)
+	slog.Info("provider initialized", "name", prov.Name(), "configured_model", activeProv.Model)
 
-	if cfg.Provider.Fallback != nil {
-		fallbackProv, err := buildProvider(asProviderConfig(cfg.Provider.Fallback))
+	if cfg.Fallback != nil {
+		fallbackProv, err := buildProvider(asProviderConfig(cfg.Fallback))
 		if err != nil {
 			slog.Error("failed to create fallback provider", "error", err)
 			os.Exit(1)

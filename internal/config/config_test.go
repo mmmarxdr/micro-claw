@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadConfig_ValidYAML(t *testing.T) {
@@ -68,8 +70,15 @@ limits:
 	if cfg.Agent.Name != "TestAgent" {
 		t.Errorf("Expected Agent.Name 'TestAgent', got %q", cfg.Agent.Name)
 	}
-	if cfg.Provider.Timeout != 30*time.Second {
-		t.Errorf("Expected Provider.Timeout 30s, got %v", cfg.Provider.Timeout)
+	// After v1→v2 migration, Provider pointer is nil and credentials live in Providers map.
+	if cfg.Provider != nil {
+		t.Errorf("Expected Provider pointer to be nil after migration, got %+v", cfg.Provider)
+	}
+	if cfg.Models.Default.Provider != "test_provider" {
+		t.Errorf("Expected Models.Default.Provider = 'test_provider', got %q", cfg.Models.Default.Provider)
+	}
+	if creds := cfg.Providers["test_provider"]; creds.APIKey != "test-key" {
+		t.Errorf("Expected Providers[test_provider].APIKey = 'test-key', got %q", creds.APIKey)
 	}
 	if len(cfg.Channel.AllowedUsers) != 2 {
 		t.Errorf("Expected 2 allowed users, got %d", len(cfg.Channel.AllowedUsers))
@@ -130,6 +139,7 @@ agent:
 func TestLoadConfig_Defaults(t *testing.T) {
 	yamlData := `
 provider:
+  type: "anthropic"
   api_key: "test-key"
 agent:
   max_iterations: 10
@@ -155,11 +165,17 @@ agent:
 	if cfg.Agent.MaxTokensPerTurn != 4096 {
 		t.Errorf("Expected Agent.MaxTokensPerTurn default 4096, got %d", cfg.Agent.MaxTokensPerTurn)
 	}
-	if cfg.Provider.Timeout != 60*time.Second {
-		t.Errorf("Expected Provider.Timeout default 60s, got %v", cfg.Provider.Timeout)
+	// Provider Timeout/MaxRetries defaults are now applied by ResolveActiveProvider.
+	// Verify that after v1→v2 migration the Providers map is populated.
+	if cfg.Provider != nil {
+		t.Errorf("Expected Provider pointer nil after migration, got non-nil")
 	}
-	if cfg.Provider.MaxRetries != 3 {
-		t.Errorf("Expected Provider.MaxRetries default 3, got %d", cfg.Provider.MaxRetries)
+	resolved := ResolveActiveProvider(*cfg)
+	if resolved.Timeout != 60*time.Second {
+		t.Errorf("Expected resolved Provider.Timeout default 60s, got %v", resolved.Timeout)
+	}
+	if resolved.MaxRetries != 3 {
+		t.Errorf("Expected resolved Provider.MaxRetries default 3, got %d", resolved.MaxRetries)
 	}
 	if cfg.Tools.Shell.AllowAll != false {
 		t.Errorf("Expected Tools.Shell.AllowAll default false, got %t", cfg.Tools.Shell.AllowAll)
@@ -254,8 +270,10 @@ agent:
 				if err != nil {
 					t.Fatalf("Expected no error for %q, got: %v", tc.name, err)
 				}
-				if cfg.Provider.APIKey != tc.checkAPI {
-					t.Errorf("Expected APIKey %q, got %q", tc.checkAPI, cfg.Provider.APIKey)
+				// After v1→v2 migration, api_key lives in Providers map.
+				resolved := ResolveActiveProvider(*cfg)
+				if resolved.APIKey != tc.checkAPI {
+					t.Errorf("Expected APIKey %q, got %q (via ResolveActiveProvider)", tc.checkAPI, resolved.APIKey)
 				}
 			}
 		})
@@ -386,12 +404,12 @@ func TestLoadConfig_FilePriority(t *testing.T) {
 
 	// Create test configs
 	flagConfig := filepath.Join(tmpDir, "flag.yaml")
-	if err := os.WriteFile(flagConfig, []byte("provider:\n  api_key: \"flag\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+	if err := os.WriteFile(flagConfig, []byte("provider:\n  type: anthropic\n  api_key: \"flag\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
 		t.Fatalf("write flag config: %v", err)
 	}
 
 	localConfig := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(localConfig, []byte("provider:\n  api_key: \"local\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+	if err := os.WriteFile(localConfig, []byte("provider:\n  type: anthropic\n  api_key: \"local\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
 		t.Fatalf("write local config: %v", err)
 	}
 
@@ -400,7 +418,7 @@ func TestLoadConfig_FilePriority(t *testing.T) {
 		t.Fatalf("mkdir home config dir: %v", err)
 	}
 	homeConfig := filepath.Join(homeConfigDir, "config.yaml")
-	if err := os.WriteFile(homeConfig, []byte("provider:\n  api_key: \"home\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
+	if err := os.WriteFile(homeConfig, []byte("provider:\n  type: anthropic\n  api_key: \"home\"\nagent:\n  max_iterations: 5\n"), 0o644); err != nil {
 		t.Fatalf("write home config: %v", err)
 	}
 
@@ -409,11 +427,70 @@ func TestLoadConfig_FilePriority(t *testing.T) {
 
 	// Rule 1: Flag passed
 	cfg, err := Load(flagConfig)
-	if err != nil || cfg.Provider.APIKey != "flag" {
-		t.Errorf("Expected to load flag config, got %v (err: %v)", cfg.Provider.APIKey, err)
+	if err != nil {
+		t.Errorf("Expected to load flag config, got error: %v", err)
+	} else {
+		resolved := ResolveActiveProvider(*cfg)
+		if resolved.APIKey != "flag" {
+			t.Errorf("Expected APIKey 'flag', got %q (via ResolveActiveProvider)", resolved.APIKey)
+		}
 	}
 
 	// Rule 2 & 3: Find default paths. We will add a ResolvePath logic to test these cleanly in unit tests
+}
+
+// TestLoad_V1ConfigMigratesInMemory — AS-1: v1 YAML migrated in-memory, file NOT written (T-04/T-05).
+func TestLoad_V1ConfigMigratesInMemory(t *testing.T) {
+	v1YAML := `
+provider:
+  type: openrouter
+  model: anthropic/claude-haiku-4.5
+  api_key: sk-or-abc
+  base_url: ""
+agent:
+  max_iterations: 5
+`
+	tmpFile := createTempFile(t, v1YAML)
+	defer os.Remove(tmpFile)
+
+	originalStat, err := os.Stat(tmpFile)
+	if err != nil {
+		t.Fatalf("stat original: %v", err)
+	}
+
+	cfg, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load expected no error, got: %v", err)
+	}
+
+	// After migration: Provider pointer must be nil.
+	if cfg.Provider != nil {
+		t.Error("expected cfg.Provider == nil after v1→v2 migration")
+	}
+	// Providers map populated correctly.
+	creds, ok := cfg.Providers["openrouter"]
+	if !ok {
+		t.Fatal("Providers[openrouter] not found after Load+migrate")
+	}
+	if creds.APIKey != "sk-or-abc" {
+		t.Errorf("Providers[openrouter].APIKey = %q, want sk-or-abc", creds.APIKey)
+	}
+	// Models.Default populated.
+	if cfg.Models.Default.Provider != "openrouter" {
+		t.Errorf("Models.Default.Provider = %q, want openrouter", cfg.Models.Default.Provider)
+	}
+	if cfg.Models.Default.Model != "anthropic/claude-haiku-4.5" {
+		t.Errorf("Models.Default.Model = %q, want anthropic/claude-haiku-4.5", cfg.Models.Default.Model)
+	}
+
+	// File on disk UNCHANGED (no write occurred).
+	afterStat, err := os.Stat(tmpFile)
+	if err != nil {
+		t.Fatalf("stat after Load: %v", err)
+	}
+	if !afterStat.ModTime().Equal(originalStat.ModTime()) {
+		t.Error("file modification time changed — Load must not write to disk")
+	}
 }
 
 func TestFindConfigPath_Override(t *testing.T) {
@@ -772,10 +849,10 @@ func TestErrNoConfig_ErrorsIs(t *testing.T) {
 
 func TestValidate_OllamaEmptyAPIKeyAllowed(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{
-			Type:  "ollama",
-			Model: "llama3.2",
+		Providers: map[string]ProviderCredentials{
+			"ollama": {APIKey: ""},
 		},
+		Models: ModelsConfig{Default: ModelRef{Provider: "ollama", Model: "llama3.2"}},
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.validate(); err != nil {
@@ -785,9 +862,10 @@ func TestValidate_OllamaEmptyAPIKeyAllowed(t *testing.T) {
 
 func TestValidate_AnthropicEmptyAPIKeyStillFails(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{
-			Type: "anthropic",
+		Providers: map[string]ProviderCredentials{
+			"anthropic": {APIKey: ""},
 		},
+		Models: ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 	}
 	cfg.ApplyDefaults()
 	err := cfg.validate()
@@ -801,9 +879,10 @@ func TestValidate_AnthropicEmptyAPIKeyStillFails(t *testing.T) {
 
 func TestValidate_OllamaOtherChecksStillActive(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{
-			Type: "ollama",
+		Providers: map[string]ProviderCredentials{
+			"ollama": {APIKey: ""},
 		},
+		Models: ModelsConfig{Default: ModelRef{Provider: "ollama", Model: "llama3.2"}},
 		Agent: AgentConfig{
 			MaxIterations: -1, // invalid — should still be caught
 		},
@@ -916,7 +995,8 @@ func TestApplyDefaults_NativeMemoryDefaults(t *testing.T) {
 
 func TestValidate_NativeMemory_EnrichRatePerMinInvalid(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 		Agent: AgentConfig{
 			MaxIterations:    10,
 			EnrichMemory:     true,
@@ -938,8 +1018,9 @@ func TestValidate_NativeMemory_EnrichRatePerMinInvalid(t *testing.T) {
 
 func TestValidate_NativeMemory_EmbeddingsRequiresSQLite(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
-		Agent:    AgentConfig{MaxIterations: 10},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+		Agent:     AgentConfig{MaxIterations: 10},
 		Store: StoreConfig{
 			Type:       "file",
 			Embeddings: true,
@@ -958,8 +1039,9 @@ func TestValidate_NativeMemory_EmbeddingsRequiresSQLite(t *testing.T) {
 
 func TestValidate_NativeMemory_EmbeddingsWithSQLiteAllowed(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
-		Agent:    AgentConfig{MaxIterations: 10},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+		Agent:     AgentConfig{MaxIterations: 10},
 		Store: StoreConfig{
 			Type:       "sqlite",
 			Embeddings: true,
@@ -974,7 +1056,8 @@ func TestValidate_NativeMemory_EmbeddingsWithSQLiteAllowed(t *testing.T) {
 
 func TestValidate_NativeMemory_PruneIntervalZeroInvalid(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 		Agent: AgentConfig{
 			MaxIterations: 10,
 			PruneInterval: -1,
@@ -994,7 +1077,8 @@ func TestValidate_NativeMemory_PruneIntervalZeroInvalid(t *testing.T) {
 
 func TestValidate_NativeMemory_PruneRetentionDaysNegativeInvalid(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 		Agent: AgentConfig{
 			MaxIterations:      10,
 			PruneRetentionDays: -5,
@@ -1024,7 +1108,8 @@ func TestValidate_NativeMemory_PruneThresholdOutOfRange(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{
-				Provider: ProviderConfig{APIKey: "test-key"},
+				Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 				Agent: AgentConfig{
 					MaxIterations:  10,
 					PruneThreshold: tc.threshold,
@@ -1046,7 +1131,8 @@ func TestValidate_NativeMemory_PruneThresholdOutOfRange(t *testing.T) {
 
 func TestValidate_NativeMemory_ValidThreshold(t *testing.T) {
 	cfg := &Config{
-		Provider: ProviderConfig{APIKey: "test-key"},
+		Providers: map[string]ProviderCredentials{"anthropic": {APIKey: "test-key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 		Agent: AgentConfig{
 			MaxIterations:  10,
 			PruneThreshold: 0.5,
@@ -1360,6 +1446,11 @@ func TestContextConfig_ApplyDefaults_UnknownStrategy_Preserved(t *testing.T) {
 	}
 }
 
+// marshalConfig marshals a Config to YAML bytes (test helper for round-trip tests).
+func marshalConfig(cfg *Config) ([]byte, error) {
+	return yaml.Marshal(cfg)
+}
+
 func createTempFile(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "microagent-config-*.yaml")
@@ -1373,73 +1464,77 @@ func createTempFile(t *testing.T, content string) string {
 	return f.Name()
 }
 
-func TestIsProviderConfigured(t *testing.T) {
+// TestIsProviderConfigured_TruthTable — covers AS-5 through AS-10 (v2 shape).
+func TestIsProviderConfigured_TruthTable(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         Config
 		wantOK      bool
-		wantMissing []string // substrings that must appear in missing fields
+		wantMissing []string // substrings that must appear in at least one missing field
 	}{
 		{
-			name: "fully configured anthropic",
-			cfg: Config{
-				Provider: ProviderConfig{
-					Type:   "anthropic",
-					Model:  "claude-sonnet-4-6",
-					APIKey: "sk-ant-xxx",
-				},
-			},
-			wantOK:      true,
-			wantMissing: nil,
-		},
-		{
-			name:        "missing provider type",
+			// AS-5: providers nil, models zeroed → false
+			name:        "AS-5 providers nil, models zero",
 			cfg:         Config{},
 			wantOK:      false,
-			wantMissing: []string{"provider.type"},
+			wantMissing: []string{"models.default.provider"},
 		},
 		{
-			name: "missing model",
+			// AS-6: model missing → false
+			name: "AS-6 provider set, model empty",
 			cfg: Config{
-				Provider: ProviderConfig{
-					Type:   "anthropic",
-					APIKey: "sk-ant-xxx",
-				},
+				Providers: map[string]ProviderCredentials{"openrouter": {APIKey: "sk-or-abc"}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "openrouter", Model: ""}},
 			},
 			wantOK:      false,
-			wantMissing: []string{"provider.model"},
+			wantMissing: []string{"models.default.model"},
 		},
 		{
-			name: "missing api_key non-ollama",
+			// AS-7: api_key empty, non-ollama → false
+			name: "AS-7 empty api_key non-ollama",
 			cfg: Config{
-				Provider: ProviderConfig{
-					Type:  "openai",
-					Model: "gpt-5.4",
-				},
+				Providers: map[string]ProviderCredentials{"openrouter": {APIKey: ""}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "openrouter", Model: "anthropic/claude-haiku-4.5"}},
 			},
 			wantOK:      false,
-			wantMissing: []string{"provider.api_key"},
+			wantMissing: []string{"providers.openrouter.api_key"},
 		},
 		{
-			name: "ollama without api_key is ok",
+			// AS-8: fully configured → true
+			name: "AS-8 fully configured openrouter",
 			cfg: Config{
-				Provider: ProviderConfig{
-					Type:  "ollama",
-					Model: "llama3",
-				},
+				Providers: map[string]ProviderCredentials{"openrouter": {APIKey: "sk-or-abc"}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "openrouter", Model: "anthropic/claude-haiku-4.5"}},
 			},
 			wantOK:      true,
 			wantMissing: nil,
 		},
 		{
-			name: "multiple missing fields",
+			// AS-9: active provider not in Providers map → false
+			name: "AS-9 active provider absent from map",
 			cfg: Config{
-				Provider: ProviderConfig{
-					Type: "openai",
-				},
+				Providers: map[string]ProviderCredentials{"openrouter": {APIKey: "sk-or-abc"}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-opus-4-6"}},
 			},
 			wantOK:      false,
-			wantMissing: []string{"provider.model", "provider.api_key"},
+			wantMissing: []string{"providers.anthropic.api_key"},
+		},
+		{
+			// AS-10: ollama exemption — empty api_key is OK
+			name: "AS-10 ollama exemption",
+			cfg: Config{
+				Providers: map[string]ProviderCredentials{"ollama": {APIKey: ""}},
+				Models:    ModelsConfig{Default: ModelRef{Provider: "ollama", Model: "llama3"}},
+			},
+			wantOK:      true,
+			wantMissing: nil,
+		},
+		{
+			// Multiple missing: provider + model both empty
+			name:        "provider and model both empty",
+			cfg:         Config{Providers: map[string]ProviderCredentials{}},
+			wantOK:      false,
+			wantMissing: []string{"models.default.provider", "models.default.model"},
 		},
 	}
 
@@ -1448,7 +1543,7 @@ func TestIsProviderConfigured(t *testing.T) {
 			ok, missing := IsProviderConfigured(tc.cfg)
 
 			if ok != tc.wantOK {
-				t.Errorf("IsProviderConfigured() ok = %v, want %v", ok, tc.wantOK)
+				t.Errorf("IsProviderConfigured() ok = %v, want %v (missing: %v)", ok, tc.wantOK, missing)
 			}
 
 			if tc.wantMissing == nil {
@@ -1472,5 +1567,111 @@ func TestIsProviderConfigured(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T-12 — ApplyDefaults and validate updates (v2 shape)
+// ---------------------------------------------------------------------------
+
+// TestApplyDefaults_V2Shape — ApplyDefaults should NOT modify the credentials map.
+// Timeout/MaxRetries/Stream defaults are applied by ResolveActiveProvider, not stored.
+func TestApplyDefaults_V2Shape(t *testing.T) {
+	cfg := &Config{
+		Providers: map[string]ProviderCredentials{
+			"anthropic": {APIKey: "sk-ant-test"},
+		},
+		Models: ModelsConfig{Default: ModelRef{Provider: "anthropic", Model: "claude-opus-4-6"}},
+	}
+	cfg.ApplyDefaults()
+
+	// Credentials map must remain unchanged (no timeout/retries injected).
+	if cfg.Providers["anthropic"].APIKey != "sk-ant-test" {
+		t.Errorf("Providers[anthropic].APIKey changed by ApplyDefaults")
+	}
+
+	// ResolveActiveProvider must return defaults.
+	resolved := ResolveActiveProvider(*cfg)
+	if resolved.Timeout != 60*time.Second {
+		t.Errorf("resolved.Timeout = %v, want 60s", resolved.Timeout)
+	}
+	if resolved.MaxRetries != 3 {
+		t.Errorf("resolved.MaxRetries = %d, want 3", resolved.MaxRetries)
+	}
+	if resolved.Stream == nil || !*resolved.Stream {
+		t.Errorf("resolved.Stream = %v, want pointer-to-true", resolved.Stream)
+	}
+}
+
+// TestValidate_SkipsAPIKeyCheckWhenNoActiveProvider — OQ-3: empty Models.Default.Provider
+// skips api_key check entirely (setup-only mode).
+func TestValidate_SkipsAPIKeyCheckWhenNoActiveProvider(t *testing.T) {
+	cfg := &Config{
+		// No Providers, no Models.Default.Provider — setup-only state.
+	}
+	cfg.ApplyDefaults()
+
+	// validate() must not error on missing api_key.
+	if err := cfg.validate(); err != nil {
+		t.Errorf("expected no error in setup-only mode (no active provider), got: %v", err)
+	}
+}
+
+// TestValidate_V2HappyPath — full v2 config passes validation.
+func TestValidate_V2HappyPath(t *testing.T) {
+	cfg := &Config{
+		Providers: map[string]ProviderCredentials{
+			"openrouter": {APIKey: "sk-or-abc"},
+			"anthropic":  {APIKey: "sk-ant-xyz"},
+		},
+		Models: ModelsConfig{Default: ModelRef{Provider: "openrouter", Model: "anthropic/claude-haiku-4.5"}},
+	}
+	cfg.ApplyDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Errorf("expected no validation error for valid v2 config, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T-14 — Round-trip write test (AS-4)
+// ---------------------------------------------------------------------------
+
+// TestLoadWriteRoundTrip_V1InV2Out — Load v1 YAML, marshal output must be v2.
+func TestLoadWriteRoundTrip_V1InV2Out(t *testing.T) {
+	v1YAML := `
+provider:
+  type: openrouter
+  model: anthropic/claude-haiku-4.5
+  api_key: sk-or-abc
+agent:
+  max_iterations: 5
+`
+	tmpFile := createTempFile(t, v1YAML)
+	defer os.Remove(tmpFile)
+
+	cfg, err := Load(tmpFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	out, err := marshalConfig(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	outStr := string(out)
+
+	if !strings.Contains(outStr, "providers:") {
+		t.Errorf("marshaled YAML does not contain 'providers:'\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "models:") {
+		t.Errorf("marshaled YAML does not contain 'models:'\n%s", outStr)
+	}
+	// The top-level "provider:" key must NOT appear (pointer+omitempty ensures this).
+	lines := strings.Split(outStr, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "provider:") {
+			t.Errorf("marshaled YAML still contains top-level 'provider:' key:\n%s", outStr)
+			break
+		}
 	}
 }

@@ -30,24 +30,73 @@ type WebConfig struct {
 	TrustProxy     bool     `yaml:"trust_proxy"     json:"trust_proxy"`     // When true, X-Forwarded-For is trusted for client IP. Only enable behind a trusted reverse proxy.
 }
 
+// ProviderCredentials holds authentication credentials for a single AI provider.
+// No routing, no model selection — credentials only.
+type ProviderCredentials struct {
+	APIKey  string `yaml:"api_key"            json:"api_key"`
+	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+}
+
+// ModelsConfig is the active-model selection block.
+// Default is the single wired role today.
+// TODO(roadmap/subagent-orchestrator): per-role model routing via Roles map.
+type ModelsConfig struct {
+	Default ModelRef `yaml:"default" json:"default"`
+	// Roles map[string]ModelRef `yaml:"roles,omitempty" json:"roles,omitempty"`
+}
+
+// ModelRef identifies a specific model at a specific provider.
+// Struct form avoids slash-parse ambiguity with OpenRouter model IDs.
+type ModelRef struct {
+	Provider string `yaml:"provider" json:"provider"`
+	Model    string `yaml:"model"    json:"model"`
+}
+
+// KnownProviders is the list of provider names accepted by the system.
+var KnownProviders = []string{"anthropic", "openai", "gemini", "openrouter", "ollama"}
+
+// IsKnownProvider returns true iff name is one of KnownProviders.
+func IsKnownProvider(name string) bool {
+	for _, p := range KnownProviders {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 type Config struct {
-	Agent             AgentConfig         `yaml:"agent"               json:"agent"`
-	Provider          ProviderConfig      `yaml:"provider"            json:"provider"`
-	Channel           ChannelConfig       `yaml:"channel"             json:"channel"`
-	Tools             ToolsConfig         `yaml:"tools"               json:"tools"`
-	Store             StoreConfig         `yaml:"store"               json:"store"`
-	Logging           LoggingConfig       `yaml:"logging"             json:"logging"`
-	Limits            LimitsConfig        `yaml:"limits"              json:"limits"`
-	Audit             AuditConfig         `yaml:"audit"               json:"audit"`
-	Cron              CronConfig          `yaml:"cron"                json:"cron"`
-	Filter            FilterConfig        `yaml:"filter"              json:"filter"`
-	Media             MediaConfig         `yaml:"media"               json:"media"`
-	Web               WebConfig           `yaml:"web"                 json:"web"`
-	Notifications     NotificationsConfig `yaml:"notifications"       json:"notifications"`
-	Skills            []string            `yaml:"skills"              json:"skills"`
-	SkillsDir         string              `yaml:"skills_dir"          json:"skills_dir"`
-	SkillsRegistryURL string              `yaml:"skills_registry_url" json:"skills_registry_url"`
-	RAG               RAGConfig           `yaml:"rag"                 json:"rag"`
+	Agent   AgentConfig `yaml:"agent" json:"agent"`
+
+	// DEPRECATED: Provider is the v1 shape. It is unmarshaled from disk only when a
+	// legacy config is encountered; migrateLegacyProvider nils it out immediately
+	// after yaml.Unmarshal. Writers MUST NOT set this field — use Providers + Models
+	// instead. The pointer + omitempty ensures yaml.v3 drops it on marshal when nil.
+	// (Non-pointer struct + omitempty does NOT work in yaml.v3 — it emits "provider: {}".)
+	Provider *ProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty"`
+
+	// v2 credentials store — keyed by provider name (e.g. "anthropic", "openrouter").
+	Providers map[string]ProviderCredentials `yaml:"providers,omitempty" json:"providers,omitempty"`
+	// v2 active-model selection.
+	Models ModelsConfig `yaml:"models,omitempty" json:"models,omitempty"`
+
+	Fallback      *FallbackConfig     `yaml:"fallback,omitempty"  json:"fallback,omitempty"`
+	Channel       ChannelConfig       `yaml:"channel"             json:"channel"`
+	Tools         ToolsConfig         `yaml:"tools"               json:"tools"`
+	Store         StoreConfig         `yaml:"store"               json:"store"`
+	Logging       LoggingConfig       `yaml:"logging"             json:"logging"`
+	Limits        LimitsConfig        `yaml:"limits"              json:"limits"`
+	Audit         AuditConfig         `yaml:"audit"               json:"audit"`
+	Cron          CronConfig          `yaml:"cron"                json:"cron"`
+	Filter        FilterConfig        `yaml:"filter"              json:"filter"`
+	Media         MediaConfig         `yaml:"media"               json:"media"`
+	Web           WebConfig           `yaml:"web"                 json:"web"`
+	Notifications NotificationsConfig `yaml:"notifications"       json:"notifications"`
+
+	Skills            []string `yaml:"skills"              json:"skills"`
+	SkillsDir         string   `yaml:"skills_dir"          json:"skills_dir"`
+	SkillsRegistryURL string   `yaml:"skills_registry_url" json:"skills_registry_url"`
+	RAG               RAGConfig `yaml:"rag"                json:"rag"`
 }
 
 // FilterConfig controls post-execution tool output compression.
@@ -260,22 +309,36 @@ type ProviderConfig struct {
 	Fallback   *FallbackConfig `yaml:"fallback,omitempty" json:"fallback,omitempty"`
 }
 
-// IsProviderConfigured reports whether cfg has a complete provider setup.
+// IsProviderConfigured reports whether cfg has a complete v2 provider setup.
 // Returns (true, nil) when all required fields are present.
 // Returns (false, missing) with every missing-field description accumulated
 // in a single pass — no short-circuit.
 //
-// Ollama does not require an API key; all other providers do.
+// Truth table (AS-5 through AS-10):
+//   - providers nil/empty                        → false ("models.default.provider is not set")
+//   - models.default.provider empty              → false
+//   - models.default.model empty                 → false
+//   - providers[active] absent from map          → false
+//   - providers[active].api_key empty, non-ollama → false
+//   - providers[active].api_key empty, ollama    → true (ollama exemption)
+//   - all present                                → true
 func IsProviderConfigured(cfg Config) (bool, []string) {
 	var missing []string
-	if cfg.Provider.Type == "" {
-		missing = append(missing, "provider.type is not set")
+	if cfg.Models.Default.Provider == "" {
+		missing = append(missing, "models.default.provider is not set")
 	}
-	if cfg.Provider.Model == "" {
-		missing = append(missing, "provider.model is not set")
+	if cfg.Models.Default.Model == "" {
+		missing = append(missing, "models.default.model is not set")
 	}
-	if cfg.Provider.Type != "ollama" && cfg.Provider.APIKey == "" {
-		missing = append(missing, "provider.api_key is not set")
+	// Only check api_key when we have an active provider name.
+	if cfg.Models.Default.Provider != "" {
+		prov := cfg.Models.Default.Provider
+		creds, ok := cfg.Providers[prov]
+		if !ok {
+			missing = append(missing, "providers."+prov+".api_key is not set")
+		} else if prov != "ollama" && creds.APIKey == "" {
+			missing = append(missing, "providers."+prov+".api_key is not set")
+		}
 	}
 	return len(missing) == 0, missing
 }
@@ -476,19 +539,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Agent.SummaryTokens == 0 {
 		c.Agent.SummaryTokens = 1000
 	}
-	if c.Provider.Stream == nil {
-		t := true
-		c.Provider.Stream = &t
-	}
-	if c.Provider.Timeout == 0 {
-		c.Provider.Timeout = 60 * time.Second
-	}
-	if c.Provider.MaxRetries == 0 {
-		c.Provider.MaxRetries = 3
-	}
-	if (c.Provider.Type == "openai" || c.Provider.Type == "ollama") && c.Provider.Model == "" {
-		c.Provider.Model = "gpt-4o"
-	}
+	// NOTE: Provider defaults (Timeout, MaxRetries, Stream) are applied by
+	// ResolveActiveProvider on the returned ProviderConfig — not stored in the
+	// Providers credentials map (which is credentials-only).
 	if c.Tools.File.MaxFileSize == "" {
 		c.Tools.File.MaxFileSize = "1MB"
 	}
@@ -773,31 +826,45 @@ func (c *Config) resolvePaths() {
 }
 
 func (c *Config) validate() error {
-	// Allow empty api_key for Ollama (type "ollama") and for OpenAI-compatible
-	// endpoints with a custom base_url (e.g. local Ollama via type "openai").
-	openAIWithCustomBase := c.Provider.Type == "openai" && c.Provider.BaseURL != ""
-	if c.Provider.APIKey == "" && c.Provider.Type != "ollama" && !openAIWithCustomBase {
-		return fmt.Errorf("provider.api_key is required")
-	}
-	switch c.Provider.Type {
-	case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider", "":
-		// valid
-	default:
-		return fmt.Errorf("unknown provider.type: %s", c.Provider.Type)
+	// v2 active-provider validation.
+	// Skip api_key check when no active provider is set (setup-only mode, OQ-3).
+	activeProv := c.Models.Default.Provider
+	if activeProv != "" {
+		creds := c.Providers[activeProv]
+		openAIWithCustomBase := activeProv == "openai" && creds.BaseURL != ""
+		if creds.APIKey == "" && activeProv != "ollama" && !openAIWithCustomBase {
+			return fmt.Errorf("provider.api_key is required")
+		}
+		switch activeProv {
+		case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider":
+			// valid
+		default:
+			return fmt.Errorf("unknown provider.type: %s", activeProv)
+		}
 	}
 
-	if c.Provider.Fallback != nil {
-		if c.Provider.Fallback.APIKey == "" {
+	// v1 legacy Provider pointer — only present during migration window; validate if present.
+	if c.Provider != nil && c.Provider.Type != "" {
+		switch c.Provider.Type {
+		case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider":
+			// valid
+		default:
+			return fmt.Errorf("unknown provider.type: %s", c.Provider.Type)
+		}
+	}
+
+	if c.Fallback != nil {
+		if c.Fallback.APIKey == "" {
 			return fmt.Errorf("provider.fallback.api_key is required")
 		}
-		if c.Provider.Fallback.Model == "" {
+		if c.Fallback.Model == "" {
 			return fmt.Errorf("provider.fallback.model is required")
 		}
-		switch c.Provider.Fallback.Type {
+		switch c.Fallback.Type {
 		case "anthropic", "gemini", "openrouter", "openai", "ollama", "test", "test_provider", "":
 			// valid
 		default:
-			return fmt.Errorf("unknown provider.fallback.type: %s", c.Provider.Fallback.Type)
+			return fmt.Errorf("unknown provider.fallback.type: %s", c.Fallback.Type)
 		}
 	}
 
@@ -1037,6 +1104,8 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+
+	migrateLegacyProvider(&cfg)
 
 	cfg.ApplyDefaults()
 	if err := cfg.validate(); err != nil {

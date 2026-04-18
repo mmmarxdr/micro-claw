@@ -619,8 +619,11 @@ func (m WizardModel) advance() (tea.Model, tea.Cmd) {
 	// Build yaml preview (with redacted secrets) when arriving at confirm step
 	if m.step == stepConfirm {
 		shadowCfg := m.buildConfig()
-		if shadowCfg.Provider.APIKey != "" {
-			shadowCfg.Provider.APIKey = "***"
+		for provName, creds := range shadowCfg.Providers {
+			if creds.APIKey != "" {
+				creds.APIKey = "***"
+				shadowCfg.Providers[provName] = creds
+			}
 		}
 		if shadowCfg.Channel.Token != "" {
 			shadowCfg.Channel.Token = "***"
@@ -734,9 +737,15 @@ func (m WizardModel) buildConfig() *config.Config {
 	channel := m.channelSelector.Selected()
 
 	cfg := &config.Config{}
-	cfg.Provider.Type = provider
-	cfg.Provider.Model = m.modelSelector.SelectedModelID()
-	cfg.Provider.APIKey = m.apiKeyInput.Value()
+	cfg.Providers = map[string]config.ProviderCredentials{
+		provider: {APIKey: m.apiKeyInput.Value()},
+	}
+	cfg.Models = config.ModelsConfig{
+		Default: config.ModelRef{
+			Provider: provider,
+			Model:    m.modelSelector.SelectedModelID(),
+		},
+	}
 	cfg.Channel.Type = channel
 	if channel == "telegram" || channel == "discord" {
 		cfg.Channel.Token = m.tokenInput.Value()

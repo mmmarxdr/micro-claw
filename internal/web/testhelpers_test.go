@@ -7,13 +7,18 @@ import (
 	"microagent/internal/provider"
 )
 
-// minimalConfig returns a *config.Config suitable for unit tests.
+// minimalConfig returns a *config.Config suitable for unit tests (v2 shape).
+// Provider is "anthropic" with model "claude-test" for backward compatibility
+// with integration tests that check the status endpoint.
 func minimalConfig() *config.Config {
 	return &config.Config{
-		Agent:    config.AgentConfig{Name: "test-agent"},
-		Provider: config.ProviderConfig{Type: "anthropic", Model: "claude-test"},
-		Channel:  config.ChannelConfig{Type: "cli"},
-		Web:      config.WebConfig{Host: "127.0.0.1", Port: 8080},
+		Agent: config.AgentConfig{Name: "test-agent"},
+		Providers: map[string]config.ProviderCredentials{
+			"anthropic": {APIKey: "sk-ant-test"},
+		},
+		Models:  config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-test"}},
+		Channel: config.ChannelConfig{Type: "cli"},
+		Web:     config.WebConfig{Host: "127.0.0.1", Port: 8080},
 	}
 }
 

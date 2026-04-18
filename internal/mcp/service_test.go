@@ -19,9 +19,12 @@ func writeTestConfig(t *testing.T, dir string, servers []config.MCPServerConfig,
 	cfg.Tools.MCP.Enabled = enabled
 	cfg.Tools.MCP.Servers = servers
 	// Provide minimum required fields so the file is non-empty YAML.
-	cfg.Provider.APIKey = "test-key"
-	cfg.Provider.Type = "anthropic"
-	cfg.Provider.Model = "claude-3-sonnet-20240229"
+	cfg.Providers = map[string]config.ProviderCredentials{
+		"anthropic": {APIKey: "test-key"},
+	}
+	cfg.Models = config.ModelsConfig{
+		Default: config.ModelRef{Provider: "anthropic", Model: "claude-3-sonnet-20240229"},
+	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {

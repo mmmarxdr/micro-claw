@@ -10,9 +10,7 @@ import (
 )
 
 func TestDashboardModel_TabSwitching(t *testing.T) {
-	cfg := &config.Config{
-		Provider: config.ProviderConfig{APIKey: "sk-test"},
-	}
+	cfg := &config.Config{}
 	m := newDashboardModel(cfg, "")
 
 	// Start at tabOverview (0).
@@ -31,9 +29,7 @@ func TestDashboardModel_TabSwitching(t *testing.T) {
 }
 
 func TestDashboardModel_LeftArrowTabSwitching(t *testing.T) {
-	cfg := &config.Config{
-		Provider: config.ProviderConfig{APIKey: "sk-test"},
-	}
+	cfg := &config.Config{}
 	m := newDashboardModel(cfg, "")
 
 	// Left arrow from tabOverview (0) should wrap to tabMCP (4).
@@ -45,9 +41,7 @@ func TestDashboardModel_LeftArrowTabSwitching(t *testing.T) {
 }
 
 func TestDashboardModel_RightArrowTabSwitching(t *testing.T) {
-	cfg := &config.Config{
-		Provider: config.ProviderConfig{APIKey: "sk-test"},
-	}
+	cfg := &config.Config{}
 	m := newDashboardModel(cfg, "")
 
 	// Right arrow from tabOverview (0) goes to tabAuditEvents (1).
@@ -59,9 +53,7 @@ func TestDashboardModel_RightArrowTabSwitching(t *testing.T) {
 }
 
 func TestDashboardModel_QKeyQuits(t *testing.T) {
-	cfg := &config.Config{
-		Provider: config.ProviderConfig{APIKey: "sk-test"},
-	}
+	cfg := &config.Config{}
 	m := newDashboardModel(cfg, "")
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -77,10 +69,11 @@ func TestDashboardModel_QKeyQuits(t *testing.T) {
 
 func TestRenderConfig_RedactsAPIKey(t *testing.T) {
 	cfg := &config.Config{
-		Provider: config.ProviderConfig{
-			Type:   "anthropic",
-			Model:  "claude-3-5-sonnet",
-			APIKey: "sk-real-secret-key",
+		Providers: map[string]config.ProviderCredentials{
+			"anthropic": {APIKey: "sk-real-secret-key"},
+		},
+		Models: config.ModelsConfig{
+			Default: config.ModelRef{Provider: "anthropic", Model: "claude-3-5-sonnet"},
 		},
 		Channel: config.ChannelConfig{Type: "cli"},
 		Store:   config.StoreConfig{Path: "/data"},
@@ -106,9 +99,7 @@ func TestRenderConfig_RedactsAPIKey(t *testing.T) {
 }
 
 func TestDashboardModel_DataLoadedMsg(t *testing.T) {
-	cfg := &config.Config{
-		Provider: config.ProviderConfig{APIKey: "sk-test"},
-	}
+	cfg := &config.Config{}
 	m := newDashboardModel(cfg, "")
 
 	// Simulate the data load completing.

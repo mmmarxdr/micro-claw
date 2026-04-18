@@ -95,12 +95,14 @@ func marshalAnnotated(cfg *config.Config) ([]byte, error) {
 	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	doc.Content = append(doc.Content, root)
 
-	providerNode := buildProviderNode(cfg)
+	providersNode := buildProvidersNode(cfg)
+	modelsNode := buildModelsNode(cfg)
 	channelNode := buildChannelNode(cfg)
 	storeNode := buildStoreNode(cfg)
 	auditNode := buildAuditNode(cfg)
 
-	appendSection(root, "provider", providerNode, "# Provider configuration")
+	appendSection(root, "providers", providersNode, "# Provider credentials (provider name → credentials)")
+	appendSection(root, "models", modelsNode, "# Active model selection")
 	appendSection(root, "channel", channelNode, "# Channel configuration")
 	appendSection(root, "store", storeNode, "# Data store configuration")
 	appendSection(root, "audit", auditNode, "# Audit configuration")
@@ -146,29 +148,43 @@ func mappingNode(pairs ...string) *yaml.Node {
 	return n
 }
 
-func buildProviderNode(cfg *config.Config) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+// buildProvidersNode builds the v2 "providers:" mapping node.
+// Each key is a provider name; value is a credentials mapping.
+func buildProvidersNode(cfg *config.Config) *yaml.Node {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for name, creds := range cfg.Providers {
+		credsNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		apiKeyKey := &yaml.Node{
+			Kind:        yaml.ScalarNode,
+			Tag:         "!!str",
+			Value:       "api_key",
+			LineComment: "# tip: reference env vars using dollar-brace syntax e.g. MY_API_KEY for better security",
+		}
+		credsNode.Content = append(credsNode.Content, apiKeyKey, strNode(creds.APIKey))
+		if creds.BaseURL != "" {
+			credsNode.Content = append(credsNode.Content, strNode("base_url"), strNode(creds.BaseURL))
+		}
+		root.Content = append(root.Content, strNode(name), credsNode)
+	}
+	return root
+}
 
-	typeKey := &yaml.Node{
+// buildModelsNode builds the v2 "models:" mapping node.
+func buildModelsNode(cfg *config.Config) *yaml.Node {
+	providerKey := &yaml.Node{
 		Kind:        yaml.ScalarNode,
 		Tag:         "!!str",
-		Value:       "type",
+		Value:       "provider",
 		LineComment: "# options: anthropic, gemini, openrouter, openai, ollama",
 	}
-	n.Content = append(n.Content, typeKey, strNode(cfg.Provider.Type))
-
-	modelKey := strNode("model")
-	n.Content = append(n.Content, modelKey, strNode(cfg.Provider.Model))
-
-	apiKeyKey := &yaml.Node{
-		Kind:        yaml.ScalarNode,
-		Tag:         "!!str",
-		Value:       "api_key",
-		LineComment: "# tip: reference env vars using dollar-brace syntax e.g. MY_API_KEY for better security",
-	}
-	n.Content = append(n.Content, apiKeyKey, strNode(cfg.Provider.APIKey))
-
-	return n
+	defaultNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	defaultNode.Content = append(defaultNode.Content,
+		providerKey, strNode(cfg.Models.Default.Provider),
+		strNode("model"), strNode(cfg.Models.Default.Model),
+	)
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	root.Content = append(root.Content, strNode("default"), defaultNode)
+	return root
 }
 
 func buildChannelNode(cfg *config.Config) *yaml.Node {

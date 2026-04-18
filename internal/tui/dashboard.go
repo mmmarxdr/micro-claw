@@ -240,8 +240,9 @@ func renderConfig(m DashboardModel) string {
 		return m.styles.dimLabel.Render("No config loaded.")
 	}
 	var sb strings.Builder
-	sb.WriteString(m.styles.label.Render("Provider:") + " " + m.cfg.Provider.Type + "\n")
-	sb.WriteString(m.styles.label.Render("Model:") + " " + m.cfg.Provider.Model + "\n")
+	activeProv := config.ResolveActiveProvider(*m.cfg)
+	sb.WriteString(m.styles.label.Render("Provider:") + " " + activeProv.Type + "\n")
+	sb.WriteString(m.styles.label.Render("Model:") + " " + activeProv.Model + "\n")
 	sb.WriteString(m.styles.label.Render("API Key:") + " ***\n")
 	sb.WriteString(m.styles.label.Render("Channel Type:") + " " + m.cfg.Channel.Type + "\n")
 	sb.WriteString(m.styles.label.Render("Store Path:") + " " + m.cfg.Store.Path + "\n")

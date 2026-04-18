@@ -288,8 +288,8 @@ store:
 			setupConfig: func(t *testing.T) string {
 				tmpDir := t.TempDir()
 				configPath := filepath.Join(tmpDir, "config.yaml")
-				// Invalid YAML - missing colon
-				configContent := `agent name: "test"`
+				// Invalid YAML - mismatched indentation / tab character causes parse error
+				configContent := "agent:\n\tname: test"
 				if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 					t.Fatalf("Failed to write test config: %v", err)
 				}

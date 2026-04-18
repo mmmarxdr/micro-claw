@@ -229,8 +229,8 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		cfgPath = filepath.Join(home, ".microagent", "config.yaml")
 	}
 
-	// Capture the current provider type before any changes (for restart detection).
-	prevType := s.deps.Config.Provider.Type
+	// Capture the current active provider before any changes (for restart detection).
+	prevType := s.deps.Config.Models.Default.Provider
 
 	// Load existing config if present, otherwise start with defaults.
 	var base config.Config
@@ -240,6 +240,8 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to parse existing config: %v", err2))
 			return
 		}
+		// Run migration on the loaded config so legacy v1 provider fields are absorbed.
+		config.MigrateLegacyProviderPublic(&base)
 	} else {
 		// First-time defaults.
 		base.Web.Enabled = true
@@ -252,11 +254,18 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	// Restart is required when switching provider type on an already-configured system.
 	restartRequired := prevType != "" && prevType != req.Provider
 
-	// Overlay provider fields only.
-	base.Provider.Type = req.Provider
-	base.Provider.Model = req.Model
-	base.Provider.APIKey = req.APIKey
-	base.Provider.BaseURL = req.BaseURL
+	// Write v2 shape: populate Providers map and Models.Default.
+	if base.Providers == nil {
+		base.Providers = make(map[string]config.ProviderCredentials)
+	}
+	creds := base.Providers[req.Provider]
+	creds.APIKey = req.APIKey
+	creds.BaseURL = req.BaseURL
+	base.Providers[req.Provider] = creds
+	base.Models.Default.Provider = req.Provider
+	base.Models.Default.Model = req.Model
+	// Nil out legacy Provider pointer so it won't be serialized.
+	base.Provider = nil
 
 	// Ensure auth token exists. Prefer the current in-memory token (set at
 	// startup), then fall back to the on-disk value, then generate a new one.
@@ -280,8 +289,10 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reload provider fields in-memory.
-	s.deps.Config.Provider = base.Provider
+	// Reload provider fields in-memory (v2 shape).
+	s.deps.Config.Providers = base.Providers
+	s.deps.Config.Models = base.Models
+	s.deps.Config.Provider = nil // clear legacy pointer
 	s.deps.Config.Web.AuthToken = authToken
 
 	// Set HttpOnly cookie so the browser is authenticated automatically.
@@ -325,11 +336,10 @@ func (s *Server) handleSetupReset(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Clear provider fields only.
-	base.Provider.Type = ""
-	base.Provider.Model = ""
-	base.Provider.APIKey = ""
-	base.Provider.BaseURL = ""
+	// Clear v2 provider fields.
+	base.Providers = nil
+	base.Models.Default = config.ModelRef{}
+	base.Provider = nil // nil out any legacy pointer too
 
 	if err := atomicWriteConfig(cfgPath, &base); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", err))
@@ -337,7 +347,9 @@ func (s *Server) handleSetupReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reload in-memory.
-	s.deps.Config.Provider = base.Provider
+	s.deps.Config.Providers = nil
+	s.deps.Config.Models.Default = config.ModelRef{}
+	s.deps.Config.Provider = nil
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "needs_setup": true})
 }

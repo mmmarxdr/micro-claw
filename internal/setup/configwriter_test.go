@@ -72,9 +72,10 @@ func TestWriteConfig_WrittenYAMLIsLoadable(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 
 	cfg := minimalConfig()
-	cfg.Provider.Type = "anthropic"
-	cfg.Provider.Model = "claude-3-5-sonnet-20241022"
-	cfg.Provider.APIKey = "test-key-123"
+	cfg.Providers = map[string]config.ProviderCredentials{
+		"anthropic": {APIKey: "test-key-123"},
+	}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}}
 	cfg.Channel.Type = "cli"
 	cfg.Store.Type = "sqlite"
 	cfg.Store.Path = dir
@@ -88,11 +89,15 @@ func TestWriteConfig_WrittenYAMLIsLoadable(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 
-	if loaded.Provider.APIKey != cfg.Provider.APIKey {
-		t.Errorf("Provider.APIKey = %q, want %q", loaded.Provider.APIKey, cfg.Provider.APIKey)
+	wantAPIKey := cfg.Providers["anthropic"].APIKey
+	gotAPIKey := loaded.Providers["anthropic"].APIKey
+	if gotAPIKey != wantAPIKey {
+		t.Errorf("Providers[anthropic].APIKey = %q, want %q", gotAPIKey, wantAPIKey)
 	}
-	if loaded.Provider.Model != cfg.Provider.Model {
-		t.Errorf("Provider.Model = %q, want %q", loaded.Provider.Model, cfg.Provider.Model)
+	wantModel := cfg.Models.Default.Model
+	gotModel := loaded.Models.Default.Model
+	if gotModel != wantModel {
+		t.Errorf("Models.Default.Model = %q, want %q", gotModel, wantModel)
 	}
 	if loaded.Channel.Type != cfg.Channel.Type {
 		t.Errorf("Channel.Type = %q, want %q", loaded.Channel.Type, cfg.Channel.Type)
@@ -284,14 +289,13 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-// minimalConfig returns a minimal config suitable for WriteConfig tests.
+// minimalConfig returns a minimal config suitable for WriteConfig tests (v2 shape).
 func minimalConfig() *config.Config {
 	return &config.Config{
-		Provider: config.ProviderConfig{
-			Type:   "anthropic",
-			Model:  "claude-3-5-sonnet-20241022",
-			APIKey: "sk-test",
+		Providers: map[string]config.ProviderCredentials{
+			"anthropic": {APIKey: "sk-test"},
 		},
+		Models: config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
 		Channel: config.ChannelConfig{
 			Type: "cli",
 		},

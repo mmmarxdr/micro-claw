@@ -156,14 +156,15 @@ func runWebCommand(args []string, cfgPath string) error {
 	}
 
 	// ---- Provider ----
-	prov, err := buildProvider(cfg.Provider)
+	activeProv := config.ResolveActiveProvider(*cfg)
+	prov, err := buildProvider(activeProv)
 	if err != nil {
 		return fmt.Errorf("web: failed to create provider: %w", err)
 	}
 	slog.Info("provider initialized", "name", prov.Name())
 
-	if cfg.Provider.Fallback != nil {
-		fallbackProv, err := buildProvider(asProviderConfig(cfg.Provider.Fallback))
+	if cfg.Fallback != nil {
+		fallbackProv, err := buildProvider(asProviderConfig(cfg.Fallback))
 		if err != nil {
 			return fmt.Errorf("web: failed to create fallback provider: %w", err)
 		}

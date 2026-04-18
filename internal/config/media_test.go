@@ -139,8 +139,9 @@ func TestMediaConfig_ValidationEmptyMIMEPrefixes(t *testing.T) {
 	// during applyDefaults. To test the validator path we build a valid Config
 	// directly, apply defaults, then clear the slice (simulating programmatic mutation).
 	cfg := &Config{
-		Provider: ProviderConfig{Type: "test_provider", APIKey: "key", Model: "m"},
-		Channel:  ChannelConfig{Type: "cli"},
+		Providers: map[string]ProviderCredentials{"test_provider": {APIKey: "key"}},
+		Models:    ModelsConfig{Default: ModelRef{Provider: "test_provider", Model: "m"}},
+		Channel:   ChannelConfig{Type: "cli"},
 	}
 	cfg.ApplyDefaults()
 	// Defaults should have enabled media.

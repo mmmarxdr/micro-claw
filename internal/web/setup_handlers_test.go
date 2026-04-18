@@ -18,11 +18,10 @@ import (
 
 func TestHandleSetupStatus_ConfigComplete(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{
-		Type:   "anthropic",
-		Model:  "claude-sonnet-4-6",
-		APIKey: "sk-ant-xxx",
+	cfg.Providers = map[string]config.ProviderCredentials{
+		"anthropic": {APIKey: "sk-ant-xxx"},
 	}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}}
 	cfg.Web.AuthToken = "test-token"
 
 	s := newSetupTestServer(cfg)
@@ -53,7 +52,9 @@ func TestHandleSetupStatus_ConfigComplete(t *testing.T) {
 
 func TestHandleSetupStatus_ConfigMissing(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{} // empty — needs setup
+	// Clear providers and models — needs setup
+	cfg.Providers = nil
+	cfg.Models = config.ModelsConfig{}
 	cfg.Web.AuthToken = "test-token"
 
 	s := newSetupTestServer(cfg)
@@ -83,11 +84,10 @@ func TestHandleSetupStatus_ConfigMissing(t *testing.T) {
 
 func TestHandleSetupStatus_BypassesAuth(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{
-		Type:   "anthropic",
-		Model:  "claude-sonnet-4-6",
-		APIKey: "sk-ant-xxx",
+	cfg.Providers = map[string]config.ProviderCredentials{
+		"anthropic": {APIKey: "sk-ant-xxx"},
 	}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}}
 	cfg.Web.AuthToken = "secret-token"
 
 	s := newSetupTestServer(cfg)
@@ -218,6 +218,8 @@ func TestHandleSetupProviders_BypassesAuth(t *testing.T) {
 
 func TestHandleValidateKey_ValidKey(t *testing.T) {
 	cfg := minimalConfig()
+	cfg.Providers = nil
+	cfg.Models = config.ModelsConfig{}
 	cfg.Web.AuthToken = "test-token"
 	s := newSetupTestServerWithFactory(cfg, mockProviderFactory(nil))
 
@@ -241,6 +243,8 @@ func TestHandleValidateKey_ValidKey(t *testing.T) {
 
 func TestHandleValidateKey_InvalidKey(t *testing.T) {
 	cfg := minimalConfig()
+	cfg.Providers = nil
+	cfg.Models = config.ModelsConfig{}
 	s := newSetupTestServerWithFactory(cfg, mockProviderFactory(provider.ErrAuth))
 
 	body := `{"provider":"anthropic","api_key":"sk-bad","model":"claude-sonnet-4-6","base_url":""}`
@@ -266,6 +270,8 @@ func TestHandleValidateKey_InvalidKey(t *testing.T) {
 
 func TestHandleValidateKey_NonJSONBody(t *testing.T) {
 	cfg := minimalConfig()
+	cfg.Providers = nil
+	cfg.Models = config.ModelsConfig{}
 	s := newSetupTestServerWithFactory(cfg, mockProviderFactory(nil))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/setup/validate-key", strings.NewReader("not-json"))
@@ -297,11 +303,10 @@ func TestHandleValidateKey_BypassesAuth(t *testing.T) {
 
 func TestHandleValidateKey_SetupAlreadyComplete_Returns403(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{
-		Type:   "anthropic",
-		Model:  "claude-sonnet-4-6",
-		APIKey: "sk-ant-existing",
+	cfg.Providers = map[string]config.ProviderCredentials{
+		"anthropic": {APIKey: "sk-ant-existing"},
 	}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}}
 	s := newSetupTestServerWithFactory(cfg, mockProviderFactory(nil))
 
 	body := `{"provider":"anthropic","api_key":"sk-ant-valid","model":"claude-sonnet-4-6"}`
@@ -322,7 +327,7 @@ func TestHandleSetupComplete_FirstTime(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{} // not configured yet
+	// Not configured yet — no providers/models
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
 	body := `{"provider":"anthropic","api_key":"sk-ant-test","model":"claude-sonnet-4-6","base_url":""}`
@@ -376,7 +381,8 @@ web:
 	}
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "gpt-4o", APIKey: "sk-old"}
+	cfg.Providers = map[string]config.ProviderCredentials{"openai": {APIKey: "sk-old"}}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "openai", Model: "gpt-4o"}}
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
 	body := `{"provider":"anthropic","api_key":"sk-ant-new","model":"claude-sonnet-4-6"}`
@@ -407,7 +413,7 @@ func TestHandleSetupComplete_OllamaNoKeyRequired(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{}
+	// Not configured yet
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
 	body := `{"provider":"ollama","api_key":"","model":"llama3","base_url":"http://localhost:11434"}`
@@ -426,7 +432,7 @@ func TestHandleSetupComplete_MissingRequiredField(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{}
+	// Not configured yet
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
 	// Missing model.
@@ -446,7 +452,8 @@ func TestHandleSetupComplete_ProviderTypeChange_RestartRequired(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "gpt-4o", APIKey: "sk-old"}
+	cfg.Providers = map[string]config.ProviderCredentials{"openai": {APIKey: "sk-old"}}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "openai", Model: "gpt-4o"}}
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
 	body := `{"provider":"anthropic","api_key":"sk-ant-new","model":"claude-sonnet-4-6"}`
@@ -488,7 +495,8 @@ web:
 	}
 
 	cfg := minimalConfig()
-	cfg.Provider = config.ProviderConfig{Type: "anthropic", Model: "claude-sonnet-4-6", APIKey: "sk-ant-test"}
+	cfg.Providers = map[string]config.ProviderCredentials{"anthropic": {APIKey: "sk-ant-test"}}
+	cfg.Models = config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-sonnet-4-6"}}
 	cfg.Web.AuthToken = "existing-token"
 	s := newSetupTestServerWithConfigPath(cfg, cfgPath)
 
