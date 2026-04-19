@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -35,16 +36,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// rotateAuthToken generates a new 256-bit auth token, persists BOTH the new
+// rotateAuthToken generates a new 256-bit auth token and persists it. It is a
+// thin wrapper around rotateAuthTokenWithLogger using the default slog logger.
+func (s *Server) rotateAuthToken() (string, error) {
+	return s.rotateAuthTokenWithLogger(context.Background(), slog.Default())
+}
+
+// rotateAuthTokenWithLogger generates a new 256-bit auth token, persists BOTH the new
 // token and a fresh AuthTokenIssuedAt to disk first (INV-3), then updates
 // in-memory state (INV-6). The entire operation runs under configMu.
+//
+// Each phase is logged individually (NFR-3): disk-write-complete, memory-updated,
+// issued-at-stamped. On disk failure an error is logged before returning.
 //
 // On any error from AtomicWriteConfig the in-memory state is left untouched
 // so the server remains consistent with the on-disk config (NFR-5, AS-18).
 //
 // Returns the new token so callers (logout handler, setup-complete) can set
 // the cookie without re-reading s.deps.Config.Web.AuthToken.
-func (s *Server) rotateAuthToken() (string, error) {
+func (s *Server) rotateAuthTokenWithLogger(_ context.Context, logger *slog.Logger) (string, error) {
 	tok, err := GenerateToken()
 	if err != nil {
 		return "", err
@@ -60,12 +70,16 @@ func (s *Server) rotateAuthToken() (string, error) {
 
 	// Phase 1: disk-first (INV-3). On failure, in-memory is UNTOUCHED.
 	if err := config.AtomicWriteConfig(s.deps.ConfigPath, &newCfg); err != nil {
+		logger.Error("auth: rotation disk-write-failed", "err", err)
 		return "", err
 	}
+	logger.Info("auth: rotation disk-write-complete")
 
 	// Phase 2: in-memory update — both fields, atomically under configMu (INV-6).
 	s.deps.Config.Web.AuthToken = tok
 	s.deps.Config.Web.AuthTokenIssuedAt = newNow
+	logger.Info("auth: rotation memory-updated")
+	logger.Info("auth: rotation issued-at-stamped")
 
 	return tok, nil
 }
