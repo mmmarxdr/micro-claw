@@ -65,6 +65,13 @@ func authMiddlewareDynamic(tokenFn func() string, issuedAtFn func() time.Time, n
 			return
 		}
 
+		// Login endpoint is explicitly exempt from auth middleware (FR-15):
+		// a caller without a cookie must be able to reach the login handler.
+		if path == "/api/auth/login" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		expected := tokenFn()
 		// INV-2: pre-setup bypass — if no token configured, allow all requests.
 		if expected == "" {

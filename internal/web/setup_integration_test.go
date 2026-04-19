@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"microagent/internal/config"
 )
@@ -336,6 +337,90 @@ func TestIntegration_ResetFlow(t *testing.T) {
 	})
 }
 
+// TestSetupComplete_StampsAuthTokenIssuedAt verifies FR-60, AS-1, AS-21:
+// after handleSetupComplete generates a new auth token, config.Web.AuthTokenIssuedAt
+// must be set to approximately time.Now().
+func TestSetupComplete_StampsAuthTokenIssuedAt(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/config.yaml"
+
+	cfg := &config.Config{
+		Agent:   config.AgentConfig{Name: "test-agent"},
+		Channel: config.ChannelConfig{Type: "cli"},
+		Web:     config.WebConfig{Host: "127.0.0.1", Port: 8080},
+		// No provider, no auth token — first-time setup.
+	}
+
+	s, ts := newSetupIntegrationServer(t, cfg, cfgPath)
+	client := ts.Client()
+
+	before := time.Now()
+	resp := doJSON(t, client, http.MethodPost, ts.URL+"/api/setup/complete", map[string]string{
+		"provider": "anthropic",
+		"api_key":  "sk-ant-test",
+		"model":    "claude-sonnet-4-6",
+	}, "")
+	after := time.Now()
+
+	body := decodeJSON(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("setup/complete: expected 200, got %d: %v", resp.StatusCode, body)
+	}
+
+	issuedAt := s.deps.Config.Web.AuthTokenIssuedAt
+	if issuedAt.IsZero() {
+		t.Fatal("setup/complete: AuthTokenIssuedAt is zero — stampIssuedAt was not called")
+	}
+	if issuedAt.Before(before) || issuedAt.After(after) {
+		t.Errorf("setup/complete: AuthTokenIssuedAt %v not in window [%v, %v]",
+			issuedAt, before, after)
+	}
+}
+
+// TestSetupComplete_SetCookiePresent verifies AS-1:
+// the response from setup/complete includes a Set-Cookie: auth=... header.
+func TestSetupComplete_SetCookiePresent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/config.yaml"
+
+	cfg := &config.Config{
+		Agent:   config.AgentConfig{Name: "test-agent"},
+		Channel: config.ChannelConfig{Type: "cli"},
+		Web:     config.WebConfig{Host: "127.0.0.1", Port: 8080},
+	}
+
+	_, ts := newSetupIntegrationServer(t, cfg, cfgPath)
+	client := ts.Client()
+
+	resp := doJSON(t, client, http.MethodPost, ts.URL+"/api/setup/complete", map[string]string{
+		"provider": "anthropic",
+		"api_key":  "sk-ant-test",
+		"model":    "claude-sonnet-4-6",
+	}, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var authCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "auth" {
+			authCookie = c
+			break
+		}
+	}
+	if authCookie == nil {
+		t.Fatal("setup/complete: no auth cookie in Set-Cookie header")
+	}
+	if !authCookie.HttpOnly {
+		t.Error("setup/complete: auth cookie must be HttpOnly")
+	}
+	if authCookie.MaxAge != authCookieMaxAge {
+		t.Errorf("setup/complete: MaxAge got %d, want %d", authCookie.MaxAge, authCookieMaxAge)
+	}
+}
+
 // TestIntegration_AuthBypass verifies which setup endpoints require auth and which do not.
 func TestIntegration_AuthBypass(t *testing.T) {
 	dir := t.TempDir()
@@ -407,6 +492,60 @@ func TestIntegration_AuthBypass(t *testing.T) {
 
 		if resp.StatusCode == http.StatusUnauthorized {
 			t.Errorf("reset with valid auth: expected not 401, got 401")
+		}
+	})
+}
+
+// TestIntegration_LoginLogoutRoutes verifies T-023 route wiring (FR-15, FR-16):
+// - POST /api/auth/login is reachable without a cookie (exempt from auth middleware)
+// - POST /api/auth/logout returns 401 without a valid cookie (behind auth middleware)
+func TestIntegration_LoginLogoutRoutes(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	const tok = "login-logout-route-test-token"
+	cfg := &config.Config{
+		Agent:   config.AgentConfig{Name: "test-agent"},
+		Channel: config.ChannelConfig{Type: "cli"},
+		Web: config.WebConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			AuthToken:         tok,
+			AuthTokenIssuedAt: time.Now(),
+		},
+		Providers: map[string]config.ProviderCredentials{
+			"anthropic": {APIKey: "sk-ant-test"},
+		},
+		Models: config.ModelsConfig{Default: config.ModelRef{Provider: "anthropic", Model: "claude-test"}},
+	}
+
+	_, ts := newSetupIntegrationServer(t, cfg, cfgPath)
+	client := ts.Client()
+
+	// Login endpoint must be reachable without any cookie (FR-15).
+	t.Run("login_no_cookie_reachable", func(t *testing.T) {
+		resp := doJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login",
+			map[string]string{"token": tok}, "")
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			// 401 from the auth middleware would mean the exemption is broken.
+			// 401 from the handler (bad token) is expected only if token mismatched.
+			// Here the token is correct so middleware should pass through.
+			t.Errorf("login without cookie: got 401 from middleware (exemption broken)")
+		}
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("login correct token: expected 204, got %d", resp.StatusCode)
+		}
+	})
+
+	// Logout endpoint must return 401 without a valid cookie (FR-16).
+	t.Run("logout_no_cookie_401", func(t *testing.T) {
+		resp := doJSON(t, client, http.MethodPost, ts.URL+"/api/auth/logout", nil, "")
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("logout without cookie: expected 401, got %d", resp.StatusCode)
 		}
 	})
 }

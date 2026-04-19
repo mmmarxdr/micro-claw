@@ -273,7 +273,8 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if authToken == "" {
 		authToken = base.Web.AuthToken
 	}
-	if authToken == "" {
+	tokenIsNew := authToken == ""
+	if tokenIsNew {
 		t, err := GenerateToken()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to generate auth token")
@@ -282,6 +283,14 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		authToken = t
 	}
 	base.Web.AuthToken = authToken
+
+	// FR-60: stamp AuthTokenIssuedAt when a new token is generated (first-time issuance).
+	// Do NOT reset IssuedAt when a pre-existing token is reused — that would
+	// restart the TTL clock on what may be an already-active session.
+	var stampedIssuedAt time.Time
+	if tokenIsNew {
+		stampedIssuedAt = stampIssuedAt(&base.Web)
+	}
 
 	// Atomic write: temp file + rename.
 	if err := config.AtomicWriteConfig(cfgPath, &base); err != nil {
@@ -294,6 +303,9 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	s.deps.Config.Models = base.Models
 	s.deps.Config.Provider = nil // clear legacy pointer
 	s.deps.Config.Web.AuthToken = authToken
+	if tokenIsNew && !stampedIssuedAt.IsZero() {
+		s.deps.Config.Web.AuthTokenIssuedAt = stampedIssuedAt
+	}
 
 	// Set HttpOnly cookie so the browser is authenticated automatically.
 	setAuthCookie(w, r, &base.Web, authToken)

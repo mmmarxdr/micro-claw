@@ -103,31 +103,51 @@ func bodySizeLimitMiddleware(maxBytes int64, next http.Handler) http.Handler {
 // --------------------------------------------------------------------------
 
 // corsMiddleware handles Cross-Origin Resource Sharing.
-// allowedOrigins is a list of allowed origins. If empty or contains "*", all
-// origins are allowed (development mode).
+//
+// Security rules (FR-30..FR-32, INV-5):
+//   - AllowedOrigins empty (same-origin mode): no CORS headers emitted.
+//     Cross-origin browsers get no ACAO, which effectively blocks them — this
+//     is correct because the deployment is same-origin only.
+//   - AllowedOrigins non-empty (cross-origin mode): echo the request Origin only
+//     when it is in the allowlist; emit Allow-Credentials: true only alongside
+//     the echoed origin (never with a wildcard "*").
+//   - Wildcard "*" in AllowedOrigins is treated as an explicit origin entry, not
+//     as "all origins allowed", preserving the no-wildcard+credentials invariant.
 func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
-	allowAll := len(allowedOrigins) == 0
+	crossOriginMode := len(allowedOrigins) > 0
 	originSet := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
-		if o == "*" {
-			allowAll = true
-		}
 		originSet[strings.TrimRight(o, "/")] = true
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+
+		// No Origin header → simple request from same origin or non-browser client.
 		if origin == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		allowed := allowAll || originSet[origin]
+		// Same-origin mode: emit no CORS headers (FR-31 — no Allow-Credentials).
+		if !crossOriginMode {
+			if r.Method == http.MethodOptions {
+				// Preflight in same-origin mode is unusual but we handle it gracefully.
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Cross-origin mode: check allowlist.
+		allowed := originSet[strings.TrimRight(origin, "/")]
 		if allowed {
+			// FR-30: echo the exact origin (never wildcard) + credentials header.
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "3600")
 		}
 

@@ -179,37 +179,46 @@ func (s *Server) mediaStore() store.MediaStore {
 
 // routes registers all HTTP routes.
 func (s *Server) routes() {
-	// Setup endpoints — always accessible, bypass auth middleware via authMiddleware exemption.
+	ao := s.deps.Config.Web.AllowedOrigins // alias for readability
+
+	// Setup endpoints — always accessible, bypass auth middleware via authMiddlewareDynamic exemption.
 	s.mux.HandleFunc("GET /api/setup/status", s.handleGetSetupStatus)
 	s.mux.HandleFunc("GET /api/setup/providers", s.handleGetSetupProviders)
 	// POST /api/setup/validate-key and /api/setup/complete bypass auth (pre-setup flow).
 	// POST /api/setup/reset requires auth (guarded by the auth middleware — NOT in exempt list).
 	s.mux.HandleFunc("POST /api/setup/validate-key", s.handleValidateKey)
 	s.mux.HandleFunc("POST /api/setup/complete", s.handleSetupComplete)
-	s.mux.HandleFunc("POST /api/setup/reset", s.handleSetupReset)
+	s.mux.Handle("POST /api/setup/reset", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleSetupReset)))
+
+	// Auth endpoints.
+	// POST /api/auth/login is EXEMPT from auth middleware (FR-15) via the exemption in
+	// authMiddlewareDynamic. No requireOriginIfCrossOrigin — login is the entry point.
+	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	// POST /api/auth/logout is BEHIND auth middleware (FR-16) and requires origin validation.
+	s.mux.Handle("POST /api/auth/logout", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleLogout)))
 
 	s.mux.HandleFunc("GET /api/status", s.handleGetStatus)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
-	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
+	s.mux.Handle("PUT /api/config", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handlePutConfig)))
 	s.mux.HandleFunc("GET /api/conversations", s.handleListConversations)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
-	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
+	s.mux.Handle("DELETE /api/conversations/{id}", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleDeleteConversation)))
 	s.mux.HandleFunc("GET /api/memory", s.handleListMemory)
-	s.mux.HandleFunc("POST /api/memory", s.handlePostMemory)
-	s.mux.HandleFunc("DELETE /api/memory/{id}", s.handleDeleteMemory)
+	s.mux.Handle("POST /api/memory", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handlePostMemory)))
+	s.mux.Handle("DELETE /api/memory/{id}", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleDeleteMemory)))
 	s.mux.HandleFunc("GET /api/metrics", s.handleGetMetrics)
 	s.mux.HandleFunc("GET /api/metrics/history", s.handleGetMetricsHistory)
 	s.mux.HandleFunc("GET /api/mcp/servers", s.handleListMCPServers)
-	s.mux.HandleFunc("POST /api/mcp/servers", s.handleAddMCPServer)
-	s.mux.HandleFunc("DELETE /api/mcp/servers/{name}", s.handleRemoveMCPServer)
-	s.mux.HandleFunc("POST /api/mcp/servers/{name}/test", s.handleTestMCPServer)
+	s.mux.Handle("POST /api/mcp/servers", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleAddMCPServer)))
+	s.mux.Handle("DELETE /api/mcp/servers/{name}", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleRemoveMCPServer)))
+	s.mux.Handle("POST /api/mcp/servers/{name}/test", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleTestMCPServer)))
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.mux.HandleFunc("GET /api/tools", s.handleListTools)
 	// Media upload, retrieval, listing, and deletion endpoints.
-	s.mux.HandleFunc("POST /api/upload", s.handleUpload)
+	s.mux.Handle("POST /api/upload", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleUpload)))
 	s.mux.HandleFunc("GET /api/media", s.handleListMedia)
 	s.mux.HandleFunc("GET /api/media/{sha256}", s.handleGetMedia)
-	s.mux.HandleFunc("DELETE /api/media/{sha256}", s.handleDeleteMedia)
+	s.mux.Handle("DELETE /api/media/{sha256}", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleDeleteMedia)))
 	// WebSocket endpoints.
 	s.mux.HandleFunc("/ws/metrics", s.handleMetricsWebSocket)
 	s.mux.HandleFunc("/ws/logs", s.handleLogsWebSocket)
