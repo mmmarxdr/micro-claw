@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // TestBatchExecTool_Execute tests the BatchExecTool executes commands sequentially

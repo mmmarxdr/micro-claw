@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // newTestSQLiteStoreRaw opens a SQLiteStore backed by a fresh temp dir.

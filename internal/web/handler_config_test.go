@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // --- helpers ---

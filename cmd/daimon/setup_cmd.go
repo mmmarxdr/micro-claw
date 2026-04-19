@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"microagent/internal/setup"
+	"daimon/internal/setup"
 )
 
 // These variables allow tests to mock dependencies

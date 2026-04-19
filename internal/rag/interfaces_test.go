@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // T1.2: verify interfaces compile, errors are distinct.

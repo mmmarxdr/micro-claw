@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // openTestDB opens an in-memory SQLite DB, enables foreign keys, and runs

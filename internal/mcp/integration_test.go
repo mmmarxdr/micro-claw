@@ -19,8 +19,8 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 
-	"microagent/internal/config"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/tool"
 )
 
 // testServerBin holds the path to the compiled test helper binary.

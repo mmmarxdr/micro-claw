@@ -8,7 +8,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"microagent/internal/audit"
+	"daimon/internal/audit"
 )
 
 // wsLogEntry is the JSON frame shape expected by the frontend LogsPage.

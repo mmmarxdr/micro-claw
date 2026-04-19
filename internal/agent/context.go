@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/provider"
-	"microagent/internal/rag"
-	"microagent/internal/store"
+	"daimon/internal/provider"
+	"daimon/internal/rag"
+	"daimon/internal/store"
 )
 
 // buildSystemPrompt assembles the full system prompt string from personality,

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // patchBody is the narrow request shape accepted by PUT /api/config.

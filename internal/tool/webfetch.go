@@ -13,7 +13,7 @@ import (
 	readability "github.com/go-shiori/go-readability"
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // WebFetchTool is an intelligent web scraper that extracts readable content
@@ -107,7 +107,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params json.RawMessage) (Too
 	if err != nil {
 		return ToolResult{IsError: true, Content: fmt.Sprintf("creating request: %v", err)}, nil
 	}
-	req.Header.Set("User-Agent", "microagent/1.0")
+	req.Header.Set("User-Agent", "daimon/1.0")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -222,7 +222,7 @@ func (t *WebFetchTool) fetchViaJina(ctx context.Context, targetURL string) (stri
 	if err != nil {
 		return "", fmt.Errorf("creating jina request: %w", err)
 	}
-	req.Header.Set("User-Agent", "microagent/1.0")
+	req.Header.Set("User-Agent", "daimon/1.0")
 	if t.config.JinaAPIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+t.config.JinaAPIKey)
 	}

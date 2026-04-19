@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // checkEnvVars parses config file content and checks which environment variables

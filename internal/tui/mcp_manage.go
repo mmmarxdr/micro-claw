@@ -14,8 +14,8 @@ import (
 	"github.com/mattn/go-isatty"
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
-	"microagent/internal/mcp"
+	"daimon/internal/config"
+	"daimon/internal/mcp"
 )
 
 // ---------------------------------------------------------------------------

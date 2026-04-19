@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func TestDashboardModel_TabSwitching(t *testing.T) {

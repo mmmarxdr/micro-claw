@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/filter"
-	"microagent/internal/notify"
-	"microagent/internal/provider"
-	"microagent/internal/rag"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/filter"
+	"daimon/internal/notify"
+	"daimon/internal/provider"
+	"daimon/internal/rag"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // isCronMessage returns true when a ChannelID was created by the cron scheduler
@@ -408,7 +408,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 				// H2: read exit code from Meta set by PreApply; fall back to 0.
 				exitCode := 0
-				if ec, ok := result.Meta["microagent/exit_code"]; ok {
+				if ec, ok := result.Meta["daimon/exit_code"]; ok {
 					if v, err := strconv.Atoi(ec); err == nil {
 						exitCode = v
 					}
@@ -417,7 +417,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 				// H3: read sandbox truncation flag from Meta set by PreApply;
 				// fall back to the filter-level comparison when the key is absent.
 				truncated := filterMetrics.CompressedBytes < filterMetrics.OriginalBytes
-				if tv, ok := result.Meta["microagent/truncated"]; ok {
+				if tv, ok := result.Meta["daimon/truncated"]; ok {
 					truncated = tv == "true"
 				}
 

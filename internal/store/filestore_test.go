@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 func TestFileStore_SaveAndLoadConversation(t *testing.T) {

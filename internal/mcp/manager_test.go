@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // ---------------------------------------------------------------------------

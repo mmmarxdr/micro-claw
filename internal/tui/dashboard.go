@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // dashTab identifies which tab is active in the dashboard.

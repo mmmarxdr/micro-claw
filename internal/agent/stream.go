@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/provider"
+	"daimon/internal/channel"
+	"daimon/internal/provider"
 )
 
 // streamTelemetry is a convenience wrapper that emits a telemetry frame when

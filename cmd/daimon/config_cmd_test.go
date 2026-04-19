@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // writeTestConfig creates a temporary config file and returns its path.

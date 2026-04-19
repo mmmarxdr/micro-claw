@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	robfigcron "github.com/robfig/cron/v3"
 
-	"microagent/internal/cron"
-	"microagent/internal/store"
+	"daimon/internal/cron"
+	"daimon/internal/store"
 )
 
 // WithCronCommands registers cron-specific slash commands on the agent when

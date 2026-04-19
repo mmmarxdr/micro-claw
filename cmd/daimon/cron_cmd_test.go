@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/store"
 )
 
 // cronTestConfig returns a minimal config YAML with sqlite store pointing to dir.

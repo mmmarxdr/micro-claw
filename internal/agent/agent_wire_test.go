@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/skill"
-	"microagent/internal/store"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/skill"
+	"daimon/internal/store"
 )
 
 // ---------------------------------------------------------------------------

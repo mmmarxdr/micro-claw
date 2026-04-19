@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
+	"daimon/internal/config"
+	"daimon/internal/content"
 )
 
 // syncBuffer is a goroutine-safe bytes.Buffer for use in tests where the

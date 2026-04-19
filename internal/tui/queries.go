@@ -10,7 +10,7 @@ import (
 	// Register the SQLite driver.
 	_ "modernc.org/sqlite"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // OverviewData holds aggregate statistics from the audit database.

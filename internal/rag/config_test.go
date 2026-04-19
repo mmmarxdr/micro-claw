@@ -3,7 +3,7 @@ package rag_test
 import (
 	"testing"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // T1.3: defaults applied correctly, YAML round-trip handled by config package test.

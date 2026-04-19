@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
+	"daimon/internal/config"
+	"daimon/internal/content"
 )
 
 // Compile-time interface assertion.

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"microagent/internal/audit"
-	"microagent/internal/store"
+	"daimon/internal/audit"
+	"daimon/internal/store"
 )
 
 // metricsDay matches the frontend MetricsSnapshot.today / month shape.

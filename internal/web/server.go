@@ -11,13 +11,13 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/mcp"
-	"microagent/internal/provider"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/mcp"
+	"daimon/internal/provider"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // MCPManager is the interface for managing MCP servers.

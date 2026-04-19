@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 // --------------------------------------------------------------------------

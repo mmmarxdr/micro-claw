@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // testSecretsKey is a deterministic 32-byte (64 hex char) AES-256 key used in tests.

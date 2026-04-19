@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // T2.2: round-trip serialize/deserialize, cosine of identical = 1.0, cosine of orthogonal = 0.0.

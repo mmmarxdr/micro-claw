@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // handleLogout handles POST /api/auth/logout.

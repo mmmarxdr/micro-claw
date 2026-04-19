@@ -1,7 +1,7 @@
 package tool
 
 import (
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // BuildRegistry constructs the built-in tool map from config.

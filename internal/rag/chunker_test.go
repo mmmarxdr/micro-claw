@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // T3.2 — FixedSizeChunker

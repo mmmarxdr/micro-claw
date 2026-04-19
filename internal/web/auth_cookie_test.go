@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // makeWebCfg returns a minimal WebConfig for testing cookie helpers.

@@ -3,7 +3,7 @@ package rag_test
 import (
 	"context"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // mockExtractor implements rag.Extractor for compile-time interface checking.

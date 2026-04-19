@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/store"
 )
 
 // fakeMediaStore is a minimal store.MediaStore for testing.

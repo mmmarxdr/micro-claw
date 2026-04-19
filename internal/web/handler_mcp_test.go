@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/mcp"
+	"daimon/internal/config"
+	"daimon/internal/mcp"
 )
 
 // fakeMCPService implements MCPManager.

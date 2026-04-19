@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // insertMediaBlob inserts a media blob directly into the DB with explicit

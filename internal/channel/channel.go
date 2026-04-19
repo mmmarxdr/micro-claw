@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 type IncomingMessage struct {

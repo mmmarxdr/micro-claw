@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // fakeWebStore implements both store.Store and store.WebStore for testing.

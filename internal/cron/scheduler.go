@@ -9,10 +9,10 @@ import (
 
 	robfigcron "github.com/robfig/cron/v3"
 
-	"microagent/internal/channel"
-	"microagent/internal/content"
-	"microagent/internal/notify"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/content"
+	"daimon/internal/notify"
+	"daimon/internal/store"
 )
 
 // ErrJobNotFound is returned when an operation targets a job ID not in the scheduler.

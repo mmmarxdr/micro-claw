@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/provider"
 )
 
 // --- T02: GET /api/setup/status ---

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // TestNewDiscordChannel_TokenRequired verifies that NewDiscordChannel returns an error

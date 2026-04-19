@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 type AnthropicProvider struct {

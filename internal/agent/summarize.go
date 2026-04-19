@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // buildSummarizationPrompt creates a structured prompt for LLM-based history summarization.

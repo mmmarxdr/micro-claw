@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 // --------------------------------------------------------------------------

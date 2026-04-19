@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // enrichJob represents a single tag-enrichment request queued for async processing.

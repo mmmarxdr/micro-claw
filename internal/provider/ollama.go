@@ -1,6 +1,6 @@
 package provider
 
-import "microagent/internal/config"
+import "daimon/internal/config"
 
 // Compile-time interface assertion.
 var _ Provider = (*OllamaProvider)(nil)

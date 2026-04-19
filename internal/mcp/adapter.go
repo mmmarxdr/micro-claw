@@ -9,7 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"microagent/internal/tool"
+	"daimon/internal/tool"
 )
 
 // MCPCaller abstracts the subset of client.Client used by MCPToolAdapter.

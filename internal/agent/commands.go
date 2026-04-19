@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/store"
 )
 
 // CommandContext carries everything a command handler needs to operate.

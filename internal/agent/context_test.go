@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/provider"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 func TestAgent_buildContext(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/tool"
 )
 
 // LoadSkills loads skill files from the given paths.

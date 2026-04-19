@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 func TestHandleListMemory_returnsItems(t *testing.T) {

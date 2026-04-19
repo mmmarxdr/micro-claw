@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // mockMediaStore implements rag.MediaStoreReader for testing.

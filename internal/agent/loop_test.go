@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/skill"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/skill"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -1712,9 +1712,9 @@ func TestAutoIndex_ExitCode(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			meta := map[string]string{"microagent/truncated": "false"}
+			meta := map[string]string{"daimon/truncated": "false"}
 			if tc.metaExitCode != "" {
-				meta["microagent/exit_code"] = tc.metaExitCode
+				meta["daimon/exit_code"] = tc.metaExitCode
 			}
 
 			mt := &mockTool{name: "mock_tool", result: tool.ToolResult{
@@ -1804,9 +1804,9 @@ func TestAutoIndex_Truncated(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			meta := map[string]string{"microagent/exit_code": "0"}
+			meta := map[string]string{"daimon/exit_code": "0"}
 			if tc.metaTruncated != "" {
-				meta["microagent/truncated"] = tc.metaTruncated
+				meta["daimon/truncated"] = tc.metaTruncated
 			}
 
 			toolContent := tc.content

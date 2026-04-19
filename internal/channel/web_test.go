@@ -12,8 +12,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"microagent/internal/content"
-	"microagent/internal/store"
+	"daimon/internal/content"
+	"daimon/internal/store"
 )
 
 // mockMediaStore implements store.MediaStore for testing.

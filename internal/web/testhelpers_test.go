@@ -3,8 +3,8 @@ package web
 import (
 	"context"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/provider"
 )
 
 // minimalConfig returns a *config.Config suitable for unit tests (v2 shape).

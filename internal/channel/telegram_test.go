@@ -12,9 +12,9 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/store"
 )
 
 // fakeMediaStore is a test double for store.MediaStore that tracks StoreMedia calls.

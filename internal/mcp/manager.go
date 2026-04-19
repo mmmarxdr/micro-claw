@@ -11,7 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // envForServer builds the extra environment slice from cfg.Env.
@@ -84,7 +84,7 @@ func connectStdio(ctx context.Context, cfg config.MCPServerConfig) (MCPCaller, e
 
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "micro-claw", Version: "dev"}
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "daimon", Version: "dev"}
 	if _, err := c.Initialize(ctx, initReq); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("initialize stdio server %q: %w", cfg.Name, err)
@@ -108,7 +108,7 @@ func connectHTTP(ctx context.Context, cfg config.MCPServerConfig) (MCPCaller, er
 
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "micro-claw", Version: "dev"}
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "daimon", Version: "dev"}
 	if _, err := c.Initialize(ctx, initReq); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("initialize http server %q: %w", cfg.Name, err)

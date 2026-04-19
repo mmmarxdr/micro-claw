@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func newOllamaTestProvider(t *testing.T) *OllamaProvider {

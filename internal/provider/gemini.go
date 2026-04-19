@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // GeminiProvider implements the Provider interface via the Google AI Studio REST API

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/skill"
+	"daimon/internal/skill"
 )
 
 func TestInitSkillInjection(t *testing.T) {

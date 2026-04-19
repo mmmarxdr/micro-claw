@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // mediaCleanupLoop runs a periodic cleanup of unreferenced media blobs.

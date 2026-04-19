@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // makeTestEmbedding builds a deterministic 256-dim BLOB from a seed value.

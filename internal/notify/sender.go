@@ -8,9 +8,9 @@ import (
 	"text/template"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
 )
 
 // channelSender is a minimal interface for sending outgoing messages.

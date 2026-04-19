@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
 )
 
 // --- counting mock sender ---

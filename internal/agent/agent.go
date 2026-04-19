@@ -5,15 +5,15 @@ import (
 	"log/slog"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/notify"
-	"microagent/internal/provider"
-	"microagent/internal/rag"
-	"microagent/internal/skill"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/notify"
+	"daimon/internal/provider"
+	"daimon/internal/rag"
+	"daimon/internal/skill"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // startPruningLoop launches the memory pruning goroutine. It is a no-op when

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // IndexingWorker asynchronously indexes tool outputs into an OutputStore.

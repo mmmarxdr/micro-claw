@@ -3,7 +3,7 @@ package store
 import (
 	"fmt"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // New constructs and returns the Store implementation configured by cfg.Type.

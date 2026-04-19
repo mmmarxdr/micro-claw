@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func resolvePath(basePath, reqPath string) (string, error) {

@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // DefaultConfigPath returns the canonical config file path for the current user.

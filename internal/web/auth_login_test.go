@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // newLoginTestServer creates a Server with a preconfigured auth token.

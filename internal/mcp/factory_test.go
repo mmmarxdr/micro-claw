@@ -8,8 +8,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"microagent/internal/config"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/tool"
 )
 
 // ---------------------------------------------------------------------------

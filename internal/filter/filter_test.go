@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -959,27 +959,27 @@ func TestPreApply_Shell_MetaKeysPresent(t *testing.T) {
 	}
 
 	requiredKeys := []string{
-		"microagent/exit_code",
-		"microagent/truncated",
-		"microagent/presummarized",
+		"daimon/exit_code",
+		"daimon/truncated",
+		"daimon/presummarized",
 	}
 	for _, k := range requiredKeys {
 		if _, ok := result.Meta[k]; !ok {
 			t.Errorf("Meta missing required key %q", k)
 		}
 	}
-	if result.Meta["microagent/exit_code"] != "0" {
-		t.Errorf("microagent/exit_code = %q, want 0", result.Meta["microagent/exit_code"])
+	if result.Meta["daimon/exit_code"] != "0" {
+		t.Errorf("daimon/exit_code = %q, want 0", result.Meta["daimon/exit_code"])
 	}
-	if result.Meta["microagent/truncated"] != "false" {
-		t.Errorf("microagent/truncated = %q, want false", result.Meta["microagent/truncated"])
+	if result.Meta["daimon/truncated"] != "false" {
+		t.Errorf("daimon/truncated = %q, want false", result.Meta["daimon/truncated"])
 	}
-	if result.Meta["microagent/presummarized"] != "true" {
-		t.Errorf("microagent/presummarized = %q, want true", result.Meta["microagent/presummarized"])
+	if result.Meta["daimon/presummarized"] != "true" {
+		t.Errorf("daimon/presummarized = %q, want true", result.Meta["daimon/presummarized"])
 	}
 	// error_kind absent on clean exit (ExecErrorNone == "")
-	if v, ok := result.Meta["microagent/error_kind"]; ok && v != "" {
-		t.Errorf("microagent/error_kind = %q, want absent or empty for success", v)
+	if v, ok := result.Meta["daimon/error_kind"]; ok && v != "" {
+		t.Errorf("daimon/error_kind = %q, want absent or empty for success", v)
 	}
 }
 
@@ -1000,29 +1000,29 @@ func TestPreApply_Shell_MetaKeys_NonZeroExit(t *testing.T) {
 	if !shouldSkip {
 		t.Fatalf("PreApply should intercept shell_exec")
 	}
-	if result.Meta["microagent/exit_code"] == "0" {
-		t.Errorf("microagent/exit_code = 0 for exit 1, want non-zero")
+	if result.Meta["daimon/exit_code"] == "0" {
+		t.Errorf("daimon/exit_code = 0 for exit 1, want non-zero")
 	}
-	if result.Meta["microagent/presummarized"] != "true" {
-		t.Errorf("microagent/presummarized = %q, want true", result.Meta["microagent/presummarized"])
+	if result.Meta["daimon/presummarized"] != "true" {
+		t.Errorf("daimon/presummarized = %q, want true", result.Meta["daimon/presummarized"])
 	}
 	// error_kind must be absent for a normal non-zero exit.
-	if v, ok := result.Meta["microagent/error_kind"]; ok && v != "" {
-		t.Errorf("microagent/error_kind = %q, want absent for non-zero exit", v)
+	if v, ok := result.Meta["daimon/error_kind"]; ok && v != "" {
+		t.Errorf("daimon/error_kind = %q, want absent for non-zero exit", v)
 	}
 }
 
 func TestApply_Presummarized_EarlyReturn(t *testing.T) {
-	// Apply called with Meta["microagent/presummarized"]="true" must return the
+	// Apply called with Meta["daimon/presummarized"]="true" must return the
 	// input result byte-identical and produce zero Metrics.
 	cfg := enabledCfg()
 	original := tool.ToolResult{
 		Content: "sandbox summary output",
 		IsError: false,
 		Meta: map[string]string{
-			"microagent/presummarized": "true",
-			"microagent/exit_code":     "0",
-			"microagent/truncated":     "false",
+			"daimon/presummarized": "true",
+			"daimon/exit_code":     "0",
+			"daimon/truncated":     "false",
 		},
 	}
 
@@ -1031,7 +1031,7 @@ func TestApply_Presummarized_EarlyReturn(t *testing.T) {
 	if got.Content != original.Content {
 		t.Errorf("Apply early-return: Content = %q, want %q", got.Content, original.Content)
 	}
-	if got.Meta["microagent/presummarized"] != "true" {
+	if got.Meta["daimon/presummarized"] != "true" {
 		t.Errorf("Apply early-return: Meta mutated unexpectedly")
 	}
 	if metrics.FilterName != "" || metrics.OriginalBytes != 0 || metrics.CompressedBytes != 0 {

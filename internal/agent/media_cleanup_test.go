@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/config"
-	"microagent/internal/skill"
-	"microagent/internal/store"
+	"daimon/internal/audit"
+	"daimon/internal/config"
+	"daimon/internal/skill"
+	"daimon/internal/store"
 )
 
 // mockMediaStore embeds mockStore (satisfying store.Store) and additionally

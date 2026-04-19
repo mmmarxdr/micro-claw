@@ -12,7 +12,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // tgAPICall records one call made to the mock Telegram API.

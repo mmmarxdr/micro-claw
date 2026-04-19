@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"microagent/internal/config"
-	"microagent/internal/tool"
+	"daimon/internal/config"
+	"daimon/internal/tool"
 )
 
 // FilterFunc transforms tool output content.
@@ -73,10 +73,10 @@ func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.Contex
 			Content: fmt.Sprintf("sandbox execution failed: %v", err),
 			Meta: map[string]string{
 				"command":                  params.Command,
-				"microagent/exit_code":     "-1",
-				"microagent/error_kind":    "other",
-				"microagent/truncated":     "false",
-				"microagent/presummarized": "true",
+				"daimon/exit_code":     "-1",
+				"daimon/error_kind":    "other",
+				"daimon/truncated":     "false",
+				"daimon/presummarized": "true",
 			},
 		}, true
 	}
@@ -86,12 +86,12 @@ func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.Contex
 	truncated := fmt.Sprintf("%v", result.Metrics.Truncated)
 	meta := map[string]string{
 		"command":                  params.Command,
-		"microagent/exit_code":     exitCode,
-		"microagent/truncated":     truncated,
-		"microagent/presummarized": "true",
+		"daimon/exit_code":     exitCode,
+		"daimon/truncated":     truncated,
+		"daimon/presummarized": "true",
 	}
 	if result.Metrics.ErrorKind != tool.ExecErrorNone {
-		meta["microagent/error_kind"] = string(result.Metrics.ErrorKind)
+		meta["daimon/error_kind"] = string(result.Metrics.ErrorKind)
 	}
 
 	content := result.Summary
@@ -114,11 +114,11 @@ func preApplyShell(ctx context.Context, input json.RawMessage, cfg config.Contex
 // Apply post-processes a tool result before it enters the conversation context.
 // It is a zero-allocation no-op when cfg.Enabled is false.
 // Error results (result.IsError == true) are never filtered.
-// Results that were already summarised by PreApply (Meta["microagent/presummarized"]=="true")
+// Results that were already summarised by PreApply (Meta["daimon/presummarized"]=="true")
 // are returned unchanged so they are never double-processed.
 // TODO(multimodal-tool-output): filter operates on text tool output only; content blocks live in context.go
 func Apply(toolName string, input json.RawMessage, result tool.ToolResult, cfg config.FilterConfig) (tool.ToolResult, Metrics) {
-	if result.Meta["microagent/presummarized"] == "true" {
+	if result.Meta["daimon/presummarized"] == "true" {
 		return result, Metrics{}
 	}
 	if !cfg.Enabled || result.IsError {

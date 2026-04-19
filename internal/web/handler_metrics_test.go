@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/config"
-	"microagent/internal/store"
+	"daimon/internal/audit"
+	"daimon/internal/config"
+	"daimon/internal/store"
 )
 
 // fakeAuditReader implements both audit.Auditor and audit.AuditReader.

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 func TestEstimateTokens(t *testing.T) {

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/store"
 
 	"github.com/google/uuid"
 )

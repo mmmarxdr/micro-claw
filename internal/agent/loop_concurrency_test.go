@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/skill"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/skill"
 )
 
 // TestAgent_Semaphore_Capacity verifies that at most maxConcurrent messages

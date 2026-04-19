@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/notify"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/notify"
+	"daimon/internal/provider"
 )
 
 // --- Mock provider helpers ---

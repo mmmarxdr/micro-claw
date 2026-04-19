@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ package provider
 import (
 	"fmt"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // NewFromConfig constructs the appropriate Provider from a ProviderConfig.

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"microagent/internal/mcp"
+	"daimon/internal/mcp"
 )
 
 // writeTempConfig writes a minimal valid YAML config file to a temp directory

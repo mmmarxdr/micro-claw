@@ -11,7 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // Sentinel errors for MCPService operations.

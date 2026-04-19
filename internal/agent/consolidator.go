@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // Consolidator is a background worker that periodically groups memory entries

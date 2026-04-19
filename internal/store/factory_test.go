@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func TestNew_FileType(t *testing.T) {

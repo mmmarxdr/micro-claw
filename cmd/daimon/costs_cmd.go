@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/cost"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/cost"
+	"daimon/internal/store"
 )
 
 // runCostsCommand dispatches to the appropriate costs subcommand handler.

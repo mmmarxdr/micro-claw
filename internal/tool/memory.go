@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // scopeKey is the unexported context key type for memory scope.

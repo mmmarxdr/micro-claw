@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 // Sentinel errors for provider failure classification.

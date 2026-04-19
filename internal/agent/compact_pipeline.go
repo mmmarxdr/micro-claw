@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // findTurnBoundaries returns the indices at which a new "turn" starts.

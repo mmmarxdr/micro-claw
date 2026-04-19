@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver with database/sql
 )

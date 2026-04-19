@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/content"
-	cronpkg "microagent/internal/cron"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/content"
+	cronpkg "daimon/internal/cron"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // ---------------------------------------------------------------------------

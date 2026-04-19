@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/cron"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/cron"
+	"daimon/internal/store"
 )
 
 // ---------------------------------------------------------------------------

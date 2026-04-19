@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/mcp"
+	"daimon/internal/config"
+	"daimon/internal/mcp"
 )
 
 func (s *Server) handleListMCPServers(w http.ResponseWriter, r *http.Request) {

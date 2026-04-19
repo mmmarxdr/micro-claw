@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	"microagent/internal/cron"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	"daimon/internal/cron"
+	"daimon/internal/store"
 )
 
 // TestCronIntegration_ScheduleAndFire creates a real SQLiteStore, registers

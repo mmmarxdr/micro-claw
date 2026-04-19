@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // TestSQLiteStore_OutputStore_IndexOutput tests that IndexOutput correctly

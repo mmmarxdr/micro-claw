@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // boolPtr returns a pointer to the given bool value.

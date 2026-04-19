@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/provider"
+	"daimon/internal/provider"
 )
 
 // StoreMedia content-addressably stores data with the given MIME type.

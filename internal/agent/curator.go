@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // classificationResult holds the structured output from the LLM classification call.

@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // MCPTabData holds the MCP configuration snapshot for the dashboard MCP tab.

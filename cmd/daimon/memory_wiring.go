@@ -3,11 +3,11 @@ package main
 import (
 	"log/slog"
 
-	"microagent/internal/agent"
-	"microagent/internal/config"
-	"microagent/internal/provider"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/agent"
+	"daimon/internal/config"
+	"daimon/internal/provider"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // wireSmartMemory attaches the Curator, Consolidator, and memory tools to ag.

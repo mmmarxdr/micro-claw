@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // newSetupIntegrationServer creates a full Server (with auth middleware) backed by a

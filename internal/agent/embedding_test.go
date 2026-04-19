@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/store"
 
 	_ "modernc.org/sqlite"
 )

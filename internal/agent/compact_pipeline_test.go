@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // --- T3.1 tests: findTurnBoundaries and findNearestBoundaryBefore ---

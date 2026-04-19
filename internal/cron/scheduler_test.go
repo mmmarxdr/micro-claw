@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/channel"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/store"
 )
 
 // ─── in-memory stub CronStore ─────────────────────────────────────────────────

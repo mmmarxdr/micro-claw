@@ -11,9 +11,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
-	"microagent/internal/setup"
+	"daimon/internal/config"
+	"daimon/internal/provider"
+	"daimon/internal/setup"
 )
 
 // setupStatusResponse is the response body for GET /api/setup/status.

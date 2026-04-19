@@ -4,12 +4,12 @@ import (
 	"context"
 	"log/slog"
 
-	"microagent/internal/agent"
-	"microagent/internal/config"
-	"microagent/internal/provider"
-	"microagent/internal/rag"
-	"microagent/internal/store"
-	"microagent/internal/tool"
+	"daimon/internal/agent"
+	"daimon/internal/config"
+	"daimon/internal/provider"
+	"daimon/internal/rag"
+	"daimon/internal/store"
+	"daimon/internal/tool"
 )
 
 // wireRAG sets up the RAG subsystem: DocumentStore, DocIngestionWorker, and RAG tools.

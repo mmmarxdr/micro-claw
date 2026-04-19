@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // makeConv is a helper to build and save a minimal Conversation for web tests.

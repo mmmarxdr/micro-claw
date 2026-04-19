@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/store"
 )
 
 // runCronCommand dispatches to the appropriate cron subcommand handler.

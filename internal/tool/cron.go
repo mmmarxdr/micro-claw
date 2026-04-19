@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 	robfigcron "github.com/robfig/cron/v3"
 
-	cronpkg "microagent/internal/cron"
-	"microagent/internal/content"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	cronpkg "daimon/internal/cron"
+	"daimon/internal/content"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 var cronExprRegex = regexp.MustCompile(`^\s*(\S+\s+){4}\S+\s*$`)

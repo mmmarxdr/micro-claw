@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/rag"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/rag"
+	"daimon/internal/store"
 )
 
 // makeSearchResult builds a SearchResult with the given title, chunkIndex, and content.

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // newTestWhatsAppChannel builds a WhatsAppChannel with sensible test defaults.

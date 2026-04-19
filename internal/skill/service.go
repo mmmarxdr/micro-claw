@@ -14,7 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // Sentinel errors for SkillService operations.

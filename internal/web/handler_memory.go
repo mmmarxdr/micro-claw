@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // memoryEntryResponse is the API shape the frontend expects for a MemoryEntry.

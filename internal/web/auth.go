@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // GenerateToken returns a cryptographically random 32-byte hex token (64 chars).

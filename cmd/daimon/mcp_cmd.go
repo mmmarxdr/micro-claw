@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
-	"microagent/internal/mcp"
-	"microagent/internal/tui"
+	"daimon/internal/config"
+	"daimon/internal/mcp"
+	"daimon/internal/tui"
 )
 
 // multiFlag implements flag.Value for repeatable --env KEY=VALUE flags.

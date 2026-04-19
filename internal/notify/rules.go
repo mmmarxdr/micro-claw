@@ -7,7 +7,7 @@ import (
 	"text/template"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // compiledRule pairs a NotificationRule with its pre-compiled message template.

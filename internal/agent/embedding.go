@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/provider"
 )
 
 // embeddingDims is the number of float32 dimensions stored per entry.

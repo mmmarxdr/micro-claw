@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // SearchOutputTool searches indexed tool outputs via FTS5.

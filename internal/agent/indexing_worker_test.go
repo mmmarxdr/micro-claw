@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // ─── mock store ──────────────────────────────────────────────────────────────

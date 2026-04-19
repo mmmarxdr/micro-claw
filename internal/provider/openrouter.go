@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // Compile-time interface assertion.

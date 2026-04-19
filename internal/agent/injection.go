@@ -3,7 +3,7 @@ package agent
 import (
 	"log/slog"
 
-	"microagent/internal/skill"
+	"daimon/internal/skill"
 )
 
 // InitSkillInjection separates skills into autoload (full prose) and indexed (on-demand).

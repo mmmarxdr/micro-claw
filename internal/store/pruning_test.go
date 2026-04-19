@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // openPruningTestDB creates an in-memory SQLite database with the full schema

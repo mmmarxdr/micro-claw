@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 type shellInput struct {

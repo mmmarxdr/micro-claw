@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // runConfigCommand dispatches to the appropriate config subcommand handler.

@@ -11,8 +11,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
-	"microagent/internal/skill"
+	"daimon/internal/config"
+	"daimon/internal/skill"
 )
 
 // runSkillsCommand dispatches to the appropriate skills subcommand handler.

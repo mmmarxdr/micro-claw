@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"microagent/internal/config"
-	"microagent/internal/skill"
+	"daimon/internal/config"
+	"daimon/internal/skill"
 )
 
 //go:embed mcp_skills/*.md

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func TestWriteConfig_CreatesFileWithCorrectPermissions(t *testing.T) {

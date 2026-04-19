@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // T1.1: verify types exist and can be instantiated.

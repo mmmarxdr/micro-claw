@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"microagent/internal/content"
+	"daimon/internal/content"
 )
 
 // TestChatMessage_UnmarshalJSON_LegacyString verifies that a plain JSON string

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
-	"microagent/internal/store"
+	"daimon/internal/config"
+	"daimon/internal/provider"
+	"daimon/internal/store"
 )
 
 // ---------------------------------------------------------------------------

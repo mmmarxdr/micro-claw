@@ -17,21 +17,21 @@ import (
 
 	"github.com/mattn/go-isatty"
 
-	"microagent/internal/agent"
-	"microagent/internal/audit"
-	"microagent/internal/channel"
-	"microagent/internal/config"
-	cronpkg "microagent/internal/cron"
-	"microagent/internal/mcp"
-	"microagent/internal/notify"
-	"microagent/internal/provider"
-	"microagent/internal/rag"
-	"microagent/internal/setup"
-	"microagent/internal/skill"
-	"microagent/internal/store"
-	"microagent/internal/tool"
-	"microagent/internal/tui"
-	"microagent/internal/web"
+	"daimon/internal/agent"
+	"daimon/internal/audit"
+	"daimon/internal/channel"
+	"daimon/internal/config"
+	cronpkg "daimon/internal/cron"
+	"daimon/internal/mcp"
+	"daimon/internal/notify"
+	"daimon/internal/provider"
+	"daimon/internal/rag"
+	"daimon/internal/setup"
+	"daimon/internal/skill"
+	"daimon/internal/store"
+	"daimon/internal/tool"
+	"daimon/internal/tui"
+	"daimon/internal/web"
 )
 
 var (
@@ -42,7 +42,7 @@ var (
 )
 
 var (
-	cfgPath     = flag.String("config", "", "path to config file (searches ~/.microagent/config.yaml and ./config.yaml if empty)")
+	cfgPath     = flag.String("config", "", "path to config file (searches ~/.daimon/config.yaml and ./config.yaml if empty)")
 	showVersion = flag.Bool("version", false, "print version and exit")
 	dashboard   = flag.Bool("dashboard", false, "open read-only TUI dashboard and exit")
 	runSetup    = flag.Bool("setup", false, "run the interactive setup wizard and exit")
@@ -68,7 +68,7 @@ func extractFlagValue(args []string, names ...string) string {
 
 func main() {
 	// Subcommand dispatch — must precede flag.Parse() so that
-	// "microagent mcp --help" does not trigger flag's unknown-flag error.
+	// "daimon mcp --help" does not trigger flag's unknown-flag error.
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
 		if err := runMCPCommand(os.Args[2:], cfgPath); err != nil {
@@ -144,7 +144,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("microagent %s (%s, %s)\n", version, commit, date)
+		fmt.Printf("daimon %s (%s, %s)\n", version, commit, date)
 		os.Exit(0)
 	}
 
@@ -187,7 +187,7 @@ func main() {
 	if err != nil {
 		if errors.Is(err, config.ErrNoConfig) {
 			if !isTTY(os.Stdin) {
-				fmt.Fprintln(os.Stdout, "No config file found. Create one at ~/.microagent/config.yaml before running in non-interactive mode.")
+				fmt.Fprintln(os.Stdout, "No config file found. Create one at ~/.daimon/config.yaml before running in non-interactive mode.")
 				os.Exit(1)
 			}
 			if _, wizErr := setup.RunWizard(); wizErr != nil {

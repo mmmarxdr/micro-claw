@@ -3,8 +3,8 @@ package provider_test
 import (
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/provider"
 )
 
 func TestNewFromConfig_KnownTypes(t *testing.T) {

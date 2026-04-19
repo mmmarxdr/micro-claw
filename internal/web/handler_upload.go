@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"microagent/internal/store"
+	"daimon/internal/store"
 )
 
 // uploadResponse is the JSON response body for a successful upload.

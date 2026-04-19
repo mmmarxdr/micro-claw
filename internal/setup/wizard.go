@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // wizardStep identifies which step of the setup wizard is active.

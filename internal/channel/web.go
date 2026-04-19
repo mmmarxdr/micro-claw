@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"microagent/internal/content"
-	"microagent/internal/store"
+	"daimon/internal/content"
+	"daimon/internal/store"
 )
 
 // wsAttachment describes a media attachment referenced in a wsMsg.

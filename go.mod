@@ -1,4 +1,4 @@
-module microagent
+module daimon
 
 go 1.26.1
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"microagent/internal/rag"
+	"daimon/internal/rag"
 )
 
 // searchableStore extends trackingStore with configurable SearchChunks result.

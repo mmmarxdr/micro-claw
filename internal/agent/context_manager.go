@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"microagent/internal/config"
-	"microagent/internal/notify"
-	"microagent/internal/provider"
+	"daimon/internal/config"
+	"daimon/internal/notify"
+	"daimon/internal/provider"
 )
 
 // TokenUsage holds a breakdown of token usage for a given turn.

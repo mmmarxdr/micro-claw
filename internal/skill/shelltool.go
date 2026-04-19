@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 
-	"microagent/internal/tool"
+	"daimon/internal/tool"
 )
 
 // skillShellTool implements tool.Tool for a fixed-command skill tool.

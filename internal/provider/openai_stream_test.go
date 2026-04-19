@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"microagent/internal/config"
-	"microagent/internal/content"
+	"daimon/internal/config"
+	"daimon/internal/content"
 )
 
 // --------------------------------------------------------------------------

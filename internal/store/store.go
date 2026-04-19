@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"microagent/internal/provider"
+	"daimon/internal/provider"
 )
 
 // ErrNotFound is returned when a requested conversation does not exist.

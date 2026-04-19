@@ -7,7 +7,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 func TestLoadAuditData_NoDBFile(t *testing.T) {

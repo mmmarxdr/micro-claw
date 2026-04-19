@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"microagent/internal/channel"
-	"microagent/internal/notify"
-	"microagent/internal/store"
+	"daimon/internal/channel"
+	"daimon/internal/notify"
+	"daimon/internal/store"
 )
 
 // OriginalSender routes a cron job result back to the user's real channel.

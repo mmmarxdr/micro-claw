@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"microagent/internal/config"
+	"daimon/internal/config"
 )
 
 // writeTestConfig writes a minimal valid YAML config to dir/config.yaml and returns its path.

@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"microagent/internal/content"
-	"microagent/internal/provider"
+	"daimon/internal/content"
+	"daimon/internal/provider"
 )
 
 // AnthropicImageTokens is the per-image token estimate used by the context
