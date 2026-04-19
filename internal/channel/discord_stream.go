@@ -41,6 +41,9 @@ type discordStreamWriter struct {
 	dirty       bool          // true when accumulated has unflushed content
 }
 
+// WriteReasoning is a no-op for Discord — reasoning tokens are not surfaced to the channel.
+func (w *discordStreamWriter) WriteReasoning(_ string) error { return nil }
+
 // WriteChunk appends text to the buffer and flushes via message edit
 // if enough time has passed since the last edit.
 func (w *discordStreamWriter) WriteChunk(text string) error {

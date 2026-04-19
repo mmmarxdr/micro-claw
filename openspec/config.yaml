@@ -1,0 +1,77 @@
+schema: spec-driven
+
+context: |
+  Daimon — Go-based AI agent (Bubbletea TUI + web dashboard).
+  Backend: Go 1.26.1, module `daimon`, SQLite (modernc), gorilla/websocket, charmbracelet (bubbletea/bubbles/lipgloss), mcp-go, discord/telegram/whatsapp channels, provider abstraction (anthropic, openai, gemini, openrouter, ollama).
+  Frontend: React 19 + Vite 8 + TypeScript 5.9, Vitest 4 + Testing Library + jsdom, @tanstack/react-query, react-hook-form + zod, tailwind + tremor, embedded into Go binary via `internal/web/static/`.
+  Architecture: Hexagonal-ish — providers, channels, store, agent loop decoupled. CLI entrypoint at `cmd/daimon/`. Web dashboard at `internal/web/`. Frontend repo lives at sibling `daimon-frontend/`.
+  Testing: go test + vitest. Strict TDD enabled per user preference.
+  Style: gofmt + golangci-lint (Go); eslint + typescript-eslint (TS).
+  Conventions: Conventional Commits (no Co-Authored-By), DAIMON.md as primary AI context, TESTS.md as MVP DoD.
+
+strict_tdd: true
+
+testing:
+  runner:
+    backend:
+      framework: go test
+      command: go test -timeout 300s ./...
+    frontend:
+      framework: vitest
+      command: cd /home/marxdr/workspace/daimon-frontend && npm test
+  layers:
+    unit:
+      backend: true
+      frontend: true
+    integration:
+      backend:
+        available: true
+        command: go test -tags=integration ./internal/mcp/... -v -timeout 60s
+      frontend:
+        available: true
+        tool: "@testing-library/react + jsdom"
+    e2e:
+      available: false
+      note: "No playwright/cypress installed"
+  coverage:
+    backend:
+      command: go test -cover ./...
+    frontend:
+      command: cd /home/marxdr/workspace/daimon-frontend && npm test -- --coverage
+      tool: "@vitest/coverage-v8"
+  quality:
+    backend:
+      linter: golangci-lint run
+      vet: go vet ./...
+      formatter: gofmt -w .
+    frontend:
+      linter: cd /home/marxdr/workspace/daimon-frontend && npm run lint
+      type_checker: cd /home/marxdr/workspace/daimon-frontend && tsc --noEmit
+      formatter: prettier (not wired in scripts)
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages (backend internal/*, frontend src/*)
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Call out cross-repo contracts (backend API ↔ frontend client)
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+    - Separate backend and frontend tasks (different repos)
+  apply:
+    - Follow existing code patterns and conventions
+    - Load go-testing, golang-patterns, golang-pro for Go work
+    - Load context7-mcp when touching external libs (react-query, react-hook-form, zod, etc.)
+  verify:
+    - Run `go test ./...` and `vitest run` if changes touch those layers
+    - Compare implementation against every spec scenario
+    - Run `go vet` + `golangci-lint` for Go changes
+  archive:
+    - Warn before merging destructive deltas (large removals)

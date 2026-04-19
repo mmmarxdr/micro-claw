@@ -1007,3 +1007,45 @@ func TestAgent_ShutdownDuringProcessing(t *testing.T)
 | >70% coverage | 10.3 |
 | Tool extensibility <50 lines | 7.3 |
 | <3000 LOC | 10.2 |
+
+---
+
+## 12. New Capabilities — Definition of Done (provider-model-selection-refactor)
+
+### 12.1 `provider-model-discovery`
+
+- `GET /api/providers/{p}/models` returns 200 with `X-Source: live` on cold miss, `X-Source: cache` on warm hit within TTL, `X-Source: cache-stale` when fetch fails but stale entry exists, `X-Source: fallback` when fetch fails and no cache exists.
+- `GET /api/providers/{known-but-unconfigured}/models` returns 401.
+- `GET /api/providers/{unknown}/models` returns 404.
+- `OllamaProvider.ListModels()` parses `GET /api/tags` correctly; returns models with `Free: true`; returns error (no panic) on non-200 or connection refused.
+- Startup model validation warns (via `slog.Warn`) when configured model is not in the live list; never blocks startup or returns an error.
+
+### 12.2 `reasoning-stream`
+
+- OpenRouter stream parser emits `StreamEventReasoningDelta` from `delta.reasoning_content` / `delta.reasoning` fields; does not mix with `TextDelta`.
+- Anthropic stream parser emits `StreamEventReasoningDelta` from `content_block_start{type:"thinking"}` + `thinking_delta` events; does not append thinking content to assembled `ChatResponse.Content`.
+- Agent loop (`processStreamingCall`) calls `sw.WriteReasoning(text)` for each `ReasoningDelta` event; does NOT accumulate into assembled content; finalizes the writer even for reasoning-only responses (no leak).
+- WriteReasoning failure is non-fatal (slog.Debug); text streaming continues unaffected.
+
+### 12.3 `chat-thinking-ui`
+
+- `<ThinkingBlock>` renders with content visible while streaming (`isStreaming=true, hasTextStarted=false`); shows "Thinking..." label.
+- Auto-collapses (shows "Thought for Xs" label) when `hasTextStarted=true`.
+- Toggleable via click or Enter/Space key after collapse.
+- Renders `null` when `reasoning` prop is empty or undefined.
+- `ChatPage.tsx` accumulates `reasoning_token` WS frames into `reasoningBuffer`; passes `hasTextStarted`, `thinkingStartedAt`, `textStartedAt` to `<ThinkingBlock>`.
+- No `ThinkingBlock` in DOM when no `reasoning_token` frames precede text frames.
+
+---
+
+## 13. Vitest patterns
+
+### ESM binding quirk — spy call assertions vs DOM effects
+
+When a module is mocked with `vi.mock('../../api/client', factory)` and the same module is imported by a page component via a different relative path (e.g. `'../api/client'`), Vitest may resolve a different ESM binding. This causes spy call count assertions to be flaky (the spy exists but the count stays 0 even when the function ran).
+
+**Prefer asserting DOM effects** (e.g. `expect(screen.getByRole('listbox')).toBeInTheDocument()`) over asserting spy call counts when testing page-level interactions. Only assert spy calls when the import path in the test and the import path in the component are guaranteed identical.
+
+### Global `@tanstack/react-virtual` mock
+
+Place the mock at `src/__mocks__/@tanstack/react-virtual.ts`. jsdom has no layout engine — `useVirtualizer` always returns 0 visible items without this mock. The global mock returns up to 12 items (simulating a visible window) so test assertions can find list options. Individual test files still call `vi.mock('@tanstack/react-virtual')` to activate it — but they can omit the factory argument; the global mock file is used automatically.

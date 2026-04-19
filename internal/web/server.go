@@ -18,6 +18,7 @@ import (
 	"daimon/internal/provider"
 	"daimon/internal/store"
 	"daimon/internal/tool"
+	"daimon/internal/web/modelcache"
 )
 
 // MCPManager is the interface for managing MCP servers.
@@ -32,6 +33,13 @@ type MCPManager interface {
 // Abstracted for testability — tests inject a mock factory; production uses provider.NewFromConfig.
 type providerFactory func(cfg config.ProviderConfig) (provider.Provider, error)
 
+// providerRegistry resolves a ModelLister by provider name.
+// Implemented by *provider.Registry; tests inject a fake.
+type providerRegistry interface {
+	Lister(name string) (provider.ModelLister, bool)
+	RegisterTransient(name string, p provider.Provider)
+}
+
 // ServerDeps holds the dependencies for the web server.
 type ServerDeps struct {
 	Store           store.Store
@@ -39,8 +47,9 @@ type ServerDeps struct {
 	Config          *config.Config
 	ConfigPath      string               // resolved path to config.yaml (for MCP/skill operations)
 	MCPService      MCPManager
-	ModelLister     provider.ModelLister // nil if provider doesn't support model listing
-	Tools           map[string]tool.Tool // registered tool instances
+	ProviderRegistry providerRegistry      // nil until Phase 6 wiring is complete
+	ModelCache       *modelcache.Cache     // nil until Phase 5 wiring is complete; handler creates a default if nil
+	Tools            map[string]tool.Tool  // registered tool instances
 	StartedAt       time.Time
 	Version         string
 	WebChannel      *channel.WebChannel // nil disables the /ws/chat endpoint
@@ -229,7 +238,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/mcp/servers", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleAddMCPServer)))
 	s.mux.Handle("DELETE /api/mcp/servers/{name}", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleRemoveMCPServer)))
 	s.mux.Handle("POST /api/mcp/servers/{name}/test", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleTestMCPServer)))
-	s.mux.HandleFunc("GET /api/models", s.handleListModels)
+	s.mux.HandleFunc("GET /api/providers/{provider}/models", s.handleListProviderModels)
 	s.mux.HandleFunc("GET /api/tools", s.handleListTools)
 	// Media upload, retrieval, listing, and deletion endpoints.
 	s.mux.Handle("POST /api/upload", requireOriginIfCrossOrigin(ao, http.HandlerFunc(s.handleUpload)))

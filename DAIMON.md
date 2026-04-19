@@ -806,6 +806,22 @@ When sending tool results back, they go as `role: "user"` messages with `tool_re
 
 ---
 
+## 12b. NEW CAPABILITIES (provider-model-selection-refactor, 2026-04-19)
+
+### provider-model-discovery
+
+Dynamic model listing via `GET /api/providers/{provider}/models`. Provider registry (`internal/provider/registry.go`) maps configured providers to `ModelLister` implementations; model cache (`internal/web/modelcache/cache.go`) provides TTL-based caching with live/cache/cache-stale/fallback sources. Ollama models listed via `GET /api/tags` (`internal/provider/ollama_list.go`). Startup validation warns (non-blocking) when configured model is absent from live list (`internal/web/startup_check.go`). Frontend: `useProviderModels` hook + `ModelPicker` component (`src/components/provider/ModelPicker.tsx`).
+
+### reasoning-stream
+
+Extended thinking / reasoning token support across providers. `StreamEventReasoningDelta` event type added to `internal/provider/stream.go`. OpenRouter emits reasoning via `delta.reasoning_content`/`delta.reasoning` fields; Anthropic via `content_block_start{type:"thinking"}` + `thinking_delta` blocks (`internal/provider/openrouter_stream.go`, `internal/provider/anthropic_stream.go`). Agent loop forwards reasoning via `sw.WriteReasoning()` — non-fatal, never accumulated into `ChatResponse.Content` (`internal/agent/stream.go`). WebSocket writer emits `{"type":"reasoning_token","data":"..."}` frames (`internal/channel/web.go`).
+
+### chat-thinking-ui
+
+`<ThinkingBlock>` component renders extended thinking tokens in chat (`src/components/chat/ThinkingBlock.tsx`). Uses native `<details>/<summary>` for expand/collapse; auto-collapses with "Thought for Xs" label when text content arrives. `ChatPage.tsx` accumulates `reasoning_token` WS frames into `reasoningBuffer`; injects `<ThinkingBlock>` above the assistant message bubble.
+
+---
+
 ## 13. PHASE ROADMAP
 
 | Phase | Focus | Key deliverables |

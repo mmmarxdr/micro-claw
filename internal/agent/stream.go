@@ -51,6 +51,27 @@ func (a *Agent) processStreamingCall(
 	// 3. Consume events from the stream.
 	for ev := range result.Events {
 		switch ev.Type {
+		case provider.StreamEventReasoningDelta:
+			// Lazy init: open the stream writer on the first reasoning delta so
+			// reasoning tokens that arrive before any text delta are still forwarded.
+			if sw == nil && ss != nil {
+				w, beginErr := ss.BeginStream(ctx, channelID)
+				if beginErr != nil {
+					slog.Warn("failed to begin stream for reasoning, falling back to buffered",
+						"error", beginErr, "channel_id", channelID)
+				} else {
+					sw = w
+				}
+			}
+			// Forward reasoning tokens to the stream writer if one is open.
+			// Reasoning is supplementary — errors are non-fatal (slog.Debug only).
+			// Do NOT accumulate into assembled content.
+			if sw != nil {
+				if writeErr := sw.WriteReasoning(ev.Text); writeErr != nil {
+					slog.Debug("stream write reasoning failed (non-fatal)", "error", writeErr)
+				}
+			}
+
 		case provider.StreamEventTextDelta:
 			// Lazy init: open the stream writer on the first text delta.
 			if sw == nil && ss != nil {
@@ -110,7 +131,10 @@ func (a *Agent) processStreamingCall(
 			// Don't return yet — let result.Response() provide the canonical error.
 
 		case provider.StreamEventDone:
-			if sw != nil && textStreamed {
+			// Finalize whenever a writer was opened, regardless of whether text
+			// was streamed. A reasoning-only response (no TextDelta) still needs
+			// the writer closed to avoid a leaked stream on the channel side.
+			if sw != nil {
 				if finErr := sw.Finalize(); finErr != nil {
 					slog.Warn("stream finalize failed", "error", finErr)
 				}

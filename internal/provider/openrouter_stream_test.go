@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -531,4 +532,156 @@ func TestOpenRouterStream_EmptyChoices(t *testing.T) {
 
 func TestOpenRouterStream_InterfaceAssertion(t *testing.T) {
 	var _ StreamingProvider = (*OpenRouterProvider)(nil)
+}
+
+// --------------------------------------------------------------------------
+// Phase 3.2 — OpenRouter include_reasoning injection
+// --------------------------------------------------------------------------
+
+func TestOpenRouterStream_IncludeReasoning_WhenSupportedParametersContainsReasoning(t *testing.T) {
+	// RS-5a: when model has "reasoning" in SupportedParameters, include_reasoning:true is sent
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			sseData(`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`) +
+				sseDone(),
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.ProviderConfig{
+		Type:    "openrouter",
+		APIKey:  "test-key",
+		Model:   "deepseek/deepseek-r1",
+		BaseURL: srv.URL,
+		Timeout: 5 * time.Second,
+	}
+	p := NewOpenRouterProvider(cfg)
+
+	// Wire a fake model info store that says deepseek/deepseek-r1 supports "reasoning"
+	p.SetModelInfoStore(&fakeModelInfoStore{
+		infos: map[string]ModelInfo{
+			"deepseek/deepseek-r1": {
+				ID:                  "deepseek/deepseek-r1",
+				SupportedParameters: []string{"reasoning"},
+			},
+		},
+	})
+
+	_, _ = p.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("think")}},
+	})
+
+	if capturedBody == nil {
+		t.Fatal("no request body captured")
+	}
+	val, ok := capturedBody["include_reasoning"]
+	if !ok {
+		t.Fatalf("expected 'include_reasoning' in request body; got: %v", capturedBody)
+	}
+	if val != true {
+		t.Errorf("include_reasoning = %v, want true", val)
+	}
+}
+
+// fakeModelInfoStore is a test double for ModelInfoStore.
+type fakeModelInfoStore struct {
+	infos map[string]ModelInfo
+}
+
+func (f *fakeModelInfoStore) GetModelInfo(modelID string) (ModelInfo, bool) {
+	info, ok := f.infos[modelID]
+	return info, ok
+}
+
+// --------------------------------------------------------------------------
+// Phase 3.1 — OpenRouter reasoning delta parsing
+// --------------------------------------------------------------------------
+
+func TestOpenRouterStream_ReasoningDelta_ReasoningContent(t *testing.T) {
+	// RS-1a: chunk with reasoning_content emits ReasoningDelta, NOT TextDelta
+	sse := sseData(`{"choices":[{"delta":{"reasoning_content":"step 1..."},"finish_reason":null}]}`) +
+		sseData(`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":10}}`) +
+		sseDone()
+
+	_, cfg := makeStreamServer(t, sse)
+	p := NewOpenRouterProvider(cfg)
+
+	sr, err := p.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("think")}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+
+	events := collectEvents(t, sr)
+
+	// Expect: ReasoningDelta, Usage, Done — NO TextDelta for reasoning_content
+	var reasoningEvents []StreamEvent
+	var textEvents []StreamEvent
+	for _, ev := range events {
+		switch ev.Type {
+		case StreamEventReasoningDelta:
+			reasoningEvents = append(reasoningEvents, ev)
+		case StreamEventTextDelta:
+			textEvents = append(textEvents, ev)
+		}
+	}
+
+	if len(reasoningEvents) != 1 {
+		t.Fatalf("expected 1 ReasoningDelta event, got %d; events: %v", len(reasoningEvents), events)
+	}
+	if reasoningEvents[0].Text != "step 1..." {
+		t.Errorf("ReasoningDelta.Text = %q, want %q", reasoningEvents[0].Text, "step 1...")
+	}
+	if len(textEvents) != 0 {
+		t.Errorf("expected NO TextDelta events for reasoning_content chunk, got %d", len(textEvents))
+	}
+}
+
+func TestOpenRouterStream_ReasoningDelta_BothFields(t *testing.T) {
+	// RS-1b: chunk with both delta.reasoning AND delta.content → both events emitted
+	sse := sseData(`{"choices":[{"delta":{"reasoning":"think...","content":"answer..."},"finish_reason":null}]}`) +
+		sseData(`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":10}}`) +
+		sseDone()
+
+	_, cfg := makeStreamServer(t, sse)
+	p := NewOpenRouterProvider(cfg)
+
+	sr, err := p.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("think and answer")}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+
+	events := collectEvents(t, sr)
+
+	var reasoningEvents []StreamEvent
+	var textEvents []StreamEvent
+	for _, ev := range events {
+		switch ev.Type {
+		case StreamEventReasoningDelta:
+			reasoningEvents = append(reasoningEvents, ev)
+		case StreamEventTextDelta:
+			textEvents = append(textEvents, ev)
+		}
+	}
+
+	if len(reasoningEvents) != 1 {
+		t.Fatalf("expected 1 ReasoningDelta event, got %d; events: %v", len(reasoningEvents), events)
+	}
+	if reasoningEvents[0].Text != "think..." {
+		t.Errorf("ReasoningDelta.Text = %q, want %q", reasoningEvents[0].Text, "think...")
+	}
+	if len(textEvents) != 1 {
+		t.Fatalf("expected 1 TextDelta event, got %d; events: %v", len(textEvents), events)
+	}
+	if textEvents[0].Text != "answer..." {
+		t.Errorf("TextDelta.Text = %q, want %q", textEvents[0].Text, "answer...")
+	}
 }

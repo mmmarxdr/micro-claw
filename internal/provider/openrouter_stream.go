@@ -28,8 +28,10 @@ var _ StreamingProvider = (*OpenRouterProvider)(nil)
 type openrouterStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   *string                    `json:"content"`
-			ToolCalls []openrouterStreamToolCall `json:"tool_calls,omitempty"`
+			Content          *string                    `json:"content"`
+			Reasoning        *string                    `json:"reasoning,omitempty"`         // OpenRouter reasoning field
+			ReasoningContent *string                    `json:"reasoning_content,omitempty"` // DeepSeek variant
+			ToolCalls        []openrouterStreamToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -112,19 +114,33 @@ func (p *OpenRouterProvider) ChatStream(ctx context.Context, req ChatRequest) (*
 	if streamModel == "" {
 		streamModel = p.config.Model
 	}
+	orReq := openrouterRequest{
+		Model:    streamModel,
+		Messages: msgs,
+		Tools:    tools,
+	}
+	if req.MaxTokens > 0 {
+		orReq.MaxTokens = req.MaxTokens
+	}
+
+	// Check model capability for reasoning activation (Phase 3.2 / ADR-7).
+	if p.modelInfoStore != nil {
+		if info, ok := p.modelInfoStore.GetModelInfo(streamModel); ok {
+			for _, param := range info.SupportedParameters {
+				if param == "reasoning" || param == "include_reasoning" {
+					orReq.IncludeReasoning = true
+					break
+				}
+			}
+		}
+	}
+
 	apiReq := struct {
 		openrouterRequest
 		Stream bool `json:"stream"`
 	}{
-		openrouterRequest: openrouterRequest{
-			Model:    streamModel,
-			Messages: msgs,
-			Tools:    tools,
-		},
-		Stream: true,
-	}
-	if req.MaxTokens > 0 {
-		apiReq.MaxTokens = req.MaxTokens
+		openrouterRequest: orReq,
+		Stream:            true,
 	}
 
 	bodyBytes, err := json.Marshal(apiReq)
@@ -201,6 +217,20 @@ func (p *OpenRouterProvider) ChatStream(ctx context.Context, req ChatRequest) (*
 			}
 
 			choice := chunk.Choices[0]
+
+			// Reasoning deltas — emitted before text delta; never accumulated into content.
+			if choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
+				events <- StreamEvent{
+					Type: StreamEventReasoningDelta,
+					Text: *choice.Delta.Reasoning,
+				}
+			}
+			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+				events <- StreamEvent{
+					Type: StreamEventReasoningDelta,
+					Text: *choice.Delta.ReasoningContent,
+				}
+			}
 
 			// Text delta.
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {

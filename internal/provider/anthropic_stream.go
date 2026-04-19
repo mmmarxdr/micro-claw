@@ -47,8 +47,9 @@ type anthropicContentBlock struct {
 }
 
 type anthropicDelta struct {
-	Type        string `json:"type"` // "text_delta", "input_json_delta", or message_delta fields
+	Type        string `json:"type"` // "text_delta", "input_json_delta", "thinking_delta", or message_delta fields
 	Text        string `json:"text,omitempty"`
+	Thinking    string `json:"thinking,omitempty"` // for thinking_delta type
 	PartialJSON string `json:"partial_json,omitempty"`
 	StopReason  string `json:"stop_reason,omitempty"`
 }
@@ -124,6 +125,7 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 		var currentToolInput strings.Builder
 		var currentToolID, currentToolName string
 		var inToolBlock bool
+		var inThinkingBlock bool // true while inside a thinking content block
 		var assembled ChatResponse
 
 		parseErr := ParseSSE(resp.Body, func(ev SSEEvent) error {
@@ -139,18 +141,24 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 				}
 
 			case "content_block_start":
-				if sev.ContentBlock != nil && sev.ContentBlock.Type == "tool_use" {
-					inToolBlock = true
-					currentToolID = sev.ContentBlock.ID
-					currentToolName = sev.ContentBlock.Name
-					currentToolInput.Reset()
-					events <- StreamEvent{
-						Type:       StreamEventToolCallStart,
-						ToolCallID: currentToolID,
-						ToolName:   currentToolName,
+				if sev.ContentBlock != nil {
+					switch sev.ContentBlock.Type {
+					case "tool_use":
+						inToolBlock = true
+						currentToolID = sev.ContentBlock.ID
+						currentToolName = sev.ContentBlock.Name
+						currentToolInput.Reset()
+						events <- StreamEvent{
+							Type:       StreamEventToolCallStart,
+							ToolCallID: currentToolID,
+							ToolName:   currentToolName,
+						}
+					case "thinking":
+						inThinkingBlock = true
+						// No event emitted — thinking content comes in deltas
 					}
+					// text content_block_start is ignored — text comes in deltas
 				}
-				// text content_block_start is ignored — text comes in deltas
 
 			case "content_block_delta":
 				if sev.Delta != nil {
@@ -160,6 +168,12 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 						events <- StreamEvent{
 							Type: StreamEventTextDelta,
 							Text: sev.Delta.Text,
+						}
+					case "thinking_delta":
+						// Emit reasoning event; do NOT accumulate into textContent.
+						events <- StreamEvent{
+							Type: StreamEventReasoningDelta,
+							Text: sev.Delta.Thinking,
 						}
 					case "input_json_delta":
 						currentToolInput.WriteString(sev.Delta.PartialJSON)
@@ -171,7 +185,10 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (*S
 				}
 
 			case "content_block_stop":
-				if inToolBlock {
+				if inThinkingBlock {
+					// Clear thinking state — do NOT assemble thinking into assembled.Content.
+					inThinkingBlock = false
+				} else if inToolBlock {
 					toolCalls = append(toolCalls, ToolCall{
 						ID:    currentToolID,
 						Name:  currentToolName,
@@ -251,6 +268,20 @@ func (p *AnthropicProvider) buildAnthropicRequest(ctx context.Context, req ChatR
 	}
 	if apiReq.Model == "" {
 		apiReq.Model = "claude-3-5-sonnet-20241022"
+	}
+
+	// Inject thinking params when the model supports it (Phase 2.3).
+	// Only inject if ThinkingEffort or ThinkingBudgetTokens is configured.
+	if p.thinking.ThinkingEffort != "" || p.thinking.ThinkingBudgetTokens != nil {
+		effort := p.thinking.ThinkingEffort
+		if effort == "" {
+			effort = "medium"
+		}
+		budgetTokens := 10000
+		if p.thinking.ThinkingBudgetTokens != nil {
+			budgetTokens = *p.thinking.ThinkingBudgetTokens
+		}
+		apiReq.Thinking = anthropicThinkingParams(apiReq.Model, effort, budgetTokens)
 	}
 
 	for _, m := range req.Messages {

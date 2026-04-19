@@ -53,6 +53,10 @@ type StreamWriter interface {
 	// WriteChunk sends a partial text fragment to the user.
 	WriteChunk(text string) error
 
+	// WriteReasoning sends a reasoning/thinking token fragment to the user.
+	// Implementations that do not surface reasoning to the user MUST return nil (no-op).
+	WriteReasoning(s string) error
+
 	// Finalize marks the stream as complete. Called after the last chunk.
 	Finalize() error
 

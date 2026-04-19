@@ -208,6 +208,55 @@ func TestFallbackStream_PrimaryAuthError_NoFallback(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Phase 3.4 — ReasoningDelta propagates through FallbackProvider (RS-4b)
+// --------------------------------------------------------------------------
+
+func TestFallbackStream_ReasoningDelta_PassesThrough(t *testing.T) {
+	// Upstream emits a ReasoningDelta event; it must appear on the output channel unchanged.
+	sr, events := NewStreamResult(8)
+	go func() {
+		defer close(events)
+		events <- StreamEvent{Type: StreamEventReasoningDelta, Text: "thinking step"}
+		events <- StreamEvent{Type: StreamEventTextDelta, Text: "answer"}
+		events <- StreamEvent{Type: StreamEventDone}
+		sr.SetResponse(&ChatResponse{Content: "answer"}, nil)
+	}()
+
+	primary := &mockStreamingProvider{
+		mockProvider: mockProvider{name: "primary"},
+		streamResult: sr,
+	}
+	fallback := &mockProvider{name: "fallback"}
+	f := newFallback(primary, fallback)
+
+	result, err := f.ChatStream(context.Background(), ChatRequest{})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+
+	var reasoningEvents []StreamEvent
+	var textEvents []StreamEvent
+	for ev := range result.Events {
+		switch ev.Type {
+		case StreamEventReasoningDelta:
+			reasoningEvents = append(reasoningEvents, ev)
+		case StreamEventTextDelta:
+			textEvents = append(textEvents, ev)
+		}
+	}
+
+	if len(reasoningEvents) != 1 {
+		t.Fatalf("expected 1 ReasoningDelta event, got %d", len(reasoningEvents))
+	}
+	if reasoningEvents[0].Text != "thinking step" {
+		t.Errorf("ReasoningDelta.Text = %q, want %q", reasoningEvents[0].Text, "thinking step")
+	}
+	if len(textEvents) != 1 {
+		t.Errorf("expected 1 TextDelta, got %d", len(textEvents))
+	}
+}
+
+// --------------------------------------------------------------------------
 // T6: Both fail → combined error preserves primary sentinel
 // --------------------------------------------------------------------------
 

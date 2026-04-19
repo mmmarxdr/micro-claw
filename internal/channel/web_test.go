@@ -685,3 +685,61 @@ func TestWebChannel_NilMediaStore_Attachments(t *testing.T) {
 		t.Fatal("timed out: expected text-only message after nil mediaStore")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Phase 1.4 — WriteReasoning emits reasoning_token frame
+// --------------------------------------------------------------------------
+
+func TestWebStreamWriter_WriteReasoning(t *testing.T) {
+	srv, wc, inbox := newTestServer(t)
+
+	conn := dialWS(t, srv)
+	defer conn.Close()
+
+	// Establish channel ID by sending a message.
+	payload, _ := json.Marshal(wsMsg{Type: "message", Text: "think about this"})
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var msg IncomingMessage
+	select {
+	case msg = <-inbox:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for inbox message")
+	}
+
+	sw, err := wc.BeginStream(context.Background(), msg.ChannelID)
+	if err != nil {
+		t.Fatalf("BeginStream: %v", err)
+	}
+
+	if err := sw.WriteReasoning("step A"); err != nil {
+		t.Fatalf("WriteReasoning: %v", err)
+	}
+
+	// Read the reasoning_token frame.
+	var got struct {
+		Type      string `json:"type"`
+		Data      string `json:"data"`
+		ChannelID string `json:"channel_id"`
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, b, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, b)
+	}
+
+	if got.Type != "reasoning_token" {
+		t.Errorf("type = %q, want %q", got.Type, "reasoning_token")
+	}
+	if got.Data != "step A" {
+		t.Errorf("data = %q, want %q", got.Data, "step A")
+	}
+	if got.ChannelID != msg.ChannelID {
+		t.Errorf("channel_id = %q, want %q", got.ChannelID, msg.ChannelID)
+	}
+}

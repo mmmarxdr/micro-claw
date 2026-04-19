@@ -348,6 +348,17 @@ func (sw *webStreamWriter) WriteChunk(text string) error {
 	})
 }
 
+// WriteReasoning sends a reasoning_token frame to the WebSocket client.
+// The payload uses "data" (not "text") to clearly distinguish reasoning
+// fragments from regular text tokens.
+func (sw *webStreamWriter) WriteReasoning(s string) error {
+	return sw.wc.writeJSON(map[string]any{
+		"type":       "reasoning_token",
+		"data":       s,
+		"channel_id": sw.channelID,
+	})
+}
+
 // Finalize sends a stream_end frame signalling that the stream is complete.
 func (sw *webStreamWriter) Finalize() error {
 	return sw.wc.writeJSON(wsMsg{

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -573,4 +574,88 @@ func TestHandleSetupReset_RequiresAuth(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 without auth, got %d", w.Code)
 	}
+}
+
+// --- Phase 11: validate-key registers transient provider ---
+
+// 11.1.1 — after validate-key succeeds, GET /api/providers/{p}/models returns live models
+// (via the transient registration) rather than the catalog fallback.
+func TestHandleValidateKey_RegistersTransient_ModelsEndpointReturnsLive(t *testing.T) {
+	// Models that our fake ListModels returns.
+	liveModels := []provider.ModelInfo{
+		{ID: "live-model-1", Name: "Live Model 1"},
+		{ID: "live-model-2", Name: "Live Model 2"},
+	}
+
+	// A mock provider that also implements ModelLister.
+	mockProv := &mockProviderWithListing{models: liveModels}
+
+	// Factory always returns the same mock.
+	factory := func(cfg config.ProviderConfig) (provider.Provider, error) {
+		return mockProv, nil
+	}
+
+	// Registry starts empty for "anthropic" (no configured key).
+	reg := &fakeRegistry{listers: map[string]provider.ModelLister{}}
+	cache := freshCache()
+
+	cfg := minimalConfig()
+	cfg.Providers = nil
+	cfg.Models = config.ModelsConfig{}
+
+	s := NewServer(ServerDeps{
+		Config:           cfg,
+		ProviderFactory:  factory,
+		ProviderRegistry: reg,
+		ModelCache:       cache,
+	})
+
+	// Step 1: validate-key for anthropic.
+	body := `{"provider":"anthropic","api_key":"sk-ant-valid","model":"claude-sonnet-4-6"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/setup/validate-key", strings.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	s.mux.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("validate-key: expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	var vr validateKeyResponse
+	if err := json.NewDecoder(w1.Body).Decode(&vr); err != nil {
+		t.Fatalf("validate-key: decode error: %v", err)
+	}
+	if !vr.Valid {
+		t.Fatalf("validate-key: expected valid=true, got false: %s", vr.Error)
+	}
+
+	// Step 2: GET /api/providers/anthropic/models — should return live models via transient.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/providers/anthropic/models", nil)
+	w2 := httptest.NewRecorder()
+	s.mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("models: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	var resp providerModelsResponse
+	if err := json.NewDecoder(w2.Body).Decode(&resp); err != nil {
+		t.Fatalf("models: decode error: %v", err)
+	}
+
+	if resp.Source != "live" {
+		t.Errorf("expected source=live (from transient), got %q", resp.Source)
+	}
+	if len(resp.Models) != 2 {
+		t.Errorf("expected 2 live models, got %d", len(resp.Models))
+	}
+}
+
+// mockProviderWithListing is a Provider + ModelLister for setup tests.
+type mockProviderWithListing struct {
+	mockProvider
+	models []provider.ModelInfo
+}
+
+func (m *mockProviderWithListing) ListModels(_ context.Context) ([]provider.ModelInfo, error) {
+	return m.models, nil
 }

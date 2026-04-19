@@ -23,6 +23,9 @@ func (sw *cliStreamWriter) WriteChunk(text string) error {
 	return err
 }
 
+// WriteReasoning is a no-op for CLI — reasoning tokens are not surfaced in terminal output.
+func (sw *cliStreamWriter) WriteReasoning(_ string) error { return nil }
+
 // Finalize marks the stream as complete by writing a trailing newline.
 func (sw *cliStreamWriter) Finalize() error {
 	_, err := sw.w.Write([]byte("\n"))

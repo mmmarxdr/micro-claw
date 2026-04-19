@@ -706,3 +706,145 @@ func TestAnthropicStream_BuildsRequestLikeChat(t *testing.T) {
 		t.Errorf("expected 1 tool, got %d", len(tools))
 	}
 }
+
+// --------------------------------------------------------------------------
+// Phase 3.3 — Anthropic stream parser: thinking block handling
+// --------------------------------------------------------------------------
+
+// thinkingBlockStartFrame creates a content_block_start event with type "thinking".
+func thinkingBlockStartFrame(index int) string {
+	return sseFrame("content_block_start", fmt.Sprintf(
+		`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking"}}`,
+		index,
+	))
+}
+
+// thinkingDeltaFrame creates a content_block_delta event with thinking_delta type.
+func thinkingDeltaFrame(index int, thinking string) string {
+	escaped, _ := json.Marshal(thinking)
+	return sseFrame("content_block_delta", fmt.Sprintf(
+		`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":%s}}`,
+		index, string(escaped),
+	))
+}
+
+func TestAnthropicStream_ThinkingBlock_EmitsReasoningDelta(t *testing.T) {
+	// RS-2a + RS-2b: thinking block emits ReasoningDelta, NOT TextDelta
+	sse := buildAnthropicSSE([]string{
+		messageStartFrame(10),
+		thinkingBlockStartFrame(0),
+		thinkingDeltaFrame(0, "let me think..."),
+		blockStopFrame(0),
+		messageDeltaFrame("end_turn", 5),
+		messageStopFrame(),
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer ts.Close()
+	p := newStreamTestProvider(t, ts)
+
+	sr, err := p.ChatStream(context.Background(), ChatRequest{
+		Model:    "claude-opus-4-7",
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("think")}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error: %v", err)
+	}
+
+	var reasoningEvents []StreamEvent
+	var textEvents []StreamEvent
+	for ev := range sr.Events {
+		switch ev.Type {
+		case StreamEventReasoningDelta:
+			reasoningEvents = append(reasoningEvents, ev)
+		case StreamEventTextDelta:
+			textEvents = append(textEvents, ev)
+		}
+	}
+
+	if len(reasoningEvents) != 1 {
+		t.Fatalf("expected 1 ReasoningDelta, got %d", len(reasoningEvents))
+	}
+	if reasoningEvents[0].Text != "let me think..." {
+		t.Errorf("ReasoningDelta.Text = %q, want %q", reasoningEvents[0].Text, "let me think...")
+	}
+	if len(textEvents) != 0 {
+		t.Errorf("expected 0 TextDelta events for thinking block, got %d", len(textEvents))
+	}
+
+	// Thinking content must NOT be in the assembled response.
+	resp, err := sr.Response()
+	if err != nil {
+		t.Fatalf("Response() error: %v", err)
+	}
+	if resp.Content != "" {
+		t.Errorf("assembled content = %q, want empty (thinking not accumulated)", resp.Content)
+	}
+}
+
+func TestAnthropicStream_ThinkingAndTextInterspersed(t *testing.T) {
+	// Thinking block followed by text block: ReasoningDelta for thinking, TextDelta for text
+	sse := buildAnthropicSSE([]string{
+		messageStartFrame(10),
+		thinkingBlockStartFrame(0),
+		thinkingDeltaFrame(0, "thinking..."),
+		blockStopFrame(0),
+		textBlockStartFrame(1),
+		textDeltaFrame(1, "answer"),
+		blockStopFrame(1),
+		messageDeltaFrame("end_turn", 5),
+		messageStopFrame(),
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer ts.Close()
+	p := newStreamTestProvider(t, ts)
+
+	sr, err := p.ChatStream(context.Background(), ChatRequest{
+		Model:    "claude-opus-4-7",
+		Messages: []ChatMessage{{Role: "user", Content: content.TextBlock("think and answer")}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream error: %v", err)
+	}
+
+	var reasoningEvents []StreamEvent
+	var textEvents []StreamEvent
+	for ev := range sr.Events {
+		switch ev.Type {
+		case StreamEventReasoningDelta:
+			reasoningEvents = append(reasoningEvents, ev)
+		case StreamEventTextDelta:
+			textEvents = append(textEvents, ev)
+		}
+	}
+
+	if len(reasoningEvents) != 1 {
+		t.Fatalf("expected 1 ReasoningDelta, got %d", len(reasoningEvents))
+	}
+	if reasoningEvents[0].Text != "thinking..." {
+		t.Errorf("ReasoningDelta.Text = %q, want %q", reasoningEvents[0].Text, "thinking...")
+	}
+	if len(textEvents) != 1 {
+		t.Fatalf("expected 1 TextDelta, got %d", len(textEvents))
+	}
+	if textEvents[0].Text != "answer" {
+		t.Errorf("TextDelta.Text = %q, want %q", textEvents[0].Text, "answer")
+	}
+
+	resp, err := sr.Response()
+	if err != nil {
+		t.Fatalf("Response() error: %v", err)
+	}
+	if resp.Content != "answer" {
+		t.Errorf("assembled content = %q, want %q", resp.Content, "answer")
+	}
+}

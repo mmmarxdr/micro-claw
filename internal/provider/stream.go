@@ -22,6 +22,11 @@ const (
 	// StreamEventTextDelta delivers a partial text fragment from the LLM.
 	StreamEventTextDelta StreamEventType = iota
 
+	// StreamEventReasoningDelta delivers a partial reasoning/thinking token fragment.
+	// Emitted by providers that support extended thinking (Anthropic thinking blocks,
+	// OpenRouter reasoning fields). Not accumulated into ChatResponse.Content.
+	StreamEventReasoningDelta
+
 	// StreamEventToolCallStart signals a new tool call block. Carries ToolCallID and ToolName.
 	StreamEventToolCallStart
 
@@ -282,6 +287,8 @@ func (t StreamEventType) String() string {
 	switch t {
 	case StreamEventTextDelta:
 		return "TextDelta"
+	case StreamEventReasoningDelta:
+		return "ReasoningDelta"
 	case StreamEventToolCallStart:
 		return "ToolCallStart"
 	case StreamEventToolCallDelta:

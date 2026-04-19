@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -953,4 +954,195 @@ func TestAnthropicMultimodalRequest(t *testing.T) {
 		t.Errorf("multimodal request body does not match golden file %s\n\ngot:\n%s\n\nwant:\n%s",
 			goldenPath, capturedBody, goldenRaw)
 	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 2.1 — thinkingShape capability map
+// --------------------------------------------------------------------------
+
+func TestAnthropicThinkingCapability_Map(t *testing.T) {
+	tests := []struct {
+		modelID string
+		want    thinkingShape
+	}{
+		{"claude-opus-4-7", thinkingAdaptive},
+		{"claude-opus-4-6", thinkingManual},
+		{"claude-sonnet-4-6", thinkingManual},
+		{"claude-haiku-4-5-20251001", thinkingNone},
+		{"claude-opus-4-5-20251101", thinkingManual},
+		{"claude-sonnet-4-5-20250929", thinkingManual},
+		{"claude-opus-4-1-20250805", thinkingManual},
+		{"unknown-model-xyz", thinkingNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			got := anthropicThinkingCapability[tt.modelID]
+			if got != tt.want {
+				t.Errorf("anthropicThinkingCapability[%q] = %v, want %v", tt.modelID, got, tt.want)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 2.2 — anthropicThinkingParams() pure helper
+// --------------------------------------------------------------------------
+
+func TestAnthropicThinkingParams(t *testing.T) {
+	tests := []struct {
+		name         string
+		modelID      string
+		effort       string
+		budgetTokens int
+		wantNil      bool
+		wantMap      map[string]any
+	}{
+		{
+			name:         "adaptive model returns adaptive payload",
+			modelID:      "claude-opus-4-7",
+			effort:       "high",
+			budgetTokens: 10000,
+			wantMap:      map[string]any{"type": "adaptive", "effort": "high"},
+		},
+		{
+			name:         "manual model returns enabled payload with budget",
+			modelID:      "claude-opus-4-6",
+			effort:       "medium",
+			budgetTokens: 15000,
+			wantMap:      map[string]any{"type": "enabled", "budget_tokens": 15000},
+		},
+		{
+			name:         "non-thinking model returns nil",
+			modelID:      "claude-haiku-4-5-20251001",
+			effort:       "high",
+			budgetTokens: 10000,
+			wantNil:      true,
+		},
+		{
+			name:         "unknown model returns nil",
+			modelID:      "claude-unknown-xyz",
+			effort:       "high",
+			budgetTokens: 10000,
+			wantNil:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := anthropicThinkingParams(tt.modelID, tt.effort, tt.budgetTokens)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("anthropicThinkingParams() = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("anthropicThinkingParams() = nil, want %v", tt.wantMap)
+			}
+			for k, wantV := range tt.wantMap {
+				gotV, ok := got[k]
+				if !ok {
+					t.Errorf("key %q missing from result %v", k, got)
+					continue
+				}
+				if gotV != wantV {
+					t.Errorf("got[%q] = %v (%T), want %v (%T)", k, gotV, gotV, wantV, wantV)
+				}
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Phase 2.3 — Thinking params injection in buildAnthropicRequest
+// --------------------------------------------------------------------------
+
+func buildAnthropicBodyForModel(t *testing.T, modelID string, effort string, budgetTokens int) map[string]any {
+	t.Helper()
+	var capturedBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(buildSuccessBody("ok")))
+	}))
+	t.Cleanup(ts.Close)
+
+	creds := config.ProviderCredentials{
+		ThinkingEffort:       effort,
+		ThinkingBudgetTokens: &budgetTokens,
+	}
+	p := NewAnthropicProvider(config.ProviderConfig{
+		APIKey:      "test-key",
+		BaseURL:     ts.URL,
+		Model:       modelID,
+		MaxRetries:  0,
+		Timeout:     5 * time.Second,
+	})
+	p.SetThinkingConfig(creds)
+
+	_, _ = p.Chat(context.Background(), minimalRequest())
+
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("unmarshal captured body: %v", err)
+	}
+	return body
+}
+
+func TestAnthropicBuildRequest_ThinkingInjection(t *testing.T) {
+	t.Run("RS-3b: adaptive model gets adaptive thinking payload", func(t *testing.T) {
+		budget := 10000
+		body := buildAnthropicBodyForModel(t, "claude-opus-4-7", "high", budget)
+		thinking, ok := body["thinking"]
+		if !ok {
+			t.Fatal("expected 'thinking' key in request body")
+		}
+		thinkingMap, ok := thinking.(map[string]any)
+		if !ok {
+			t.Fatalf("thinking is not a map: %T", thinking)
+		}
+		if thinkingMap["type"] != "adaptive" {
+			t.Errorf("thinking.type = %q, want %q", thinkingMap["type"], "adaptive")
+		}
+		if thinkingMap["effort"] != "high" {
+			t.Errorf("thinking.effort = %q, want %q", thinkingMap["effort"], "high")
+		}
+		if _, hasBudget := thinkingMap["budget_tokens"]; hasBudget {
+			t.Error("adaptive thinking should NOT contain budget_tokens")
+		}
+	})
+
+	t.Run("RS-3c: manual model gets enabled thinking payload with budget_tokens", func(t *testing.T) {
+		budget := 15000
+		body := buildAnthropicBodyForModel(t, "claude-opus-4-6", "medium", budget)
+		thinking, ok := body["thinking"]
+		if !ok {
+			t.Fatal("expected 'thinking' key in request body")
+		}
+		thinkingMap, ok := thinking.(map[string]any)
+		if !ok {
+			t.Fatalf("thinking is not a map: %T", thinking)
+		}
+		if thinkingMap["type"] != "enabled" {
+			t.Errorf("thinking.type = %q, want %q", thinkingMap["type"], "enabled")
+		}
+		// JSON numbers unmarshal as float64
+		gotBudget, ok := thinkingMap["budget_tokens"].(float64)
+		if !ok {
+			t.Fatalf("budget_tokens is not a number: %T %v", thinkingMap["budget_tokens"], thinkingMap["budget_tokens"])
+		}
+		if int(gotBudget) != 15000 {
+			t.Errorf("budget_tokens = %v, want 15000", gotBudget)
+		}
+	})
+
+	t.Run("RS-3a: non-thinking model has no thinking key", func(t *testing.T) {
+		budget := 10000
+		body := buildAnthropicBodyForModel(t, "claude-haiku-4-5-20251001", "high", budget)
+		if _, ok := body["thinking"]; ok {
+			t.Error("non-thinking model should NOT have 'thinking' key in request")
+		}
+	})
 }

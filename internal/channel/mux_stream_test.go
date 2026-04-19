@@ -21,6 +21,8 @@ func (w *mockStreamWriter) WriteChunk(text string) error {
 	return nil
 }
 
+func (w *mockStreamWriter) WriteReasoning(_ string) error { return nil }
+
 func (w *mockStreamWriter) Finalize() error {
 	w.finalized = true
 	return nil

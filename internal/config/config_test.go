@@ -1867,3 +1867,83 @@ func TestFindConfigPath_LooksInDaimonDir(t *testing.T) {
 		t.Errorf("FindConfigPath() = %q, want %q", found, cfgPath)
 	}
 }
+
+// --------------------------------------------------------------------------
+// Phase 1.3 — Anthropic thinking config keys
+// --------------------------------------------------------------------------
+
+func TestProviderCredentials_AnthropicThinkingKeys(t *testing.T) {
+	tests := []struct {
+		name               string
+		yaml               string
+		wantEffort         string
+		wantBudgetTokens   *int
+		wantErr            bool
+	}{
+		{
+			name: "thinking_effort and thinking_budget_tokens parse correctly",
+			yaml: `
+providers:
+  anthropic:
+    api_key: "sk-ant-test"
+    thinking_effort: "high"
+    thinking_budget_tokens: 15000
+models:
+  default:
+    provider: anthropic
+    model: claude-opus-4-7
+`,
+			wantEffort:       "high",
+			wantBudgetTokens: func() *int { v := 15000; return &v }(),
+		},
+		{
+			name: "zero-value struct has no thinking keys set",
+			yaml: `
+providers:
+  anthropic:
+    api_key: "sk-ant-test"
+models:
+  default:
+    provider: anthropic
+    model: claude-opus-4-6
+`,
+			wantEffort:       "",
+			wantBudgetTokens: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpFile := createTempFile(t, tt.yaml)
+			defer os.Remove(tmpFile)
+
+			cfg, err := Load(tmpFile)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+
+			creds := cfg.Providers["anthropic"]
+			if creds.ThinkingEffort != tt.wantEffort {
+				t.Errorf("ThinkingEffort = %q, want %q", creds.ThinkingEffort, tt.wantEffort)
+			}
+			if tt.wantBudgetTokens == nil {
+				if creds.ThinkingBudgetTokens != nil {
+					t.Errorf("ThinkingBudgetTokens = %v, want nil", creds.ThinkingBudgetTokens)
+				}
+			} else {
+				if creds.ThinkingBudgetTokens == nil {
+					t.Fatalf("ThinkingBudgetTokens is nil, want %d", *tt.wantBudgetTokens)
+				}
+				if *creds.ThinkingBudgetTokens != *tt.wantBudgetTokens {
+					t.Errorf("ThinkingBudgetTokens = %d, want %d", *creds.ThinkingBudgetTokens, *tt.wantBudgetTokens)
+				}
+			}
+		})
+	}
+}

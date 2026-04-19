@@ -305,27 +305,24 @@ func runWebCommand(args []string, cfgPath string) error {
 	wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
 
 	// ---- Web server ----
-	var ml provider.ModelLister
-	if lister, ok := prov.(provider.ModelLister); ok {
-		ml = lister
-	}
-
 	resolvedCfgPath, _ := config.FindConfigPath(cfgPath)
 	mcpSvc := mcp.NewMCPService(resolvedCfgPath)
 
+	provRegistry := provider.NewStaticRegistry(*cfg)
+
 	mediaStore, _ := st.(store.MediaStore)
 	srv := web.NewServer(web.ServerDeps{
-		Store:       st,
-		Auditor:     aud,
-		Config:      cfg,
-		ConfigPath:  resolvedCfgPath,
-		MCPService:  mcpSvc,
-		ModelLister: ml,
-		Tools:       toolsRegistry,
-		StartedAt:   time.Now(),
-		Version:     version,
-		WebChannel:  webCh,
-		MediaStore:  mediaStore,
+		Store:            st,
+		Auditor:          aud,
+		Config:           cfg,
+		ConfigPath:       resolvedCfgPath,
+		MCPService:       mcpSvc,
+		ProviderRegistry: provRegistry,
+		Tools:            toolsRegistry,
+		StartedAt:        time.Now(),
+		Version:          version,
+		WebChannel:       webCh,
+		MediaStore:       mediaStore,
 	})
 
 	if err := srv.Start(); err != nil {

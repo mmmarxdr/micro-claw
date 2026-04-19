@@ -54,10 +54,11 @@ type openrouterTool struct {
 
 // openrouterRequest is the full request body sent to /api/v1/chat/completions.
 type openrouterRequest struct {
-	Model     string              `json:"model"`
-	Messages  []openrouterMessage `json:"messages"`
-	Tools     []openrouterTool    `json:"tools,omitempty"`
-	MaxTokens int                 `json:"max_tokens,omitempty"`
+	Model            string              `json:"model"`
+	Messages         []openrouterMessage `json:"messages"`
+	Tools            []openrouterTool    `json:"tools,omitempty"`
+	MaxTokens        int                 `json:"max_tokens,omitempty"`
+	IncludeReasoning bool                `json:"include_reasoning,omitempty"` // set when model supports reasoning
 }
 
 // openrouterChoice is a single choice in the response.
@@ -103,11 +104,25 @@ type openrouterModelList struct {
 // Provider struct and constructor
 // --------------------------------------------------------------------------
 
+// ModelInfoStore is an optional interface for looking up cached model metadata.
+// Used by OpenRouterProvider to check SupportedParameters before building requests.
+// Implemented by the model cache in Phase 5; in tests a fake is injected.
+type ModelInfoStore interface {
+	GetModelInfo(modelID string) (ModelInfo, bool)
+}
+
 // OpenRouterProvider calls the OpenRouter OpenAI-compatible chat completions API.
 type OpenRouterProvider struct {
-	config  config.ProviderConfig
-	baseURL string
-	client  *http.Client
+	config         config.ProviderConfig
+	baseURL        string
+	client         *http.Client
+	modelInfoStore ModelInfoStore // optional; nil = no capability checks
+}
+
+// SetModelInfoStore wires a model info store into the provider so that
+// SupportedParameters can be checked before building each request.
+func (p *OpenRouterProvider) SetModelInfoStore(s ModelInfoStore) {
+	p.modelInfoStore = s
 }
 
 // NewOpenRouterProvider constructs an OpenRouterProvider from cfg.

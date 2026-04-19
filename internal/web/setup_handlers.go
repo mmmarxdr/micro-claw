@@ -179,6 +179,14 @@ func (s *Server) handleValidateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Phase 11: register a transient provider in the registry so that
+	// GET /api/providers/{provider}/models works immediately after key validation
+	// (even before setup/complete persists the config).
+	// This lets the setup wizard show a live model list without restarting.
+	if reg := s.deps.ProviderRegistry; reg != nil {
+		reg.RegisterTransient(req.Provider, prov)
+	}
+
 	writeJSON(w, http.StatusOK, validateKeyResponse{Valid: true})
 }
 

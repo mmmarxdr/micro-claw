@@ -47,6 +47,9 @@ type telegramStreamWriter struct {
 }
 
 // WriteChunk appends text to the buffer and flushes via editMessageText
+// WriteReasoning is a no-op for Telegram — reasoning tokens are not surfaced to the channel.
+func (w *telegramStreamWriter) WriteReasoning(_ string) error { return nil }
+
 // if enough time has passed since the last edit.
 func (w *telegramStreamWriter) WriteChunk(text string) error {
 	w.accumulated.WriteString(text)

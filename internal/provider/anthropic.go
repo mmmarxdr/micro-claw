@@ -12,10 +12,78 @@ import (
 	"daimon/internal/config"
 )
 
+// --------------------------------------------------------------------------
+// Thinking capability map (Phase 2.1)
+// --------------------------------------------------------------------------
+
+// thinkingShape describes the kind of extended thinking a model supports.
+type thinkingShape int
+
+const (
+	// thinkingNone means the model does not support extended thinking.
+	// Sending thinking params to such models causes a 400 error.
+	thinkingNone thinkingShape = iota
+	// thinkingAdaptive means the model uses {"type":"adaptive","effort":"..."}.
+	// Currently only claude-opus-4-7 uses this shape.
+	thinkingAdaptive
+	// thinkingManual means the model uses {"type":"enabled","budget_tokens":N}.
+	// Used by 4.6/4.5/4.1 model generations.
+	thinkingManual
+)
+
+// anthropicThinkingCapability maps model IDs to their thinking shape.
+// Absence from the map implies thinkingNone (safe default — no thinking params sent).
+var anthropicThinkingCapability = map[string]thinkingShape{
+	// claude-opus-4-7: adaptive shape (REQUIRES adaptive — rejects "enabled")
+	"claude-opus-4-7": thinkingAdaptive,
+	// claude-opus-4-6 and claude-sonnet-4-6: manual shape
+	"claude-opus-4-6":   thinkingManual,
+	"claude-sonnet-4-6": thinkingManual,
+	// Legacy IDs — manual shape
+	"claude-opus-4-5-20251101":   thinkingManual,
+	"claude-sonnet-4-5-20250929": thinkingManual,
+	"claude-opus-4-1-20250805":   thinkingManual,
+	// claude-haiku-4-5-20251001 is intentionally absent → thinkingNone
+}
+
+// anthropicThinkingParams returns the thinking activation map[string]any to inject
+// into the request body, or nil if the model does not support thinking.
+// effort: "low" | "medium" | "high" (used for adaptive shape)
+// budgetTokens: integer token budget (used for manual shape)
+func anthropicThinkingParams(modelID, effort string, budgetTokens int) map[string]any {
+	shape := anthropicThinkingCapability[modelID]
+	switch shape {
+	case thinkingAdaptive:
+		return map[string]any{
+			"type":   "adaptive",
+			"effort": effort,
+		}
+	case thinkingManual:
+		return map[string]any{
+			"type":         "enabled",
+			"budget_tokens": budgetTokens,
+		}
+	default:
+		return nil
+	}
+}
+
+// --------------------------------------------------------------------------
+// AnthropicProvider
+// --------------------------------------------------------------------------
+
 type AnthropicProvider struct {
-	config config.ProviderConfig
-	client *http.Client
-	media  mediaReader // optional; nil → text-only fallback for image blocks
+	config   config.ProviderConfig
+	client   *http.Client
+	media    mediaReader // optional; nil → text-only fallback for image blocks
+	thinking config.ProviderCredentials // Anthropic-specific thinking config
+}
+
+// SetThinkingConfig wires Anthropic-specific thinking settings (effort, budget)
+// from the ProviderCredentials into the provider. Called after construction
+// when config is available (e.g. in buildAnthropicRequest).
+func (p *AnthropicProvider) SetThinkingConfig(creds config.ProviderCredentials) {
+	p.thinking = creds
 }
 
 func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
@@ -24,8 +92,8 @@ func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
 		timeout = 60 * time.Second
 	}
 	return &AnthropicProvider{
-		config: cfg,
-		client: &http.Client{Timeout: timeout},
+		config:   cfg,
+		client:   &http.Client{Timeout: timeout},
 	}
 }
 
@@ -68,6 +136,7 @@ type anthropicRequest struct {
 	System    string             `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Thinking  map[string]any     `json:"thinking,omitempty"` // extended thinking params; nil = omitted
 }
 
 type anthropicTool struct {

@@ -628,6 +628,55 @@ func TestStreamEventType_String(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// StreamEventReasoningDelta tests (Phase 1.1)
+// --------------------------------------------------------------------------
+
+func TestStreamEventType_ReasoningDelta(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType StreamEventType
+		wantStr   string
+		wantIota  int
+	}{
+		{
+			name:      "ReasoningDelta string representation",
+			eventType: StreamEventReasoningDelta,
+			wantStr:   "ReasoningDelta",
+		},
+		{
+			name:      "TextDelta is iota 0",
+			eventType: StreamEventTextDelta,
+			wantIota:  0,
+		},
+		{
+			name:      "ReasoningDelta is iota 1",
+			eventType: StreamEventReasoningDelta,
+			wantIota:  1,
+		},
+		{
+			name:      "ToolCallStart is iota 2",
+			eventType: StreamEventToolCallStart,
+			wantIota:  2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantStr != "" {
+				if got := tt.eventType.String(); got != tt.wantStr {
+					t.Errorf("String() = %q, want %q", got, tt.wantStr)
+				}
+			}
+			if tt.wantIota != 0 || tt.name == "TextDelta is iota 0" {
+				if int(tt.eventType) != tt.wantIota {
+					t.Errorf("iota value = %d, want %d", int(tt.eventType), tt.wantIota)
+				}
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
 // assembleToolCall test
 // --------------------------------------------------------------------------
 
@@ -638,6 +687,70 @@ func TestAssembleToolCall(t *testing.T) {
 	}
 	if string(tc.Input) != `{"cmd":"ls"}` {
 		t.Errorf("unexpected Input: %q", string(tc.Input))
+	}
+}
+
+// --------------------------------------------------------------------------
+// ModelInfo.SupportedParameters tests (Phase 1.2)
+// --------------------------------------------------------------------------
+
+func TestModelInfo_SupportedParameters_JSONRoundtrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input ModelInfo
+		json  string
+	}{
+		{
+			name: "SupportedParameters present",
+			input: ModelInfo{
+				ID:                  "model-x",
+				Name:                "Model X",
+				SupportedParameters: []string{"reasoning", "include_reasoning"},
+			},
+			json: `{"id":"model-x","name":"Model X","context_length":0,"prompt_cost":0,"completion_cost":0,"free":false,"supported_parameters":["reasoning","include_reasoning"]}`,
+		},
+		{
+			name: "SupportedParameters absent omitted",
+			input: ModelInfo{
+				ID:   "model-y",
+				Name: "Model Y",
+			},
+			// omitempty: field should be absent from JSON output
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			if tt.json != "" {
+				if string(b) != tt.json {
+					t.Errorf("Marshal = %s, want %s", string(b), tt.json)
+				}
+			}
+			// For absent case: verify field is not in output
+			if tt.input.SupportedParameters == nil {
+				if strings.Contains(string(b), "supported_parameters") {
+					t.Errorf("expected 'supported_parameters' to be omitted, got: %s", string(b))
+				}
+			}
+
+			// Round-trip
+			var got ModelInfo
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+			if len(got.SupportedParameters) != len(tt.input.SupportedParameters) {
+				t.Errorf("SupportedParameters length = %d, want %d", len(got.SupportedParameters), len(tt.input.SupportedParameters))
+			}
+			for i, v := range tt.input.SupportedParameters {
+				if got.SupportedParameters[i] != v {
+					t.Errorf("SupportedParameters[%d] = %q, want %q", i, got.SupportedParameters[i], v)
+				}
+			}
+		})
 	}
 }
 

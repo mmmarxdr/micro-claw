@@ -525,28 +525,30 @@ func main() {
 			}
 		}
 
-		// Type-assert provider to ModelLister if supported.
-		var ml provider.ModelLister
-		if lister, ok := prov.(provider.ModelLister); ok {
-			ml = lister
-		}
-
 		resolvedCfgPath, _ := config.FindConfigPath(*cfgPath)
 		mcpSvc := mcp.NewMCPService(resolvedCfgPath)
 
+		provRegistry := provider.NewStaticRegistry(*cfg)
+
+		// Non-blocking startup validation: warn if the configured model is not
+		// found in the provider's live model list. Never blocks startup on error.
+		valCtx, valCancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = web.ValidateConfiguredModel(valCtx, provRegistry, *cfg)
+		valCancel()
+
 		mediaStore, _ := st.(store.MediaStore)
 		webSrv := web.NewServer(web.ServerDeps{
-			Store:       st,
-			Auditor:     auditor,
-			Config:      cfg,
-			ConfigPath:  resolvedCfgPath,
-			MCPService:  mcpSvc,
-			ModelLister: ml,
-			Tools:       toolsRegistry,
-			StartedAt:   time.Now(),
-			Version:     version,
-			WebChannel:  webCh,
-			MediaStore:  mediaStore,
+			Store:            st,
+			Auditor:          auditor,
+			Config:           cfg,
+			ConfigPath:       resolvedCfgPath,
+			MCPService:       mcpSvc,
+			ProviderRegistry: provRegistry,
+			Tools:            toolsRegistry,
+			StartedAt:        time.Now(),
+			Version:          version,
+			WebChannel:       webCh,
+			MediaStore:       mediaStore,
 		})
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)

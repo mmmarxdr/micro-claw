@@ -35,13 +35,15 @@ func (m *mockStreamingProvider) ChatStream(ctx context.Context, req provider.Cha
 	return nil, errors.New("ChatStream not implemented")
 }
 
-// mockStreamWriter captures chunks for assertion.
+// mockStreamWriter captures chunks and reasoning calls for assertion.
 type mockStreamWriter struct {
-	mu        sync.Mutex
-	chunks    []string
-	finalized bool
-	aborted   bool
-	abortErr  error
+	mu             sync.Mutex
+	chunks         []string
+	reasoning      []string
+	finalized      bool
+	aborted        bool
+	abortErr       error
+	reasoningErr   error // if non-nil, WriteReasoning returns this error
 }
 
 func (w *mockStreamWriter) WriteChunk(text string) error {
@@ -49,6 +51,21 @@ func (w *mockStreamWriter) WriteChunk(text string) error {
 	defer w.mu.Unlock()
 	w.chunks = append(w.chunks, text)
 	return nil
+}
+
+func (w *mockStreamWriter) WriteReasoning(text string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reasoning = append(w.reasoning, text)
+	return w.reasoningErr
+}
+
+func (w *mockStreamWriter) getReasoning() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	cp := make([]string, len(w.reasoning))
+	copy(cp, w.reasoning)
+	return cp
 }
 
 func (w *mockStreamWriter) Finalize() error {
@@ -562,4 +579,173 @@ func TestProcessMessage_StreamFallbackToSync(t *testing.T) {
 	if ch.sent[0].Text != "sync response" {
 		t.Errorf("expected 'sync response', got %q", ch.sent[0].Text)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — ReasoningDelta forwarding
+// ---------------------------------------------------------------------------
+
+// 10.1.1 — interleaved ReasoningDelta + TextDelta → WriteReasoning / WriteChunk in order,
+// reasoning NOT appended to assembled content.
+func TestProcessStreamingCall_ReasoningDelta_Forwarded(t *testing.T) {
+	events := []provider.StreamEvent{
+		{Type: provider.StreamEventReasoningDelta, Text: "think1"},
+		{Type: provider.StreamEventTextDelta, Text: "hello"},
+		{Type: provider.StreamEventReasoningDelta, Text: "think2"},
+		{Type: provider.StreamEventTextDelta, Text: " world"},
+		{Type: provider.StreamEventDone},
+	}
+	assembledResp := &provider.ChatResponse{
+		Content:    "hello world",
+		StopReason: "end_turn",
+	}
+
+	sp := &mockStreamingProvider{
+		streamFunc: func(ctx context.Context, req provider.ChatRequest) (*provider.StreamResult, error) {
+			return scriptedStream(events, assembledResp, nil), nil
+		},
+	}
+	sCh := &mockStreamChannel{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
+
+	resp, textStreamed, err := ag.processStreamingCall(
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !textStreamed {
+		t.Error("expected textStreamed=true")
+	}
+	if resp.Content != "hello world" {
+		t.Errorf("expected Content='hello world', got %q", resp.Content)
+	}
+
+	chunks := sCh.writer.getChunks()
+	if len(chunks) != 2 || chunks[0] != "hello" || chunks[1] != " world" {
+		t.Errorf("unexpected text chunks: %v", chunks)
+	}
+
+	reasoning := sCh.writer.getReasoning()
+	if len(reasoning) != 2 || reasoning[0] != "think1" || reasoning[1] != "think2" {
+		t.Errorf("unexpected reasoning calls: %v", reasoning)
+	}
+}
+
+// 10.1.2 — regression: TextDelta-only path still works, WriteReasoning not called.
+func TestProcessStreamingCall_TextDeltaOnly_NoReasoning(t *testing.T) {
+	events := []provider.StreamEvent{
+		{Type: provider.StreamEventTextDelta, Text: "answer"},
+		{Type: provider.StreamEventDone},
+	}
+	assembledResp := &provider.ChatResponse{Content: "answer", StopReason: "end_turn"}
+
+	sp := &mockStreamingProvider{
+		streamFunc: func(ctx context.Context, req provider.ChatRequest) (*provider.StreamResult, error) {
+			return scriptedStream(events, assembledResp, nil), nil
+		},
+	}
+	sCh := &mockStreamChannel{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
+
+	_, _, err := ag.processStreamingCall(
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reasoning := sCh.writer.getReasoning()
+	if len(reasoning) != 0 {
+		t.Errorf("expected no WriteReasoning calls for text-only stream, got %v", reasoning)
+	}
+}
+
+// 10.1.3 — WriteReasoning failure is non-fatal: loop continues, text still arrives.
+func TestProcessStreamingCall_ReasoningWriteError_NonFatal(t *testing.T) {
+	events := []provider.StreamEvent{
+		{Type: provider.StreamEventReasoningDelta, Text: "think"},
+		{Type: provider.StreamEventTextDelta, Text: "answer"},
+		{Type: provider.StreamEventDone},
+	}
+	assembledResp := &provider.ChatResponse{Content: "answer", StopReason: "end_turn"}
+
+	sp := &mockStreamingProvider{
+		streamFunc: func(ctx context.Context, req provider.ChatRequest) (*provider.StreamResult, error) {
+			return scriptedStream(events, assembledResp, nil), nil
+		},
+	}
+
+	// Use a custom stream channel that returns a writer whose WriteReasoning always errors.
+	customCh := &reasoningErrStreamChannel{reasoningErr: errors.New("write error")}
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, customCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
+
+	resp, textStreamed, err := ag.processStreamingCall(
+		context.Background(), sp, customCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !textStreamed {
+		t.Error("expected textStreamed=true even when WriteReasoning fails")
+	}
+	if resp.Content != "answer" {
+		t.Errorf("expected 'answer', got %q", resp.Content)
+	}
+}
+
+// 10.1.4 — reasoning-only stream (no TextDelta) still finalizes the writer.
+// Prevents a latent leak where a writer opened by ReasoningDelta is never closed.
+func TestProcessStreamingCall_ReasoningOnly_FinalizesWriter(t *testing.T) {
+	events := []provider.StreamEvent{
+		{Type: provider.StreamEventReasoningDelta, Text: "thinking..."},
+		{Type: provider.StreamEventDone},
+	}
+	assembledResp := &provider.ChatResponse{Content: "", StopReason: "end_turn"}
+
+	sp := &mockStreamingProvider{
+		streamFunc: func(ctx context.Context, req provider.ChatRequest) (*provider.StreamResult, error) {
+			return scriptedStream(events, assembledResp, nil), nil
+		},
+	}
+	sCh := &mockStreamChannel{}
+
+	ag := New(defaultCfg(), defaultLimits(), config.FilterConfig{}, sCh, sp, &mockStore{}, audit.NoopAuditor{}, nil, nil, skill.SkillIndex{}, 4, true)
+
+	_, textStreamed, err := ag.processStreamingCall(
+		context.Background(), sp, sCh, provider.ChatRequest{}, "test", 0, time.Now(), nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if textStreamed {
+		t.Error("expected textStreamed=false when only reasoning was emitted")
+	}
+	if sCh.writer == nil {
+		t.Fatal("expected writer to be opened for reasoning delivery")
+	}
+	if !sCh.writer.finalized {
+		t.Error("expected Finalize to be called for reasoning-only stream (would leak otherwise)")
+	}
+}
+
+// reasoningErrStreamChannel is a StreamSender that returns a writer whose
+// WriteReasoning always fails. Used to verify the loop is non-fatal on such errors.
+type reasoningErrStreamChannel struct {
+	mockChannel
+	reasoningErr error
+	writer       *mockStreamWriter
+}
+
+func (c *reasoningErrStreamChannel) BeginStream(_ context.Context, _ string) (channel.StreamWriter, error) {
+	c.writer = &mockStreamWriter{reasoningErr: c.reasoningErr}
+	return c.writer, nil
+}
+
+func (c *reasoningErrStreamChannel) Send(_ context.Context, msg channel.OutgoingMessage) error {
+	c.sent = append(c.sent, msg)
+	return nil
 }

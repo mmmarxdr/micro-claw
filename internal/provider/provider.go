@@ -120,12 +120,13 @@ type EmbeddingProvider interface {
 
 // ModelInfo describes a model available from a provider.
 type ModelInfo struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	ContextLength int     `json:"context_length"`
-	PromptCost    float64 `json:"prompt_cost"`    // USD per 1M tokens
-	CompletionCost float64 `json:"completion_cost"` // USD per 1M tokens
-	Free          bool    `json:"free"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	ContextLength  int      `json:"context_length"`
+	PromptCost     float64  `json:"prompt_cost"`              // USD per 1M tokens
+	CompletionCost float64  `json:"completion_cost"`          // USD per 1M tokens
+	Free           bool     `json:"free"`
+	SupportedParameters []string `json:"supported_parameters,omitempty"` // e.g. ["reasoning"]
 }
 
 // ModelLister is an optional interface for providers that can enumerate

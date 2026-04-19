@@ -36,6 +36,14 @@ type WebConfig struct {
 type ProviderCredentials struct {
 	APIKey  string `yaml:"api_key"            json:"api_key"`
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+
+	// Anthropic-only: thinking/extended reasoning configuration.
+	// Defaults are applied in anthropicThinkingParams, not here, so zero-value
+	// creds continue to work without YAML changes.
+	// thinking_effort: "low" | "medium" | "high" (default "medium")
+	ThinkingEffort string `yaml:"thinking_effort,omitempty"        json:"thinking_effort,omitempty"`
+	// thinking_budget_tokens: token budget for manual thinking mode (default 10000)
+	ThinkingBudgetTokens *int `yaml:"thinking_budget_tokens,omitempty" json:"thinking_budget_tokens,omitempty"`
 }
 
 // ModelsConfig is the active-model selection block.
