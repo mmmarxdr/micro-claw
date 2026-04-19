@@ -79,9 +79,13 @@ func NewServer(deps ServerDeps) *Server {
 	handler = bodySizeLimitMiddleware(defaultMaxBodySize, handler)
 
 	// Auth — protects /api/* and /ws/* endpoints.
-	// Read token dynamically from config so that setup-complete can update it
-	// without requiring a server restart.
-	handler = authMiddlewareDynamic(func() string { return s.deps.Config.Web.AuthToken }, handler)
+	// Both accessors read from config on every request (INV-1, INV-8): never captured
+	// at startup so token rotation and IssuedAt updates are observed immediately.
+	handler = authMiddlewareDynamic(
+		func() string    { return s.deps.Config.Web.AuthToken },
+		func() time.Time { return s.deps.Config.Web.AuthTokenIssuedAt },
+		handler,
+	)
 
 	// CORS — allow same-origin by default; configure allowed_origins for cross-origin.
 	handler = corsMiddleware(deps.Config.Web.AllowedOrigins, handler)

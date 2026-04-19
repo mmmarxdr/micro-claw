@@ -296,7 +296,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	s.deps.Config.Web.AuthToken = authToken
 
 	// Set HttpOnly cookie so the browser is authenticated automatically.
-	setAuthCookie(w, r, authToken)
+	setAuthCookie(w, r, &base.Web, authToken)
 
 	writeJSON(w, http.StatusOK, setupCompleteResponse{
 		Success:         true,

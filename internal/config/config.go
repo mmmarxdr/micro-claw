@@ -20,14 +20,15 @@ var ErrNoConfig = errors.New("no config file found")
 
 // WebConfig holds configuration for the optional HTTP dashboard server.
 type WebConfig struct {
-	Enabled        bool     `yaml:"enabled"         json:"enabled"`
-	Port           int      `yaml:"port"            json:"port"`
-	Host           string   `yaml:"host"            json:"host"`
-	AuthToken      string   `yaml:"auth_token"      json:"auth_token"`      // Bearer token for API/WS auth. Auto-generated if empty.
-	AllowedOrigins []string `yaml:"allowed_origins"  json:"allowed_origins"` // CORS: allowed origins. Empty or ["*"] = allow all.
-	TLSCert        string   `yaml:"tls_cert"        json:"tls_cert"`        // Path to TLS certificate file (optional).
-	TLSKey         string   `yaml:"tls_key"         json:"tls_key"`         // Path to TLS private key file (optional).
-	TrustProxy     bool     `yaml:"trust_proxy"     json:"trust_proxy"`     // When true, X-Forwarded-For is trusted for client IP. Only enable behind a trusted reverse proxy.
+	Enabled            bool      `yaml:"enabled"                json:"enabled"`
+	Port               int       `yaml:"port"                   json:"port"`
+	Host               string    `yaml:"host"                   json:"host"`
+	AuthToken          string    `yaml:"auth_token"             json:"auth_token"`           // Bearer token for API/WS auth. Auto-generated if empty.
+	AuthTokenIssuedAt  time.Time `yaml:"auth_token_issued_at"   json:"auth_token_issued_at"` // When the current auth token was last issued (rotation or setup-complete). Used for server-side TTL enforcement.
+	AllowedOrigins     []string  `yaml:"allowed_origins"        json:"allowed_origins"`      // CORS: allowed origins. Empty or ["*"] = allow all.
+	TLSCert            string    `yaml:"tls_cert"               json:"tls_cert"`             // Path to TLS certificate file (optional).
+	TLSKey             string    `yaml:"tls_key"                json:"tls_key"`              // Path to TLS private key file (optional).
+	TrustProxy         bool      `yaml:"trust_proxy"            json:"trust_proxy"`          // When true, X-Forwarded-For is trusted for client IP. Only enable behind a trusted reverse proxy.
 }
 
 // ProviderCredentials holds authentication credentials for a single AI provider.
@@ -681,6 +682,13 @@ func (c *Config) ApplyDefaults() {
 		if envToken := os.Getenv("MICROAGENT_WEB_TOKEN"); envToken != "" {
 			c.Web.AuthToken = envToken
 		}
+	}
+	// AuthTokenIssuedAt back-compat (FR-55, AS-25, NFR-4): stamp time.Now() once at
+	// config load for legacy configs that lack the field. This starts the 30-day TTL
+	// clock at upgrade time, not at an unknown original issuance. NOT persisted to
+	// disk here — only written when the next rotation calls AtomicWriteConfig.
+	if c.Web.AuthTokenIssuedAt.IsZero() {
+		c.Web.AuthTokenIssuedAt = time.Now()
 	}
 
 	// Context-mode defaults.

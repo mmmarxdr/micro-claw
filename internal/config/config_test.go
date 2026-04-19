@@ -1759,3 +1759,36 @@ agent:
 		t.Error("case C: .v1.bak created for fresh install; should not exist")
 	}
 }
+
+// TestApplyDefaults_StampsAuthTokenIssuedAtWhenZero verifies FR-55/AS-25:
+// when a config is loaded without auth_token_issued_at, ApplyDefaults stamps
+// AuthTokenIssuedAt to approximately time.Now() (within 1 second).
+func TestApplyDefaults_StampsAuthTokenIssuedAtWhenZero(t *testing.T) {
+	before := time.Now()
+	var c Config
+	// AuthTokenIssuedAt is zero (field absent from YAML — legacy config).
+	c.ApplyDefaults()
+	after := time.Now()
+
+	if c.Web.AuthTokenIssuedAt.IsZero() {
+		t.Fatal("ApplyDefaults: AuthTokenIssuedAt must not be zero for a legacy config")
+	}
+	if c.Web.AuthTokenIssuedAt.Before(before) || c.Web.AuthTokenIssuedAt.After(after) {
+		t.Fatalf("ApplyDefaults: AuthTokenIssuedAt %v not in [%v, %v]",
+			c.Web.AuthTokenIssuedAt, before, after)
+	}
+}
+
+// TestApplyDefaults_PreservesExistingAuthTokenIssuedAt verifies FR-54/NFR-4:
+// when auth_token_issued_at is already set, ApplyDefaults must not overwrite it.
+func TestApplyDefaults_PreservesExistingAuthTokenIssuedAt(t *testing.T) {
+	existing := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	var c Config
+	c.Web.AuthTokenIssuedAt = existing
+	c.ApplyDefaults()
+
+	if !c.Web.AuthTokenIssuedAt.Equal(existing) {
+		t.Fatalf("ApplyDefaults: AuthTokenIssuedAt mutated from %v to %v",
+			existing, c.Web.AuthTokenIssuedAt)
+	}
+}

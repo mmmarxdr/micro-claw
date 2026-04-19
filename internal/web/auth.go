@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // GenerateToken returns a cryptographically random 32-byte hex token (64 chars).
@@ -24,15 +25,30 @@ func GenerateToken() (string, error) {
 //
 // HTTP:      Authorization: Bearer <token>
 // WebSocket: ?token=<token> query parameter (browsers cannot set headers on WS).
+//
+// Deprecated: prefer authMiddlewareDynamic directly with explicit accessor funcs.
 func authMiddleware(token string, next http.Handler) http.Handler {
-	return authMiddlewareDynamic(func() string { return token }, next)
+	return authMiddlewareDynamic(
+		func() string    { return token },
+		func() time.Time { return time.Time{} }, // no TTL check for static token callers
+		next,
+	)
 }
 
-// authMiddlewareDynamic is like authMiddleware but reads the expected token
-// from a function on every request. This allows the token to be updated at
-// runtime (e.g. after setup-complete writes a new token to config) without
-// requiring a server restart.
-func authMiddlewareDynamic(tokenFn func() string, next http.Handler) http.Handler {
+// authMiddlewareDynamic reads the expected token AND the token issuance time
+// from closures on every request (INV-1, INV-8 — never captured at startup).
+//
+// Flow:
+//  1. Static/SPA paths bypass auth entirely.
+//  2. /api/setup/* (except /reset) bypass auth (pre-setup accessible).
+//  3. If tokenFn() == "" → pre-setup mode, allow all (FR-23, INV-2).
+//  4. Extract candidate from request (Bearer > cookie > ?token=).
+//  5. Token mismatch → 401; if from cookie, also clear-cookie (AS-4).
+//  6. Token match → TTL check via issuedAtFn() (FR-57, FR-58, INV-9).
+//     TTL is checked AFTER match so bad tokens cannot probe IssuedAt state (D2b).
+//  7. TTL expired → 401 + clear-cookie (AS-22).
+//  8. All checks pass → delegate to next.
+func authMiddlewareDynamic(tokenFn func() string, issuedAtFn func() time.Time, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
@@ -50,22 +66,68 @@ func authMiddlewareDynamic(tokenFn func() string, next http.Handler) http.Handle
 		}
 
 		expected := tokenFn()
-		// If no token is configured yet (pre-setup), allow all requests.
+		// INV-2: pre-setup bypass — if no token configured, allow all requests.
 		if expected == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Extract the candidate token.
+		// Extract the candidate token (priority: Bearer > cookie > ?token=).
 		candidate := tokenFromRequest(r)
 
 		if !tokenMatch(candidate, expected) {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			// If the invalid token came from a cookie, clear it so the browser
+			// does not keep replaying a stale value (AS-4).
+			if fromCookie(r) {
+				clearStaleAuthCookie(w, r)
+			}
+			writeAuthFailure(w)
+			return
+		}
+
+		// TTL check runs AFTER token match (D2b — prevents IssuedAt probing by bad tokens).
+		issuedAt := issuedAtFn()
+		if !issuedAt.IsZero() && time.Since(issuedAt) > authCookieTTL {
+			clearStaleAuthCookie(w, r)
+			writeAuthFailure(w)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// clearStaleAuthCookie clears the "auth" cookie using conservative defaults.
+// Used by the middleware where the WebConfig is not available. The MaxAge=0
+// eviction is accepted by all browsers regardless of the original SameSite
+// value for same-site cookies; cross-origin browsers use explicit handlers.
+func clearStaleAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "auth",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   0,
+	})
+}
+
+// writeAuthFailure sends a 401 Unauthorized response with a JSON body.
+// Using an inline helper instead of http.Error avoids a trailing newline
+// difference in tests and keeps the response shape consistent.
+func writeAuthFailure(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+}
+
+// fromCookie reports whether the auth token in the request came from the
+// "auth" cookie (as opposed to the Authorization header or ?token= param).
+func fromCookie(r *http.Request) bool {
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		return false
+	}
+	c, err := r.Cookie("auth")
+	return err == nil && c.Value != ""
 }
 
 // tokenFromRequest extracts the auth token from the request, checking:
@@ -89,21 +151,6 @@ func tokenFromRequest(r *http.Request) string {
 		return t
 	}
 	return ""
-}
-
-// setAuthCookie writes an HttpOnly cookie with the auth token.
-// SameSite=Strict prevents CSRF; Path=/ ensures it's sent on all routes.
-// Secure is set when the request arrived over TLS.
-func setAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "auth",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
-		MaxAge:   365 * 24 * 60 * 60, // 1 year
-	})
 }
 
 // tokenMatch performs a constant-time comparison to prevent timing attacks.
