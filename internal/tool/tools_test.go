@@ -243,19 +243,20 @@ func TestShellTool_OutputTruncation(t *testing.T) {
 	st := NewShellTool(config.ShellToolConfig{AllowAll: true})
 	ctx := context.Background()
 
-	// produce >10KB output (printf with 11000 chars)
-	result, err := st.Execute(ctx, json.RawMessage(`{"command":"printf '%011000d' 1"}`))
+	// produce >64KB output so the shell-tool cap triggers
+	result, err := st.Execute(ctx, json.RawMessage(`{"command":"printf '%070000d' 1"}`))
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
 	if result.IsError {
 		t.Errorf("unexpected IsError=true, content: %q", result.Content)
 	}
-	if !strings.HasSuffix(result.Content, "...(output truncated)") {
-		t.Errorf("expected truncation marker, got content ending: %q", result.Content[max(0, len(result.Content)-50):])
+	if !strings.Contains(result.Content, "...(output truncated — showing first") {
+		t.Errorf("expected truncation marker with byte counts, got content ending: %q", result.Content[max(0, len(result.Content)-80):])
 	}
-	// total length should not exceed 10KB + marker
-	const maxLen = 10*1024 + len("\n...(output truncated)")
+	// The marker includes variable-length byte counts; cap the sanity check at a
+	// generous upper bound (body + ~200 char marker).
+	const maxLen = 64*1024 + 200
 	if len(result.Content) > maxLen {
 		t.Errorf("truncated content still too large: %d bytes", len(result.Content))
 	}
@@ -848,8 +849,8 @@ func TestHTTPFetchTool_Truncation(t *testing.T) {
 	if result.IsError {
 		t.Errorf("unexpected IsError=true: %q", result.Content)
 	}
-	if !strings.HasSuffix(result.Content, "...(response truncated)") {
-		t.Errorf("content does not end with truncation marker, got: %q", result.Content[max(0, len(result.Content)-50):])
+	if !strings.Contains(result.Content, "...(response truncated —") {
+		t.Errorf("content does not contain truncation marker, got tail: %q", result.Content[max(0, len(result.Content)-120):])
 	}
 }
 
@@ -953,9 +954,9 @@ func TestHTTPFetchTool_ErrorCases(t *testing.T) {
 		}
 	})
 
-	t.Run("empty MaxResponseSize defaults to 512KB truncation", func(t *testing.T) {
-		// Serve more than 512KB
-		largeBody := strings.Repeat("y", 513*1024)
+	t.Run("empty MaxResponseSize defaults to 2MB truncation", func(t *testing.T) {
+		// Serve more than 2MB so the default cap triggers.
+		largeBody := strings.Repeat("y", 2*1024*1024+1024)
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, largeBody)
 		}))
@@ -963,7 +964,7 @@ func TestHTTPFetchTool_ErrorCases(t *testing.T) {
 
 		ht := NewHTTPFetchTool(config.HTTPToolConfig{
 			Timeout:         5 * time.Second,
-			MaxResponseSize: "", // empty → defaults to 512KB inside Execute
+			MaxResponseSize: "", // empty → defaults to 2MB inside Execute
 		})
 		params := fmt.Sprintf(`{"url":%q}`, ts.URL)
 		result, err := ht.Execute(context.Background(), json.RawMessage(params))
@@ -973,7 +974,7 @@ func TestHTTPFetchTool_ErrorCases(t *testing.T) {
 		if result.IsError {
 			t.Errorf("unexpected IsError=true: %q", result.Content)
 		}
-		if !strings.Contains(result.Content, "...(response truncated)") {
+		if !strings.Contains(result.Content, "...(response truncated —") {
 			t.Errorf("expected truncation marker, content length %d", len(result.Content))
 		}
 	})

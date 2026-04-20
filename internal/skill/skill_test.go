@@ -635,7 +635,7 @@ func TestSkillShellTool_Execute_NonZeroExit(t *testing.T) {
 }
 
 func TestSkillShellTool_Execute_OutputTruncated(t *testing.T) {
-	// Generate output > 10 KB
+	// Generate output well beyond the 64 KB cap.
 	def := ToolDef{
 		Name:        "big_output",
 		Description: "Generates large output",
@@ -649,15 +649,17 @@ func TestSkillShellTool_Execute_OutputTruncated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	const maxLen = 10 * 1024
-	if !strings.HasSuffix(result.Content, "\n...(output truncated)") {
-		t.Errorf("expected truncation suffix in output; last 50 chars: %q", result.Content[len(result.Content)-50:])
+	const maxLen = 64 * 1024
+	if !strings.Contains(result.Content, "...(output truncated — showing first") {
+		t.Errorf("expected truncation marker with byte counts; last 120 chars: %q", result.Content[len(result.Content)-120:])
 	}
-	// The content before the suffix should be exactly maxLen bytes
-	suffix := "\n...(output truncated)"
-	body := strings.TrimSuffix(result.Content, suffix)
-	if len(body) != maxLen {
-		t.Errorf("expected body length %d, got %d", maxLen, len(body))
+	// The body up to the newline preceding the marker should be exactly maxLen bytes.
+	markerStart := strings.Index(result.Content, "\n...(output truncated")
+	if markerStart < 0 {
+		t.Fatalf("marker not found in output")
+	}
+	if markerStart != maxLen {
+		t.Errorf("expected body length %d, got %d", maxLen, markerStart)
 	}
 }
 

@@ -135,11 +135,21 @@ func (t *WebFetchTool) Execute(ctx context.Context, params json.RawMessage) (Too
 
 	statusCode := resp.StatusCode
 
+	// Build the truncation notice with real/observable sizes so the LLM
+	// can decide whether to re-fetch a smaller range, switch strategies,
+	// or move on.
+	truncationNotice := func(prefix string) string {
+		if resp.ContentLength > 0 {
+			return fmt.Sprintf("%s...(response truncated — showing first %d of %d bytes)", prefix, maxSize, resp.ContentLength)
+		}
+		return fmt.Sprintf("%s...(response truncated — showing first %d bytes; upstream exceeded the %d-byte limit)", prefix, maxSize, maxSize)
+	}
+
 	// raw mode — skip extraction.
 	if !extractContent {
 		content := string(bodyBytes)
 		if truncated {
-			content += "\n...(response truncated)"
+			content += "\n" + truncationNotice("")
 		}
 		return ToolResult{
 			Content: fmt.Sprintf("Status: %s\n\n%s", resp.Status, content),
@@ -197,7 +207,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, params json.RawMessage) (Too
 		extracted = false
 	}
 	if truncated {
-		sb.WriteString("\n\n...(response truncated)")
+		sb.WriteString("\n\n" + truncationNotice(""))
 	}
 
 	return ToolResult{

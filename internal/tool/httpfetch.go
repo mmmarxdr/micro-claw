@@ -106,7 +106,7 @@ func (t *HTTPFetchTool) Execute(ctx context.Context, params json.RawMessage) (To
 	defer resp.Body.Close()
 
 	if t.config.MaxResponseSize == "" {
-		t.config.MaxResponseSize = "512KB"
+		t.config.MaxResponseSize = "2MB"
 	}
 	maxSize := parseSize(t.config.MaxResponseSize)
 	var bodyReader io.Reader = resp.Body
@@ -122,7 +122,13 @@ func (t *HTTPFetchTool) Execute(ctx context.Context, params json.RawMessage) (To
 	truncated := ""
 	if maxSize > 0 && int64(len(bodyBytes)) > maxSize {
 		bodyBytes = bodyBytes[:maxSize]
-		truncated = "\n...(response truncated)"
+		// The LimitReader allowed maxSize+1 bytes; we can't know exact upstream size.
+		// Surface Content-Length when the server provided it so the agent sees a real number.
+		if resp.ContentLength > 0 {
+			truncated = fmt.Sprintf("\n...(response truncated — showing first %d of %d bytes)", maxSize, resp.ContentLength)
+		} else {
+			truncated = fmt.Sprintf("\n...(response truncated — showing first %d bytes; upstream exceeded the %d-byte limit)", maxSize, maxSize)
+		}
 	}
 
 	result := fmt.Sprintf("Status: %s\n\n%s%s", resp.Status, string(bodyBytes), truncated)

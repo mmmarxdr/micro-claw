@@ -86,10 +86,11 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (ToolRe
 
 	out, err := cmd.CombinedOutput()
 
-	const maxLen = 10 * 1024
+	const maxLen = 64 * 1024
 	outStr := string(out)
 	if len(outStr) > maxLen {
-		outStr = outStr[:maxLen] + "\n...(output truncated)"
+		originalLen := len(outStr)
+		outStr = outStr[:maxLen] + fmt.Sprintf("\n...(output truncated — showing first %d of %d bytes)", maxLen, originalLen)
 	}
 
 	if err != nil {
