@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -108,11 +109,17 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 		}
 	}
 
-	// Content carries full Blocks (text + media) — do not flatten here.
-	conv.Messages = append(conv.Messages, provider.ChatMessage{
-		Role:    "user",
-		Content: msg.Content,
-	})
+	// Continuation requests re-enter the loop against the existing conv —
+	// no new user message, no fresh memory/RAG search. The conversation
+	// already holds the tool results and assistant state from the turn
+	// that hit the iteration cap.
+	if !msg.IsContinuation {
+		// Content carries full Blocks (text + media) — do not flatten here.
+		conv.Messages = append(conv.Messages, provider.ChatMessage{
+			Role:    "user",
+			Content: msg.Content,
+		})
+	}
 
 	// Context management via ContextManager (smart, legacy, or none strategy).
 	// The ContextManager is always present after New() — strategy controls behavior.
@@ -141,10 +148,38 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 	toolDefs := a.buildToolDefs()
 	conv.Messages = a.contextMgr.Manage(ctx, systemPrompt, toolDefs, conv.Messages)
 
+	// MaxIterations=0 (default) means "no hard cap" — the turn is bounded
+	// by limits.total_timeout and the token budget below. A positive value
+	// surfaces a "continue" pill in the UI when crossed.
 	maxIters := a.config.MaxIterations
-	if maxIters <= 0 {
-		maxIters = 10
+	hasIterCap := maxIters > 0
+	if !hasIterCap {
+		maxIters = math.MaxInt32
 	}
+	// Continuation with the "unlimited" choice lifts whatever cap was set
+	// for THIS turn only — still bounded by total_timeout.
+	if msg.IsContinuation && msg.Unlimited {
+		maxIters = math.MaxInt32
+		hasIterCap = false
+	}
+
+	// Cumulative token budget for the whole turn. 0 = unlimited.
+	maxTotalTokens := a.config.MaxTotalTokens
+	// Continuation with Unlimited also waives the token budget for this turn.
+	if msg.IsContinuation && msg.Unlimited {
+		maxTotalTokens = 0
+	}
+
+	// Loop-detection ring buffer: the last `loopWindow` tool invocations of
+	// this turn. When the same (name, input) appears at least `loopThreshold`
+	// times in the window, we emit a one-shot `loop_detected` telemetry event
+	// so the UI can surface a "Daimon seems to be repeating itself" warning.
+	// Non-breaking — the agent keeps running; this is a heads-up, not a halt.
+	const loopWindow = 5
+	const loopThreshold = 3
+	type recentCall struct{ name, input string }
+	recentTools := make([]recentCall, 0, loopWindow)
+	loopAlerted := make(map[string]bool)
 
 	totalTimeout := a.limits.TotalTimeout
 	if totalTimeout == 0 {
@@ -345,6 +380,39 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					"tool_call_id": tc.ID,
 				})
 			}
+
+			// Track this call + check whether the same (name, input) has
+			// appeared `loopThreshold` times in the last `loopWindow` calls.
+			// The input JSON itself is the de-facto hash — cheap, accurate,
+			// and avoids a crypto import for a small window.
+			call := recentCall{name: tc.Name, input: string(tc.Input)}
+			recentTools = append(recentTools, call)
+			if len(recentTools) > loopWindow {
+				recentTools = recentTools[len(recentTools)-loopWindow:]
+			}
+			alertKey := tc.Name + "\x00" + string(tc.Input)
+			if !loopAlerted[alertKey] {
+				reps := 0
+				for _, c := range recentTools {
+					if c.name == call.name && c.input == call.input {
+						reps++
+					}
+				}
+				if reps >= loopThreshold {
+					loopAlerted[alertKey] = true
+					slog.Warn("loop detected", "tool", tc.Name, "repetitions", reps)
+					if hasTelemetry {
+						_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, map[string]any{
+							"type":            "loop_detected",
+							"tool_name":       tc.Name,
+							"repetitions":     reps,
+							"sample_input":    truncateTelemetry(string(tc.Input), 200),
+							"conversation_id": conv.ID,
+						})
+					}
+				}
+			}
+
 			t, ok := a.tools[tc.Name]
 
 			var result tool.ToolResult
@@ -487,11 +555,43 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			})
 		}
 
-		if i == maxIters-1 {
-			_ = a.channel.Send(ctx, channel.OutgoingMessage{
-				ChannelID: msg.ChannelID,
-				Text:      "(iteration limit reached)",
-			})
+		// End-of-iteration pause check. Two reasons can pause the loop and
+		// surface a "continue" pill in the UI: a user-configured iteration
+		// cap, or a user-configured cumulative-token budget. A single break
+		// handles both — the legacy text fallback only fires on channels
+		// that don't implement TelemetryEmitter.
+		var pauseReason string
+		switch {
+		case hasIterCap && i == maxIters-1:
+			pauseReason = "iteration_limit_reached"
+		case maxTotalTokens > 0 && totalInputTokens+totalOutputTokens >= maxTotalTokens:
+			pauseReason = "token_budget_reached"
+		}
+		if pauseReason != "" {
+			if hasTelemetry {
+				frame := map[string]any{
+					"type":            pauseReason,
+					"conversation_id": conv.ID,
+				}
+				switch pauseReason {
+				case "iteration_limit_reached":
+					frame["iterations"] = maxIters
+				case "token_budget_reached":
+					frame["consumed_tokens"] = totalInputTokens + totalOutputTokens
+					frame["budget"] = maxTotalTokens
+				}
+				_ = telemetry.EmitTelemetry(ctx, msg.ChannelID, frame)
+			} else {
+				legacy := "(iteration limit reached)"
+				if pauseReason == "token_budget_reached" {
+					legacy = fmt.Sprintf("(token budget reached: %d/%d tokens)", totalInputTokens+totalOutputTokens, maxTotalTokens)
+				}
+				_ = a.channel.Send(ctx, channel.OutgoingMessage{
+					ChannelID: msg.ChannelID,
+					Text:      legacy,
+				})
+			}
+			break
 		}
 	}
 

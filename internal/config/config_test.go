@@ -93,23 +93,26 @@ func TestLoadConfig_AbsentMaxIterationsDefaults(t *testing.T) {
 		wantErr     bool
 	}{
 		{
-			name: "absent max_iterations defaults to 10",
+			// Step 4a: absent max_iterations means "no hard cap" (0). Previously
+			// this defaulted to 10; the philosophy shifted to "semi-autonomous
+			// unless the user opts in to a cap".
+			name: "absent max_iterations stays 0 (unlimited)",
 			yaml: `
 provider:
   api_key: "test-key"
 `,
-			wantMaxIter: 10,
+			wantMaxIter: 0,
 			wantErr:     false,
 		},
 		{
-			name: "explicit zero max_iterations defaults to 10",
+			name: "explicit zero max_iterations stays 0 (unlimited)",
 			yaml: `
 provider:
   api_key: "test-key"
 agent:
   max_iterations: 0
 `,
-			wantMaxIter: 10,
+			wantMaxIter: 0,
 			wantErr:     false,
 		},
 	}
@@ -154,7 +157,7 @@ agent:
 	}
 
 	if cfg.Agent.MaxIterations != 10 {
-		t.Errorf("Expected Agent.MaxIterations default 10, got %d", cfg.Agent.MaxIterations)
+		t.Errorf("Expected Agent.MaxIterations=10 (explicitly set in YAML), got %d", cfg.Agent.MaxIterations)
 	}
 	if cfg.Agent.HistoryLength != 20 {
 		t.Errorf("Expected Agent.HistoryLength default 20, got %d", cfg.Agent.HistoryLength)

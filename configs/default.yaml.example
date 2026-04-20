@@ -22,8 +22,14 @@ agent:
     You are a concise, helpful personal assistant.
     You respond in the same language the user writes in.
     You prefer short, actionable answers over lengthy explanations.
-  max_iterations: 10
-  max_tokens_per_turn: 4096
+  # max_iterations: 0              # 0 = no hard cap (default). Set a positive
+  #                                 # integer to surface a "continue" pill when
+  #                                 # the cap is hit in the /chat UI.
+  # max_total_tokens: 0             # 0 = no soft budget (default). Set a
+  #                                 # positive integer to pause the turn when
+  #                                 # cumulative input+output tokens cross it;
+  #                                 # the UI shows a pill to resume or lift.
+  max_tokens_per_turn: 4096         # per-LLM-call cap (sent as max_tokens to the provider)
   history_length: 20
   memory_results: 5
 
@@ -123,7 +129,7 @@ tools:
   http:
     enabled: true
     timeout: 15s
-    max_response_size: "512KB"
+    max_response_size: "2MB"
     blocked_domains: []           # e.g. ["internal.corp.com"] to block specific hosts
 
   # web_fetch: intelligent web scraper — extracts readable content as Markdown

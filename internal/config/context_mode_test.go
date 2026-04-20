@@ -143,10 +143,13 @@ provider:
 		t.Errorf("Conservative mode SandboxTimeout = %v, want 30s", ctxMode.SandboxTimeout)
 	}
 
-	// AutoIndexOutputs should default to false in conservative mode (nil pointer means false after BoolVal)
-	if ctxMode.AutoIndexOutputs != nil && *ctxMode.AutoIndexOutputs {
-		t.Errorf("Conservative mode AutoIndexOutputs = %v, want false (pointer: %v)",
-			ctxMode.AutoIndexOutputs, BoolVal(ctxMode.AutoIndexOutputs))
+	// Step 4c: AutoIndexOutputs now defaults to true regardless of Mode —
+	// the FTS5 index is independent of the bounded_exec sandbox and is
+	// valuable in every mode when the store supports it. Users can still
+	// opt out by setting `auto_index_outputs: false` explicitly.
+	if !BoolVal(ctxMode.AutoIndexOutputs) {
+		t.Errorf("Conservative mode AutoIndexOutputs = %v, want true (default now applies across all modes)",
+			BoolVal(ctxMode.AutoIndexOutputs))
 	}
 
 	// SandboxKeepFirst/Last same defaults as other modes

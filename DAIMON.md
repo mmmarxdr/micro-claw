@@ -503,7 +503,7 @@ tools:
   http:
     enabled: true
     timeout: 15s
-    max_response_size: "512KB"
+    max_response_size: "2MB"
     blocked_domains: []        # domains to never fetch
 
 store:
@@ -553,7 +553,7 @@ limits:
 - Check against whitelist. If not allowed, return `ToolResult{IsError: true, Content: "Command 'X' is not in the allowed list"}`.
 - Execute with `os/exec.CommandContext()` using the tool timeout from config.
 - Capture both stdout and stderr. Return combined output.
-- Limit output to 10KB. If exceeded, truncate and append "(output truncated)".
+- Limit output to 64KB. If exceeded, truncate and append a marker of the form `(output truncated — showing first N of M bytes)` so the agent can decide whether to narrow its query or use `search_output`.
 
 ### 9.2 read_file
 

@@ -183,13 +183,30 @@ func runWebCommand(args []string, cfgPath string) error {
 	}
 	slog.Info("provider health check passed", "verified_model_name", verifiedName)
 
-	// ---- Context-mode tools ----
-	if cfg.Agent.ContextMode.Mode != config.ContextModeOff {
+	// ---- Output-indexing tools (search_output + batch_exec) ----
+	// These are independent of context_mode. They require an FTS5-capable
+	// store (SQLite); on FileStore the OutputStore interface is implemented
+	// as a no-op, which would make the tools dead weight — so we register
+	// them only when the backing store actually persists output. The
+	// bounded_exec sandbox that replaces native shell is still gated on
+	// context_mode.Mode elsewhere in the loop; auto-indexing can run
+	// without that sandbox.
+	if cfg.Store.Type == "sqlite" {
 		if outputStore, ok := st.(store.OutputStore); ok {
-			batchTool := tool.NewBatchExecTool(outputStore, tool.BatchExecToolConfig{
+			batchCfg := tool.BatchExecToolConfig{
 				MaxOutputBytes: cfg.Agent.ContextMode.ShellMaxOutput * 2,
 				Timeout:        cfg.Agent.ContextMode.SandboxTimeout,
-			})
+			}
+			// In off mode the context-mode values are zero; fall back to
+			// defaults that match the native shell cap (64 KB, step 2) so
+			// batch_exec isn't silently more generous than shell_exec.
+			if batchCfg.MaxOutputBytes == 0 {
+				batchCfg.MaxOutputBytes = 64 * 1024
+			}
+			if batchCfg.Timeout == 0 {
+				batchCfg.Timeout = 30 * time.Second
+			}
+			batchTool := tool.NewBatchExecTool(outputStore, batchCfg)
 			searchTool := tool.NewSearchOutputTool(outputStore)
 			if _, exists := toolsRegistry[batchTool.Name()]; !exists {
 				toolsRegistry[batchTool.Name()] = batchTool

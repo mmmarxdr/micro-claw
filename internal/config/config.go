@@ -31,17 +31,34 @@ type WebConfig struct {
 	TrustProxy         bool      `yaml:"trust_proxy"            json:"trust_proxy"`          // When true, X-Forwarded-For is trusted for client IP. Only enable behind a trusted reverse proxy.
 }
 
+// ProviderThinkingConfig is the unified nested thinking/reasoning configuration block.
+// Applicable to any provider that supports extended reasoning (Anthropic, Gemini, Ollama).
+// Use Thinking *ProviderThinkingConfig on ProviderCredentials to activate.
+type ProviderThinkingConfig struct {
+	// Enabled controls whether thinking is active. nil = auto (capability-map driven).
+	// Explicit false disables thinking even when the model is capable.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Effort: "low" | "medium" | "high" — used by Anthropic adaptive thinking shape.
+	Effort string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	// BudgetTokens: integer token budget for manual thinking (Anthropic) and Gemini.
+	// 0 means unset; -1 is Gemini's "dynamic" sentinel.
+	BudgetTokens int `yaml:"budget_tokens,omitempty" json:"budget_tokens,omitempty"`
+}
+
 // ProviderCredentials holds authentication credentials for a single AI provider.
 // No routing, no model selection — credentials only.
 type ProviderCredentials struct {
 	APIKey  string `yaml:"api_key"            json:"api_key"`
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 
-	// Anthropic-only: thinking/extended reasoning configuration.
-	// Defaults are applied in anthropicThinkingParams, not here, so zero-value
-	// creds continue to work without YAML changes.
+	// Unified thinking configuration — applies to Anthropic, Gemini, Ollama.
+	// nil means "not configured" (capability-map auto-activation may still apply).
+	Thinking *ProviderThinkingConfig `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+
+	// Legacy Anthropic-only fields. Deprecated — use Thinking block instead.
+	// Migrated to Thinking on load by migrateThinkingConfig; emit slog.Warn.
 	// thinking_effort: "low" | "medium" | "high" (default "medium")
-	ThinkingEffort string `yaml:"thinking_effort,omitempty"        json:"thinking_effort,omitempty"`
+	ThinkingEffort string `yaml:"thinking_effort,omitempty" json:"thinking_effort,omitempty"`
 	// thinking_budget_tokens: token budget for manual thinking mode (default 10000)
 	ThinkingBudgetTokens *int `yaml:"thinking_budget_tokens,omitempty" json:"thinking_budget_tokens,omitempty"`
 }
@@ -157,9 +174,20 @@ type CronConfig struct {
 type AgentConfig struct {
 	Name             string `yaml:"name"               json:"name"`
 	Personality      string `yaml:"personality"        json:"personality"`
-	MaxIterations    int    `yaml:"max_iterations"     json:"max_iterations"`
-	MaxTokensPerTurn int    `yaml:"max_tokens_per_turn" json:"max_tokens_per_turn"`
-	HistoryLength    int    `yaml:"history_length"     json:"history_length"`
+	// MaxIterations caps the number of tool-use cycles per user message.
+	// 0 (default) means unlimited; the turn is still bounded by limits.total_timeout
+	// and by MaxTotalTokens below. Set a positive value only if you want a hard
+	// ceiling that surfaces a "continue" pill in the UI when hit.
+	MaxIterations int `yaml:"max_iterations"     json:"max_iterations"`
+	// MaxTokensPerTurn is the per-LLM-call token cap (passed through as
+	// max_tokens to the provider).
+	MaxTokensPerTurn int `yaml:"max_tokens_per_turn" json:"max_tokens_per_turn"`
+	// MaxTotalTokens is the soft budget for the WHOLE turn — cumulative
+	// input+output tokens across all iterations. 0 (default) means no budget.
+	// When crossed, the loop stops and surfaces a "continue" pill in the UI
+	// so the user can choose to extend.
+	MaxTotalTokens int `yaml:"max_total_tokens"   json:"max_total_tokens"`
+	HistoryLength  int `yaml:"history_length"     json:"history_length"`
 	MemoryResults    int    `yaml:"memory_results"     json:"memory_results"`
 	MaxContextTokens int    `yaml:"max_context_tokens" json:"max_context_tokens"` // token budget for context; 0 = use HistoryLength only
 	SummaryTokens    int    `yaml:"summary_tokens"     json:"summary_tokens"`     // max tokens for LLM-generated summaries
@@ -530,9 +558,8 @@ func (c *Config) ApplyDefaults() {
 	if c.Agent.Name == "" {
 		c.Agent.Name = "Daimon"
 	}
-	if c.Agent.MaxIterations == 0 {
-		c.Agent.MaxIterations = 10
-	}
+	// MaxIterations intentionally has no default — 0 means "no hard cap".
+	// The turn is still bounded by limits.total_timeout and MaxTotalTokens.
 	if c.Agent.HistoryLength == 0 {
 		c.Agent.HistoryLength = 20
 	}
@@ -704,25 +731,28 @@ func (c *Config) ApplyDefaults() {
 		c.Agent.ContextMode.Mode = ContextModeOff
 	}
 
-	// Set mode-specific defaults
+	// Set mode-specific defaults.
 	switch c.Agent.ContextMode.Mode {
 	case ContextModeAuto:
 		if c.Agent.ContextMode.ShellMaxOutput == 0 {
 			c.Agent.ContextMode.ShellMaxOutput = 4096
 		}
-		// AutoIndexOutputs defaults to true in auto mode
-		if c.Agent.ContextMode.AutoIndexOutputs == nil {
-			t := true
-			c.Agent.ContextMode.AutoIndexOutputs = &t
-		}
 	case ContextModeConservative:
 		if c.Agent.ContextMode.ShellMaxOutput == 0 {
 			c.Agent.ContextMode.ShellMaxOutput = 8192
 		}
-		// AutoIndexOutputs defaults to false for conservative (zero-value)
 	case ContextModeOff:
-		// Off mode doesn't need specific defaults for ShellMaxOutput
-		// Values remain at zero
+		// Off mode: native shell call (no bounded_exec sandbox). ShellMaxOutput
+		// stays zero because BoundedExec isn't invoked for the native shell.
+	}
+
+	// AutoIndexOutputs is independent of Mode — it controls whether tool
+	// outputs are dispatched to the FTS5 index so the agent can `search_output`
+	// them later instead of re-fetching. Default to true whenever the store
+	// supports it (checked at wire time in cmd/daimon/web_cmd.go).
+	if c.Agent.ContextMode.AutoIndexOutputs == nil {
+		t := true
+		c.Agent.ContextMode.AutoIndexOutputs = &t
 	}
 
 	// Common defaults for all modes
@@ -903,8 +933,11 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.Agent.MaxIterations <= 0 {
-		return fmt.Errorf("agent.max_iterations must be positive")
+	if c.Agent.MaxIterations < 0 {
+		return fmt.Errorf("agent.max_iterations cannot be negative (0 means unlimited)")
+	}
+	if c.Agent.MaxTotalTokens < 0 {
+		return fmt.Errorf("agent.max_total_tokens cannot be negative (0 means unlimited)")
 	}
 	if c.Limits.ToolTimeout > c.Limits.TotalTimeout {
 		return fmt.Errorf("limits.tool_timeout cannot be greater than limits.total_timeout")
@@ -1122,6 +1155,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	migrateLegacyProvider(&cfg)
+	migrateThinkingConfig(&cfg)
 
 	cfg.ApplyDefaults()
 	if err := cfg.validate(); err != nil {

@@ -10,11 +10,20 @@ import (
 
 type IncomingMessage struct {
 	ID        string
-	ChannelID string // e.g., "cli", "telegram:123456"
+	ChannelID string            // e.g., "cli", "telegram:123456"
 	SenderID  string
 	Content   content.Blocks    // multimodal content blocks
 	Metadata  map[string]string // channel-specific data
 	Timestamp time.Time
+
+	// IsContinuation signals that this "message" is a resume request for a
+	// turn that previously hit the iteration limit. When true, the agent
+	// MUST NOT append a user message to the conversation and instead
+	// re-enters the iteration loop against the existing conv state.
+	IsContinuation bool
+	// Unlimited, when paired with IsContinuation, lifts the max-iterations
+	// cap for the continuation (bounded only by total timeout).
+	Unlimited bool
 }
 
 // Text returns the text-only representation of the message content.

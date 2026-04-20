@@ -33,6 +33,9 @@ type wsMsg struct {
 	SenderID    string         `json:"sender_id,omitempty"`
 	Message     string         `json:"message,omitempty"`
 	Attachments []wsAttachment `json:"attachments,omitempty"`
+	// Unlimited carries the "continue without a cap" choice on continue_turn
+	// requests. Ignored for other types.
+	Unlimited bool `json:"unlimited,omitempty"`
 }
 
 // wsConn bundles a WebSocket connection with its write mutex.
@@ -230,6 +233,28 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 		var incoming wsMsg
 		if err := json.Unmarshal(msgBytes, &incoming); err != nil {
 			slog.Warn("websocket: malformed message", "channel_id", connID, "error", err)
+			continue
+		}
+
+		// Continue-turn requests skip the text/attachment requirements — they
+		// resume the existing conversation without adding a user message.
+		if incoming.Type == "continue_turn" {
+			if w.inbox == nil {
+				slog.Warn("websocket: inbox not initialised, dropping continue_turn", "channel_id", connID)
+				continue
+			}
+			select {
+			case w.inbox <- IncomingMessage{
+				ID:             uuid.New().String()[:8],
+				ChannelID:      connID,
+				SenderID:       incoming.SenderID,
+				Timestamp:      time.Now(),
+				IsContinuation: true,
+				Unlimited:      incoming.Unlimited,
+			}:
+			default:
+				slog.Warn("websocket: inbox full, dropping continue_turn", "channel_id", connID)
+			}
 			continue
 		}
 
