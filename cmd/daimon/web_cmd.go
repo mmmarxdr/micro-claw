@@ -320,6 +320,11 @@ func runWebCommand(args []string, cfgPath string) error {
 		cfg.Cron.MaxConcurrent, config.BoolVal(activeProv.Stream),
 	).WithBus(notifyBus).WithCronCommands(cronScheduler, cronSt)
 	wireSmartMemory(ag, prov, st, cfg, toolsRegistry)
+	ragWiring := wireRAG(cfg, st, prov, ag, toolsRegistry)
+	if ragWiring.Worker != nil {
+		ragWiring.Worker.Start(ctx)
+		defer ragWiring.Worker.Stop()
+	}
 
 	// ---- Web server ----
 	resolvedCfgPath, _ := config.FindConfigPath(cfgPath)
@@ -340,6 +345,8 @@ func runWebCommand(args []string, cfgPath string) error {
 		Version:          version,
 		WebChannel:       webCh,
 		MediaStore:       mediaStore,
+		DocStore:         ragWiring.Store,
+		IngestWorker:     ragWiring.Worker,
 	})
 
 	if err := srv.Start(); err != nil {
