@@ -82,14 +82,14 @@ func TestMediaConfig_ValidationMaxAttachmentTooLarge(t *testing.T) {
 	_, err := loadMediaConfig(t, `
 media:
   enabled: true
-  max_attachment_bytes: 52428801
-  max_message_bytes: 104857600
+  max_attachment_bytes: 209715201
+  max_message_bytes: 419430400
   retention_days: 30
   cleanup_interval: 24h
   allowed_mime_prefixes: ["image/"]
 `)
 	if err == nil {
-		t.Fatal("expected validation error for max_attachment_bytes > 52428800, got nil")
+		t.Fatal("expected validation error for max_attachment_bytes > 209715200 (200 MB), got nil")
 	}
 	if !strings.Contains(err.Error(), "max_attachment_bytes") {
 		t.Errorf("error should mention max_attachment_bytes, got: %v", err)

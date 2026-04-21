@@ -332,6 +332,43 @@ limits:
   total_timeout: 50s
 `,
 		},
+		{
+			name: "rag embedding enabled without provider",
+			yamlData: `
+provider:
+  api_key: "abc"
+rag:
+  enabled: true
+  embedding:
+    enabled: true
+    api_key: "sk-x"
+`,
+		},
+		{
+			name: "rag embedding enabled with unsupported provider",
+			yamlData: `
+provider:
+  api_key: "abc"
+rag:
+  enabled: true
+  embedding:
+    enabled: true
+    provider: "openrouter"
+    api_key: "sk-x"
+`,
+		},
+		{
+			name: "rag embedding enabled without api_key",
+			yamlData: `
+provider:
+  api_key: "abc"
+rag:
+  enabled: true
+  embedding:
+    enabled: true
+    provider: "openai"
+`,
+		},
 	}
 
 	for _, tc := range tests {

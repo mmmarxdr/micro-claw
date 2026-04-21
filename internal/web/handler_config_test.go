@@ -423,3 +423,74 @@ func contains(s, substr string) bool {
 			return false
 		}())
 }
+
+// TestHandlePutConfig_RAGEmbeddingPersists is a regression guard: previously
+// patchBody was an allow-list missing rag, so any embedding fields the UI
+// sent were silently dropped on PUT (the toast lied about success).
+func TestHandlePutConfig_RAGEmbeddingPersists(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Web.AuthToken = "secret-token"
+	cfg.RAG.Enabled = true
+
+	dir := t.TempDir()
+	cfgPath := dir + "/config.yaml"
+	s := newConfigTestServer(cfg, cfgPath)
+
+	body := []byte(`{"rag":{"embedding":{"enabled":true,"provider":"gemini","model":"text-embedding-004","api_key":"AIza-test","base_url":""}}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader("secret-token"))
+	rec := httptest.NewRecorder()
+	s.srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	emb := s.deps.Config.RAG.Embedding
+	if !emb.Enabled {
+		t.Errorf("embedding.enabled: want true, got %v", emb.Enabled)
+	}
+	if emb.Provider != "gemini" {
+		t.Errorf("embedding.provider: want gemini, got %q", emb.Provider)
+	}
+	if emb.Model != "text-embedding-004" {
+		t.Errorf("embedding.model: want text-embedding-004, got %q", emb.Model)
+	}
+	if emb.APIKey != "AIza-test" {
+		t.Errorf("embedding.api_key: want AIza-test, got %q", emb.APIKey)
+	}
+}
+
+// TestHandlePutConfig_RAGEmbeddingPreservesAPIKeyWhenAbsent verifies that
+// editing a non-secret field (e.g. flipping enabled or changing model) does
+// NOT clear a previously-stored api_key. The UI never sees the real key, so
+// an empty api_key in the patch must mean "preserve" not "wipe".
+func TestHandlePutConfig_RAGEmbeddingPreservesAPIKeyWhenAbsent(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Web.AuthToken = "secret-token"
+	cfg.RAG.Embedding.Enabled = true
+	cfg.RAG.Embedding.Provider = "gemini"
+	cfg.RAG.Embedding.APIKey = "AIza-already-stored"
+
+	dir := t.TempDir()
+	cfgPath := dir + "/config.yaml"
+	s := newConfigTestServer(cfg, cfgPath)
+
+	// Patch flips model but sends empty api_key.
+	body := []byte(`{"rag":{"embedding":{"enabled":true,"provider":"gemini","model":"text-embedding-004","api_key":"","base_url":""}}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader("secret-token"))
+	rec := httptest.NewRecorder()
+	s.srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.deps.Config.RAG.Embedding.APIKey; got != "AIza-already-stored" {
+		t.Errorf("api_key should be preserved when patch sends empty: got %q", got)
+	}
+	if got := s.deps.Config.RAG.Embedding.Model; got != "text-embedding-004" {
+		t.Errorf("model should update: got %q", got)
+	}
+}

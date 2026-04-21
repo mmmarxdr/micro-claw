@@ -23,6 +23,7 @@ type patchBody struct {
 	Providers map[string]config.ProviderCredentials `json:"providers,omitempty"`
 	Models    *config.ModelsConfig                  `json:"models,omitempty"`
 	Tools     *patchTools                           `json:"tools,omitempty"`
+	RAG       *patchRAG                             `json:"rag,omitempty"`
 }
 
 // patchTools mirrors config.ToolsConfig but with pointer fields so absent
@@ -33,6 +34,13 @@ type patchTools struct {
 	Shell *config.ShellToolConfig `json:"shell,omitempty"`
 	File  *config.FileToolConfig  `json:"file,omitempty"`
 	HTTP  *config.HTTPToolConfig  `json:"http,omitempty"`
+}
+
+// patchRAG accepts the UI-editable subtree of RAGConfig. When a new field is
+// added to the Settings UI, it MUST also be allow-listed here — otherwise the
+// JSON decoder silently drops it on PUT and the toast lies about success.
+type patchRAG struct {
+	Embedding *config.RAGEmbeddingConf `json:"embedding,omitempty"`
 }
 
 // maxPutBodySize is the hard limit for PUT /api/config request bodies (64 KB).
@@ -166,6 +174,22 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		if patch.Tools.HTTP != nil {
 			merged.Tools.HTTP = *patch.Tools.HTTP
 		}
+	}
+
+	// Merge body.RAG. Embedding subtree replaces wholesale when present;
+	// missing fields (e.g. user didn't fill in api_key) are preserved from the
+	// stored config so re-saving from a partially-loaded form doesn't blank out
+	// secrets the UI never sees.
+	if patch.RAG != nil && patch.RAG.Embedding != nil {
+		newEmb := *patch.RAG.Embedding
+		stored := merged.RAG.Embedding
+		if newEmb.APIKey == "" {
+			newEmb.APIKey = stored.APIKey
+		}
+		if newEmb.BaseURL == "" {
+			newEmb.BaseURL = stored.BaseURL
+		}
+		merged.RAG.Embedding = newEmb
 	}
 
 	// Validate active provider has credentials.

@@ -521,13 +521,36 @@ type MediaConfig struct {
 // RAGConfig holds configuration for the Retrieval-Augmented Generation subsystem.
 // YAML key: rag
 type RAGConfig struct {
-	Enabled          bool `yaml:"enabled"             json:"enabled"`
-	ChunkSize        int  `yaml:"chunk_size"          json:"chunk_size"`         // default 512
-	ChunkOverlap     int  `yaml:"chunk_overlap"       json:"chunk_overlap"`      // default 64
-	TopK             int  `yaml:"top_k"               json:"top_k"`              // default 5
-	MaxDocuments     int  `yaml:"max_documents"       json:"max_documents"`      // default 500
-	MaxChunks        int  `yaml:"max_chunks"          json:"max_chunks"`         // default 100000
-	MaxContextTokens int  `yaml:"max_context_tokens"  json:"max_context_tokens"` // default 10000
+	Enabled          bool             `yaml:"enabled"             json:"enabled"`
+	ChunkSize        int              `yaml:"chunk_size"          json:"chunk_size"`         // default 512
+	ChunkOverlap     int              `yaml:"chunk_overlap"       json:"chunk_overlap"`      // default 64
+	TopK             int              `yaml:"top_k"               json:"top_k"`              // default 5
+	MaxDocuments     int              `yaml:"max_documents"       json:"max_documents"`      // default 500
+	MaxChunks        int              `yaml:"max_chunks"          json:"max_chunks"`         // default 100000
+	MaxContextTokens int              `yaml:"max_context_tokens"  json:"max_context_tokens"` // default 10000
+	SummaryModel     string           `yaml:"summary_model"       json:"summary_model"`      // empty = provider's default model
+	Embedding        RAGEmbeddingConf `yaml:"embedding"           json:"embedding"`
+}
+
+// RAGEmbeddingConf configures a separate provider used ONLY for generating
+// vector embeddings of memory entries and document chunks. Decoupled from the
+// main chat provider so users can pair (e.g.) OpenRouter for chat with OpenAI
+// or Gemini for embeddings — providers that don't support embeddings (most of
+// OpenRouter's catalog) can still be used for the agent loop.
+//
+// When Enabled is false, the embedding subsystem is off entirely and RAG falls
+// back to FTS5 keyword search without cosine reranking.
+//
+// Switching Model after data exists silently invalidates prior embeddings —
+// they live in a different vector space and cosine similarity becomes noise.
+// The UI surfaces this as a warning; future Phase D work will track the model
+// per chunk and allow re-embedding.
+type RAGEmbeddingConf struct {
+	Enabled  bool   `yaml:"enabled"   json:"enabled"`
+	Provider string `yaml:"provider"  json:"provider"`  // openai | gemini
+	Model    string `yaml:"model"     json:"model"`     // e.g. text-embedding-3-small; empty = provider's hardcoded default
+	APIKey   string `yaml:"api_key"   json:"api_key"`
+	BaseURL  string `yaml:"base_url"  json:"base_url"`  // empty = provider's standard endpoint
 }
 
 // NotificationsConfig is the top-level notifications block.
@@ -971,6 +994,25 @@ func (c *Config) validate() error {
 		}
 	}
 
+	// RAG embedding validation: when enabled, the user must commit to a
+	// concrete provider so we can construct it. The model is optional (defaults
+	// to the provider's hardcoded canonical model). API key is required for
+	// remote providers — empty would surface as an auth failure on first use,
+	// which is much harder to diagnose than a config error here.
+	if c.RAG.Embedding.Enabled {
+		switch c.RAG.Embedding.Provider {
+		case "openai", "gemini":
+			// supported
+		case "":
+			return fmt.Errorf("rag.embedding.provider is required when rag.embedding.enabled is true")
+		default:
+			return fmt.Errorf("rag.embedding.provider %q is not supported (use openai or gemini)", c.RAG.Embedding.Provider)
+		}
+		if c.RAG.Embedding.APIKey == "" {
+			return fmt.Errorf("rag.embedding.api_key is required when rag.embedding.enabled is true")
+		}
+	}
+
 	// Native memory validation.
 	if c.Agent.EnrichMemory && c.Agent.EnrichRatePerMin <= 0 {
 		return fmt.Errorf("agent.enrich_rate_per_minute must be positive when enrich_memory is true")
@@ -990,8 +1032,8 @@ func (c *Config) validate() error {
 
 	// Media validation — skipped entirely when disabled (kill switch).
 	if BoolVal(c.Media.Enabled) {
-		if c.Media.MaxAttachmentBytes < 1024 || c.Media.MaxAttachmentBytes > 52428800 {
-			return fmt.Errorf("media.max_attachment_bytes must be between 1024 and 52428800, got %d", c.Media.MaxAttachmentBytes)
+		if c.Media.MaxAttachmentBytes < 1024 || c.Media.MaxAttachmentBytes > 209715200 {
+			return fmt.Errorf("media.max_attachment_bytes must be between 1024 and 209715200 (200 MB), got %d", c.Media.MaxAttachmentBytes)
 		}
 		if c.Media.MaxMessageBytes < c.Media.MaxAttachmentBytes {
 			return fmt.Errorf("media.max_message_bytes (%d) must be >= media.max_attachment_bytes (%d)", c.Media.MaxMessageBytes, c.Media.MaxAttachmentBytes)
