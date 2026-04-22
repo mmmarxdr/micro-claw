@@ -131,6 +131,8 @@ daimon web                  # Start the web dashboard with a full agent loop
 daimon web token            # Print the current auth token
 daimon setup                # Run the interactive setup wizard
 daimon doctor               # Check configuration and connectivity
+daimon version              # Print version, commit, and build date
+daimon update               # Update daimon in place from the latest GitHub release
 daimon mcp [subcommand]     # Manage MCP server connections
 daimon skills [subcommand]  # Manage skills
 daimon cron [subcommand]    # Manage scheduled tasks

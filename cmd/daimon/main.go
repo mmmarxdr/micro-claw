@@ -34,8 +34,10 @@ import (
 )
 
 var (
-	// Build-time variables set via -ldflags.
-	version = "v0.4.0"
+	// Build-time variables set via -ldflags by goreleaser. Defaults flag the
+	// binary as a development build so `daimon update` refuses to self-replace
+	// it with a release.
+	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 )
@@ -136,6 +138,21 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "web" {
 		cfgPath := extractFlagValue(os.Args[2:], "--config", "-config")
 		if err := runWebCommand(os.Args[2:], cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		if err := runVersionCommand(os.Args[2:]); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		if err := runUpdateCommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

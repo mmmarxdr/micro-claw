@@ -49,6 +49,28 @@ go install github.com/mmmarxdr/daimon/cmd/daimon@latest
 > still work. To add the frontend, see
 > [docs/WEB_DASHBOARD.md](WEB_DASHBOARD.md).
 
+## Updating
+
+Once installed (any path that produces a versioned binary — Options A, B, or C
+with goreleaser), Daimon can update itself from the latest GitHub release:
+
+```bash
+daimon update              # download and install the latest release
+daimon update --check      # only report whether a newer version exists
+daimon update --version v0.7.0   # rollback or pin to a specific tag
+daimon update --force      # reinstall even if already on the latest version
+```
+
+`daimon update` writes to the same path that the running binary lives at
+(`os.Executable()`), so it works regardless of where you installed it. If the
+target directory requires elevated permissions (e.g. `/usr/local/bin`),
+re-run with `sudo`.
+
+> Note: builds produced by plain `go build` or `go install` (Option D) carry
+> no version metadata and will refuse self-update — use `go install
+> github.com/mmmarxdr/daimon/cmd/daimon@latest` instead, or pass an explicit
+> `--version vX.Y.Z` to opt into self-replacement.
+
 ## First run
 
 ```bash
