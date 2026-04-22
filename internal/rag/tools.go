@@ -5,15 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"daimon/internal/rag/metrics"
 	"daimon/internal/tool"
 )
 
 // RAGToolDeps holds the dependencies for the RAG tool set.
 type RAGToolDeps struct {
-	Worker  *DocIngestionWorker
-	Store   DocumentStore
-	EmbedFn func(ctx context.Context, text string) ([]float32, error) // nil = FTS-only search
+	Worker        *DocIngestionWorker
+	Store         DocumentStore
+	EmbedFn       func(ctx context.Context, text string) ([]float32, error) // nil = FTS-only search
+	HypothesisFn  func(ctx context.Context, query string) (string, error)   // nil = HyDE disabled
+	HydeConf      HydeSearchConfig                                           // zero = HyDE disabled
+	RetrievalConf RetrievalSearchConfig                                      // zero = default limit
+	Recorder      metrics.Recorder                                           // nil-safe
 }
 
 // ToolResult is an alias to tool.ToolResult for ergonomic use in tests.
@@ -180,19 +186,26 @@ func (t *searchDocsTool) Execute(ctx context.Context, params json.RawMessage) (t
 		topK = 20
 	}
 
-	// Optionally embed the query for vector reranking.
-	var queryVec []float32
-	if t.deps.EmbedFn != nil {
-		vec, err := t.deps.EmbedFn(ctx, input.Query)
-		if err != nil {
-			// Non-fatal — fall back to FTS-only
-			queryVec = nil
-		} else {
-			queryVec = vec
-		}
+	// Resolve hypothesis timeout — default 10s when not configured.
+	hydeConf := t.deps.HydeConf
+	if hydeConf.HypothesisTimeout <= 0 {
+		hydeConf.HypothesisTimeout = 10 * time.Second
 	}
 
-	results, err := t.deps.Store.SearchChunks(ctx, input.Query, queryVec, SearchOptions{Limit: topK})
+	// RetrievalConf.Limit is overridden by the tool's topK.
+	retrieval := t.deps.RetrievalConf
+	retrieval.Limit = topK
+
+	hydeDeps := HydeSearchDeps{
+		Store:         t.deps.Store,
+		HypothesisFn:  t.deps.HypothesisFn,
+		EmbedFn:       t.deps.EmbedFn,
+		HydeConf:      hydeConf,
+		RetrievalConf: retrieval,
+		Recorder:      t.deps.Recorder,
+	}
+
+	results, err := PerformHydeSearch(ctx, input.Query, hydeDeps)
 	if err != nil {
 		return tool.ToolResult{IsError: true, Content: fmt.Sprintf("search failed: %v", err)}, nil
 	}

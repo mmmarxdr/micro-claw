@@ -81,6 +81,17 @@ func wireRAG(
 	// Wire document store into the agent for per-turn RAG search.
 	ag.WithRAGStore(docStore, embedFn, ragCfg.TopK, ragCfg.MaxContextTokens)
 
+	// Propagate retrieval precision config (neighbor radius, BM25/cosine
+	// thresholds) into the agent. Without this call, SearchOptions construction
+	// in the loop + search_docs tool silently falls back to zero-valued defaults
+	// regardless of what the user set in rag.retrieval.*. This was a real
+	// regression — shipped dead for ~24h before an audit caught it.
+	ag.WithRAGRetrievalConf(rag.RAGRetrievalConf{
+		NeighborRadius: ragCfg.Retrieval.NeighborRadius,
+		MaxBM25Score:   ragCfg.Retrieval.MaxBM25Score,
+		MinCosineScore: ragCfg.Retrieval.MinCosineScore,
+	})
+
 	// Construct the in-memory metrics ring buffer (always-on when RAG is enabled).
 	// Default capacity: N=200. The recorder is passed to the agent and the web
 	// server so both the retrieval path and the API endpoint share the same ring.
@@ -157,11 +168,37 @@ func wireRAG(
 		},
 	})
 
+	// Build the hypothesis function for the tool path. Mirrors the agent-loop
+	// wiring above: only constructed when HyDE is enabled. The tool path shares
+	// the same HyDE config and model resolution so both paths stay in sync.
+	var toolHypothesisFn func(ctx context.Context, query string) (string, error)
+	if ragCfg.Hyde.Enabled {
+		hydeModel := ragCfg.Hyde.Model
+		if hydeModel == "" {
+			hydeModel = ragCfg.SummaryModel
+		}
+		toolHypothesisFn = buildHypothesisFn(prov, hydeModel)
+	}
+
 	// Register RAG tools (index_doc, search_docs).
+	// search_docs now runs HyDE when enabled — same config as the agent loop.
 	ragTools := rag.BuildRAGTools(rag.RAGToolDeps{
 		Worker:  worker,
 		Store:   docStore,
 		EmbedFn: embedFn,
+		HypothesisFn: toolHypothesisFn,
+		HydeConf: rag.HydeSearchConfig{
+			Enabled:           ragCfg.Hyde.Enabled,
+			HypothesisTimeout: ragCfg.Hyde.HypothesisTimeout,
+			QueryWeight:       ragCfg.Hyde.QueryWeight,
+			MaxCandidates:     ragCfg.Hyde.MaxCandidates,
+		},
+		RetrievalConf: rag.RetrievalSearchConfig{
+			NeighborRadius: ragCfg.Retrieval.NeighborRadius,
+			MaxBM25Score:   ragCfg.Retrieval.MaxBM25Score,
+			MinCosineScore: ragCfg.Retrieval.MinCosineScore,
+		},
+		Recorder: metricsRec,
 	})
 	for _, t := range ragTools {
 		name := t.Name()

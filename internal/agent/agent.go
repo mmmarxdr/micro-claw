@@ -302,6 +302,15 @@ func (a *Agent) WithRAGRetrievalConf(conf rag.RAGRetrievalConf) *Agent {
 	return a
 }
 
+// RAGRetrievalConfig returns the retrieval-precision options currently in
+// effect on the agent. Exposed so wiring regression tests can verify startup
+// paths populated the config (the bug this guards against shipped in PR #2
+// and went undetected for ~24h because existing tests only exercised the
+// setter directly, never the wiring).
+func (a *Agent) RAGRetrievalConfig() rag.RAGRetrievalConf {
+	return a.ragRetrievalConf
+}
+
 // WithRAGHydeConf stores the HyDE configuration and hypothesis function.
 // hypothesisFn may be nil — when nil, HyDE is effectively disabled regardless
 // of conf.Enabled, and the baseline retrieval path is always used.
