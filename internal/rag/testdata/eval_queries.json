@@ -1,0 +1,12 @@
+[
+  {"id": 1, "type": "semantic", "query": "resumí mi perfil profesional", "expected_doc_title_substring": "Marc_Dechand"},
+  {"id": 2, "type": "semantic", "query": "qué hace el autor de este documento", "expected_doc_title_substring": "Marc_Dechand"},
+  {"id": 3, "type": "semantic", "query": "recuperación de servicios en la nube después de un desastre", "expected_doc_title_substring": "awscloudprojects"},
+  {"id": 4, "type": "lexical", "query": "Zintro", "expected_doc_title_substring": "Marc_Dechand"},
+  {"id": 5, "type": "lexical", "query": "CloudFront", "expected_doc_title_substring": "awscloudprojects"},
+  {"id": 6, "type": "lexical", "query": "kubernetes operator", "expected_doc_title_substring": "kubernetesforgenerativeaisolutions"},
+  {"id": 7, "type": "mixed", "query": "experiencia de Marc con React", "expected_doc_title_substring": "Marc_Dechand"},
+  {"id": 8, "type": "mixed", "query": "deploy web app to AWS Lambda", "expected_doc_title_substring": "awscloudprojects"},
+  {"id": 9, "type": "edge_short", "query": "Marc", "expected_doc_title_substring": "Marc_Dechand"},
+  {"id": 10, "type": "edge_crosslang", "query": "pipeline de inferencia generativa", "expected_doc_title_substring": "kubernetesforgenerativeaisolutions"}
+]

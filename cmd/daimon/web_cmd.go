@@ -347,6 +347,7 @@ func runWebCommand(args []string, cfgPath string) error {
 		MediaStore:       mediaStore,
 		DocStore:         ragWiring.Store,
 		IngestWorker:     ragWiring.Worker,
+		RAGMetrics:       ragWiring.Metrics,
 	})
 
 	if err := srv.Start(); err != nil {

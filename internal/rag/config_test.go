@@ -66,3 +66,30 @@ func TestRAGConfig_ExplicitValuesPreserved(t *testing.T) {
 		t.Errorf("expected TopK preserved as 10, got %d", cfg.TopK)
 	}
 }
+
+// T12: ApplyRAGDefaults fills HyDE non-bool defaults when zero-valued.
+func TestApplyRAGDefaults_HyDEDefaults(t *testing.T) {
+	cfg := rag.RAGConfig{}
+	rag.ApplyRAGDefaults(&cfg)
+
+	want := 10 * 1e9 // 10s in nanoseconds
+	if float64(cfg.Hyde.HypothesisTimeout) != want {
+		t.Errorf("HypothesisTimeout: want 10s, got %v", cfg.Hyde.HypothesisTimeout)
+	}
+	if cfg.Hyde.QueryWeight != 0.3 {
+		t.Errorf("QueryWeight: want 0.3, got %v", cfg.Hyde.QueryWeight)
+	}
+	if cfg.Hyde.MaxCandidates != 20 {
+		t.Errorf("MaxCandidates: want 20, got %d", cfg.Hyde.MaxCandidates)
+	}
+}
+
+// T13: ApplyRAGDefaults does NOT enable HyDE (opt-in only).
+func TestApplyRAGDefaults_HyDE_DisabledByDefault(t *testing.T) {
+	cfg := rag.RAGConfig{}
+	rag.ApplyRAGDefaults(&cfg)
+
+	if cfg.Hyde.Enabled {
+		t.Error("HyDE must default to disabled (opt-in); Enabled was true after ApplyRAGDefaults")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"daimon/internal/notify"
 	"daimon/internal/provider"
 	"daimon/internal/rag"
+	"daimon/internal/rag/metrics"
 	"daimon/internal/skill"
 	"daimon/internal/store"
 	"daimon/internal/tool"
@@ -106,6 +107,13 @@ type Agent struct {
 	ragMaxChunks     int
 	ragMaxTokens     int
 	ragRetrievalConf rag.RAGRetrievalConf // neighbor expansion + score thresholds
+
+	// HyDE fields — zero/nil when HyDE is disabled.
+	ragHydeConf      config.RAGHydeConf
+	ragHypothesisFn  func(context.Context, string) (string, error)
+
+	// Metrics recorder — nil means no-op (NoopRecorder equivalent).
+	ragMetrics metrics.Recorder
 }
 
 func New(
@@ -291,6 +299,22 @@ func (a *Agent) WithRAGStore(st rag.DocumentStore, embedFn func(context.Context,
 // after WithRAGStore when the user has opted into non-default retrieval behavior.
 func (a *Agent) WithRAGRetrievalConf(conf rag.RAGRetrievalConf) *Agent {
 	a.ragRetrievalConf = conf
+	return a
+}
+
+// WithRAGHydeConf stores the HyDE configuration and hypothesis function.
+// hypothesisFn may be nil — when nil, HyDE is effectively disabled regardless
+// of conf.Enabled, and the baseline retrieval path is always used.
+func (a *Agent) WithRAGHydeConf(conf config.RAGHydeConf, hypothesisFn func(context.Context, string) (string, error)) *Agent {
+	a.ragHydeConf = conf
+	a.ragHypothesisFn = hypothesisFn
+	return a
+}
+
+// WithRAGMetrics sets the metrics recorder for the RAG retrieval path.
+// When r is nil the agent behaves as if a NoopRecorder is set — no panic, no log.
+func (a *Agent) WithRAGMetrics(r metrics.Recorder) *Agent {
+	a.ragMetrics = r
 	return a
 }
 

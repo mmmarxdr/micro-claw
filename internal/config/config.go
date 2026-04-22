@@ -532,6 +532,24 @@ type RAGRetrievalConf struct {
 	MinCosineScore float64 `yaml:"min_cosine_score" json:"min_cosine_score"` // default 0 (disabled)
 }
 
+// RAGHydeConf configures the HyDE (Hypothetical Document Embeddings) pass.
+// All fields default to zero/off; users opt in by setting Enabled=true.
+// YAML key: rag.hyde
+type RAGHydeConf struct {
+	Enabled           bool          `yaml:"enabled"            json:"enabled"`
+	Model             string        `yaml:"model,omitempty"    json:"model,omitempty"`
+	HypothesisTimeout time.Duration `yaml:"hypothesis_timeout" json:"hypothesis_timeout"` // default 10s
+	QueryWeight       float64       `yaml:"query_weight"       json:"query_weight"`       // default 0.3
+	MaxCandidates     int           `yaml:"max_candidates"     json:"max_candidates"`     // default 20
+}
+
+// RAGMetricsConf configures the in-memory RAG retrieval metrics ring buffer.
+// YAML key: rag.metrics
+type RAGMetricsConf struct {
+	Enabled    bool `yaml:"enabled"     json:"enabled"`      // default true — collection is always-on when RAG is enabled
+	BufferSize int  `yaml:"buffer_size" json:"buffer_size"` // default 200
+}
+
 // RAGConfig holds configuration for the Retrieval-Augmented Generation subsystem.
 // YAML key: rag
 type RAGConfig struct {
@@ -545,6 +563,8 @@ type RAGConfig struct {
 	SummaryModel     string           `yaml:"summary_model"       json:"summary_model"`      // empty = provider's default model
 	Embedding        RAGEmbeddingConf `yaml:"embedding"           json:"embedding"`
 	Retrieval        RAGRetrievalConf `yaml:"retrieval"            json:"retrieval"`
+	Hyde             RAGHydeConf      `yaml:"hyde"                json:"hyde"`
+	Metrics          RAGMetricsConf   `yaml:"metrics"             json:"metrics"`
 }
 
 // RAGEmbeddingConf configures a separate provider used ONLY for generating
@@ -836,6 +856,24 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.RAG.MaxContextTokens == 0 {
 		c.RAG.MaxContextTokens = 10000
+	}
+	// HyDE non-bool defaults — applied so they are ready when Enabled is flipped.
+	// Enabled stays false (opt-in).
+	if c.RAG.Hyde.HypothesisTimeout == 0 {
+		c.RAG.Hyde.HypothesisTimeout = 10 * time.Second
+	}
+	if c.RAG.Hyde.QueryWeight == 0 {
+		c.RAG.Hyde.QueryWeight = 0.3
+	}
+	if c.RAG.Hyde.MaxCandidates == 0 {
+		c.RAG.Hyde.MaxCandidates = 20
+	}
+	// Metrics defaults — collection is ON by default.
+	if !c.RAG.Metrics.Enabled {
+		c.RAG.Metrics.Enabled = true
+	}
+	if c.RAG.Metrics.BufferSize == 0 {
+		c.RAG.Metrics.BufferSize = 200
 	}
 }
 

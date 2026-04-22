@@ -42,9 +42,10 @@ type DocumentChunk struct {
 
 // SearchResult pairs a matching DocumentChunk with its parent document title and score.
 type SearchResult struct {
-	Chunk    DocumentChunk // the matching chunk
-	DocTitle string        // title of the parent document
-	Score    float64       // relevance score (higher is better)
+	Chunk       DocumentChunk // the matching chunk
+	DocTitle    string        // title of the parent document
+	Score       float64       // relevance score (higher is better); BM25 raw score or RRF score when HyDE is on
+	CosineScore *float64      // cosine similarity score when available (nil when no embedding path ran)
 }
 
 // ExtractedDoc holds the output of an Extractor — plain text, optional title,

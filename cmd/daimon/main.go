@@ -524,6 +524,11 @@ func main() {
 			ragCfg := cfg.RAG
 			ag.WithRAGStore(ragWiring.Store, ragWiring.EmbedFn, ragCfg.TopK, ragCfg.MaxContextTokens)
 		}
+		// Re-wire metrics recorder into the rebuilt agent so the same ring buffer
+		// is shared between the agent loop and the web handler.
+		if ragWiring.Metrics != nil {
+			ag.WithRAGMetrics(ragWiring.Metrics)
+		}
 
 		resolvedCfgPath, _ := config.FindConfigPath(*cfgPath)
 		mcpSvc := mcp.NewMCPService(resolvedCfgPath)
@@ -551,6 +556,7 @@ func main() {
 			MediaStore:       mediaStore,
 			DocStore:         ragWiring.Store,
 			IngestWorker:     ragWiring.Worker,
+			RAGMetrics:       ragWiring.Metrics,
 		})
 		if err := webSrv.Start(); err != nil {
 			slog.Error("failed to start web dashboard", "error", err)

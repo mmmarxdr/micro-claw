@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"daimon/internal/config"
 )
@@ -42,6 +43,19 @@ type patchTools struct {
 type patchRAG struct {
 	Embedding *config.RAGEmbeddingConf  `json:"embedding,omitempty"`
 	Retrieval *config.RAGRetrievalConf  `json:"retrieval,omitempty"`
+	Hyde      *patchRAGHyde             `json:"hyde,omitempty"`
+	Metrics   *config.RAGMetricsConf    `json:"metrics,omitempty"`
+}
+
+// patchRAGHyde is the narrow patch shape for rag.hyde. Enabled is a *bool so
+// we can distinguish "user sent enabled=false" from "user did not include
+// enabled at all" — an absent key must preserve the stored value.
+type patchRAGHyde struct {
+	Enabled           *bool         `json:"enabled,omitempty"`
+	Model             string        `json:"model,omitempty"`
+	HypothesisTimeout time.Duration `json:"hypothesis_timeout,omitempty"`
+	QueryWeight       float64       `json:"query_weight,omitempty"`
+	MaxCandidates     int           `json:"max_candidates,omitempty"`
 }
 
 // maxPutBodySize is the hard limit for PUT /api/config request bodies (64 KB).
@@ -212,6 +226,41 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.MinCosineScore != 0 {
 			merged.RAG.Retrieval.MinCosineScore = p.MinCosineScore
+		}
+	}
+
+	// Merge body.RAG.Hyde field-by-field so that a partial PUT does not reset
+	// sibling fields to zero. Enabled uses *bool so absent key preserves the
+	// stored value; all other fields use zero as the "absent" sentinel.
+	if patch.RAG != nil && patch.RAG.Hyde != nil {
+		p := *patch.RAG.Hyde
+		if p.Enabled != nil {
+			merged.RAG.Hyde.Enabled = *p.Enabled
+		}
+		if p.Model != "" {
+			merged.RAG.Hyde.Model = p.Model
+		}
+		if p.HypothesisTimeout != 0 {
+			merged.RAG.Hyde.HypothesisTimeout = p.HypothesisTimeout
+		}
+		if p.QueryWeight != 0 {
+			merged.RAG.Hyde.QueryWeight = p.QueryWeight
+		}
+		if p.MaxCandidates != 0 {
+			merged.RAG.Hyde.MaxCandidates = p.MaxCandidates
+		}
+	}
+
+	// Merge body.RAG.Metrics field-by-field. Enabled uses bool (zero = false),
+	// so we only overwrite when the patch struct pointer is non-nil.
+	// BufferSize uses zero as the "absent" sentinel — only overwrite when non-zero.
+	if patch.RAG != nil && patch.RAG.Metrics != nil {
+		p := *patch.RAG.Metrics
+		// For Metrics.Enabled: always copy the sent value (pointer-nil check
+		// at struct level ensures the key was actually sent).
+		merged.RAG.Metrics.Enabled = p.Enabled
+		if p.BufferSize != 0 {
+			merged.RAG.Metrics.BufferSize = p.BufferSize
 		}
 	}
 

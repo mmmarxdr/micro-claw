@@ -1987,3 +1987,29 @@ models:
 		})
 	}
 }
+
+// T12 (canonical config): ApplyDefaults fills HyDE non-bool fields when zero.
+func TestApplyDefaults_RAGHyDEDefaults(t *testing.T) {
+	c := &Config{}
+	c.ApplyDefaults()
+
+	if c.RAG.Hyde.HypothesisTimeout != 10*time.Second {
+		t.Errorf("Hyde.HypothesisTimeout: want 10s, got %v", c.RAG.Hyde.HypothesisTimeout)
+	}
+	if c.RAG.Hyde.QueryWeight != 0.3 {
+		t.Errorf("Hyde.QueryWeight: want 0.3, got %v", c.RAG.Hyde.QueryWeight)
+	}
+	if c.RAG.Hyde.MaxCandidates != 20 {
+		t.Errorf("Hyde.MaxCandidates: want 20, got %d", c.RAG.Hyde.MaxCandidates)
+	}
+}
+
+// T13 (canonical config): ApplyDefaults does NOT enable HyDE.
+func TestApplyDefaults_RAGHyDE_DisabledByDefault(t *testing.T) {
+	c := &Config{}
+	c.ApplyDefaults()
+
+	if c.RAG.Hyde.Enabled {
+		t.Error("RAG.Hyde.Enabled must be false by default (opt-in)")
+	}
+}
