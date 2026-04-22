@@ -160,7 +160,7 @@ func PerformHydeSearch(ctx context.Context, query string, deps HydeSearchDeps) (
 		return results, nil
 	}
 
-	// --- Step 3: Two SearchChunks calls ---
+	// --- Step 3: Three SearchChunks calls ---
 	maxCandidates := deps.HydeConf.MaxCandidates
 	if maxCandidates <= 0 {
 		maxCandidates = 20
@@ -170,16 +170,23 @@ func PerformHydeSearch(ctx context.Context, query string, deps HydeSearchDeps) (
 	hydeOpts := baseOpts
 	hydeOpts.Limit = maxCandidates
 
-	// List A: raw query FTS + raw query vector cosine.
+	// List A: raw query FTS + raw query vector cosine rerank.
 	rawResults, _ := deps.Store.SearchChunks(ctx, query, queryVec, rawOpts)
-	// List B: hypothesis FTS + ensemble vector cosine.
+	// List B: hypothesis FTS + ensemble vector cosine rerank.
 	hydeResults, _ := deps.Store.SearchChunks(ctx, hypText, ensembleVec, hydeOpts)
+	// List C: pure-vector search using ensemble — no FTS5 prefilter.
+	// This is the real HyDE contribution: semantic queries surface docs with
+	// zero lexical overlap, which is impossible via FTS5 rerank alone.
+	cosineOpts := baseOpts
+	cosineOpts.Limit = maxCandidates
+	cosineOpts.SkipFTS = true
+	cosineResults, _ := deps.Store.SearchChunks(ctx, "", ensembleVec, cosineOpts)
 
 	event.BM25Hits = len(rawResults)
-	event.CosineHits = len(hydeResults)
+	event.CosineHits = len(cosineResults) // reflects actual pure-vector hits, not hyde-BM25
 	event.HydeEnabled = true
 
-	// --- Step 4: RRF merge (k=60) across 3 conceptual lists ---
+	// --- Step 4: RRF merge (k=60) across 3 actual lists ---
 	rawIDs := make([]string, len(rawResults))
 	for i, r := range rawResults {
 		rawIDs[i] = r.Chunk.ID
@@ -188,19 +195,26 @@ func PerformHydeSearch(ctx context.Context, query string, deps HydeSearchDeps) (
 	for i, r := range hydeResults {
 		hydeIDs[i] = r.Chunk.ID
 	}
-	hydeCosineIDs := make([]string, len(hydeResults))
-	copy(hydeCosineIDs, hydeIDs)
+	cosineIDs := make([]string, len(cosineResults))
+	for i, r := range cosineResults {
+		cosineIDs[i] = r.Chunk.ID
+	}
 
 	const rrfK = 60
-	lists := [][]string{rawIDs, hydeIDs, hydeCosineIDs}
+	lists := [][]string{rawIDs, hydeIDs, cosineIDs}
 	scores := RRFMerge(lists, rrfK)
 
-	// Build result lookup.
-	resultByID := make(map[string]SearchResult, len(rawResults)+len(hydeResults))
+	// Build result lookup — cosineResults included so provenance can find them.
+	resultByID := make(map[string]SearchResult, len(rawResults)+len(hydeResults)+len(cosineResults))
 	for _, r := range rawResults {
 		resultByID[r.Chunk.ID] = r
 	}
 	for _, r := range hydeResults {
+		if _, exists := resultByID[r.Chunk.ID]; !exists {
+			resultByID[r.Chunk.ID] = r
+		}
+	}
+	for _, r := range cosineResults {
 		if _, exists := resultByID[r.Chunk.ID]; !exists {
 			resultByID[r.Chunk.ID] = r
 		}
@@ -243,7 +257,7 @@ func PerformHydeSearch(ctx context.Context, query string, deps HydeSearchDeps) (
 	provLists := map[string][]string{
 		"raw-bm25":    rawIDs,
 		"hyde-bm25":   hydeIDs,
-		"hyde-cosine": hydeCosineIDs,
+		"hyde-cosine": cosineIDs,
 	}
 	prov := Provenance(finalIDs, provLists)
 

@@ -73,9 +73,17 @@ type ChunkOptions struct {
 //     A candidate is dropped when cosine < MinCosineScore.
 //     Applied only on the cosine-rerank path (queryVec provided + ≥2 embeddings).
 //     Zero means "no threshold" (disabled).
+//
+// SkipFTS: when true and queryVec is non-empty, the FTS5 candidate-generation
+// step is skipped entirely. SearchChunks iterates all chunks with non-null
+// embeddings, computes cosine similarity against queryVec, and returns the
+// top-Limit results sorted by cosine descending. MaxBM25Score is ignored on
+// this path (no BM25 scores exist). MinCosineScore and NeighborRadius apply
+// as normal. When SkipFTS is true and queryVec is empty, nil, nil is returned.
 type SearchOptions struct {
 	Limit          int     // maximum number of primary results; 0 defaults to 10
 	NeighborRadius int     // expand each primary hit by N adjacent chunks; 0 = disabled
 	MaxBM25Score   float64 // BM25 ceiling filter; 0 = disabled
 	MinCosineScore float64 // cosine floor filter; 0 = disabled
+	SkipFTS        bool    // when true, bypass FTS5 and do pure-vector cosine search against all embedded chunks
 }

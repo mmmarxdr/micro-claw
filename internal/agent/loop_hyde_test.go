@@ -142,9 +142,9 @@ func TestLoopHyDE_Enabled_HappyPath(t *testing.T) {
 
 	runTurn(t, ag, "explain RAG retrieval")
 
-	// Must have made 2 SearchChunks calls: raw-BM25 + hyde.
-	if got := store.callCount(); got != 2 {
-		t.Errorf("T24: want 2 SearchChunks calls, got %d", got)
+	// Must have made 3 SearchChunks calls: raw-BM25 + hyde + pure-vector cosine.
+	if got := store.callCount(); got != 3 {
+		t.Errorf("T24: want 3 SearchChunks calls, got %d", got)
 	}
 	if hypothesisCalled != 1 {
 		t.Errorf("T24: want 1 hypothesis call, got %d", hypothesisCalled)
@@ -307,12 +307,12 @@ func TestLoopHyDE_Dedup_ChunkAppearsOnce(t *testing.T) {
 	}, hypoFn)
 
 	// We can't inspect the final merged list directly without more internal
-	// access, but we can verify 2 SearchChunks calls were made (RRF is applied)
+	// access, but we can verify 3 SearchChunks calls were made (RRF is applied)
 	// and the loop didn't crash or duplicate chunks in the prompt.
 	runTurn(t, ag, "find shared content")
 
-	if got := store.callCount(); got != 2 {
-		t.Errorf("T29: expected 2 SearchChunks calls, got %d", got)
+	if got := store.callCount(); got != 3 {
+		t.Errorf("T29: expected 3 SearchChunks calls, got %d", got)
 	}
 }
 
@@ -359,12 +359,12 @@ func TestLoopHyDE_TopK_Respected(t *testing.T) {
 		MaxCandidates:     10,
 	}, hypoFn)
 
-	// We verify no panic and 2 calls made. The actual trimming is exercised
+	// We verify no panic and 3 calls made. The actual trimming is exercised
 	// internally; the system prompt builder receives ≤ ragMaxChunks chunks.
 	runTurn(t, ag, "find documents")
 
-	if got := store.callCount(); got != 2 {
-		t.Errorf("T30: expected 2 SearchChunks calls, got %d", got)
+	if got := store.callCount(); got != 3 {
+		t.Errorf("T30: expected 3 SearchChunks calls, got %d", got)
 	}
 }
 

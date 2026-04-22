@@ -136,6 +136,10 @@ func (s *SQLiteDocumentStore) AddChunks(ctx context.Context, docID string, chunk
 // opts.MinCosineScore filters on the cosine path; reject when cosine < threshold.
 // Zero = disabled.
 func (s *SQLiteDocumentStore) SearchChunks(ctx context.Context, query string, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
+	if opts.SkipFTS {
+		return s.pureVectorSearch(ctx, queryVec, opts)
+	}
+
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
@@ -259,6 +263,97 @@ func (s *SQLiteDocumentStore) SearchChunks(ctx context.Context, query string, qu
 		primaries = append(primaries, SearchResult{
 			Chunk:    c.chunk,
 			DocTitle: c.docTitle,
+		})
+	}
+
+	results, err := s.expandNeighbors(ctx, primaries, opts.NeighborRadius)
+	if err != nil {
+		return nil, err
+	}
+	s.bumpAccessCounters(ctx, results)
+	return results, nil
+}
+
+// pureVectorSearch does cosine-only search against all chunks with embeddings.
+// No FTS5 prefilter. Iterates every chunk with a non-null embedding, computes
+// cosine similarity against queryVec, sorts top-Limit descending, applies
+// MinCosineScore threshold, and expands NeighborRadius.
+//
+// Returns nil, nil when queryVec is empty — pure-vector search requires a vector.
+func (s *SQLiteDocumentStore) pureVectorSearch(ctx context.Context, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
+	if len(queryVec) == 0 {
+		return nil, nil
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT dc.id, dc.doc_id, dc.idx, dc.content, dc.embedding, dc.token_count,
+		        COALESCE(d.title, '') AS doc_title
+		 FROM document_chunks dc
+		 LEFT JOIN documents d ON d.id = dc.doc_id
+		 WHERE dc.embedding IS NOT NULL AND length(dc.embedding) > 0`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("rag: pure-vector scan: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		chunk    DocumentChunk
+		docTitle string
+		score    float64
+	}
+
+	normQuery := NormalizeEmbedding(queryVec, 256)
+	var scored []candidate
+
+	for rows.Next() {
+		var ch DocumentChunk
+		var embBlob []byte
+		var docTitle string
+		if err := rows.Scan(
+			&ch.ID, &ch.DocID, &ch.Index,
+			&ch.Content, &embBlob, &ch.TokenCount,
+			&docTitle,
+		); err != nil {
+			return nil, fmt.Errorf("rag: pure-vector scan row: %w", err)
+		}
+		if len(embBlob) == 0 {
+			continue
+		}
+		ch.Embedding = DeserializeEmbedding(embBlob)
+		norm := NormalizeEmbedding(ch.Embedding, 256)
+		sc := CosineSimilarity(normQuery, norm)
+		scored = append(scored, candidate{chunk: ch, docTitle: docTitle, score: sc})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rag: pure-vector scan rows: %w", err)
+	}
+
+	// Sort descending by cosine score.
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Apply MinCosineScore threshold and cap at limit.
+	primaries := make([]SearchResult, 0, min(len(scored), limit))
+	for _, c := range scored {
+		if len(primaries) >= limit {
+			break
+		}
+		if opts.MinCosineScore > 0 && c.score < opts.MinCosineScore {
+			continue
+		}
+		cosine := c.score
+		primaries = append(primaries, SearchResult{
+			Chunk:       c.chunk,
+			DocTitle:    c.docTitle,
+			Score:       c.score,
+			CosineScore: &cosine,
 		})
 	}
 

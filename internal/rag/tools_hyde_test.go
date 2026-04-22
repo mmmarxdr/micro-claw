@@ -121,9 +121,9 @@ func TestSearchDocsTool_Hyde_Enabled_SemanticQuery(t *testing.T) {
 	if hypothesisCalled != 1 {
 		t.Errorf("T6: want 1 hypothesis call, got %d", hypothesisCalled)
 	}
-	// HyDE makes 2 SearchChunks calls.
-	if got := len(store.calls); got != 2 {
-		t.Errorf("T6: want 2 SearchChunks calls, got %d", got)
+	// HyDE makes 3 SearchChunks calls (raw + hyde + pure-vector cosine).
+	if got := len(store.calls); got != 3 {
+		t.Errorf("T6: want 3 SearchChunks calls, got %d", got)
 	}
 	// CV doc appears in result.
 	if !strings.Contains(result.Content, "CV") {

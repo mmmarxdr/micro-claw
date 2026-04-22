@@ -122,9 +122,9 @@ func TestPerformHydeSearch_Enabled_HypothesisAndRRF(t *testing.T) {
 	if hypothesisCalled != 1 {
 		t.Errorf("T2: want 1 hypothesis call, got %d", hypothesisCalled)
 	}
-	// HyDE path: 2 SearchChunks calls (raw + hyde).
-	if got := len(store.calls); got != 2 {
-		t.Errorf("T2: want 2 SearchChunks calls, got %d", got)
+	// HyDE path: 3 SearchChunks calls (raw + hyde + pure-vector cosine).
+	if got := len(store.calls); got != 3 {
+		t.Errorf("T2: want 3 SearchChunks calls, got %d", got)
 	}
 	if len(results) == 0 {
 		t.Error("T2: expected results from HyDE path")
