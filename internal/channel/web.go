@@ -207,16 +207,28 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 		slog.Info("websocket client disconnected", "channel_id", connID)
 	}()
 
-	// Ping ticker to detect dead connections.
+	// Ping ticker to detect dead connections. The goroutine below MUST exit
+	// when the handler returns — `for range ticker.C` would block forever
+	// because time.Ticker.Stop doesn't close the channel, so we gate the loop
+	// on a done channel that the deferred cleanup closes.
 	pingTicker := time.NewTicker(wsPingInterval)
-	defer pingTicker.Stop()
+	pingDone := make(chan struct{})
+	defer func() {
+		close(pingDone)
+		pingTicker.Stop()
+	}()
 	go func() {
-		for range pingTicker.C {
-			wc.mu.Lock()
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
-			wc.mu.Unlock()
-			if err != nil {
+		for {
+			select {
+			case <-pingDone:
 				return
+			case <-pingTicker.C:
+				wc.mu.Lock()
+				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+				wc.mu.Unlock()
+				if err != nil {
+					return
+				}
 			}
 		}
 	}()

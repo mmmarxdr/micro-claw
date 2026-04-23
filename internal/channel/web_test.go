@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -742,4 +743,40 @@ func TestWebStreamWriter_WriteReasoning(t *testing.T) {
 	if got.ChannelID != msg.ChannelID {
 		t.Errorf("channel_id = %q, want %q", got.ChannelID, msg.ChannelID)
 	}
+}
+
+// TestHandleWebSocket_PingGoroutineDoesNotLeak is the regression test for the
+// ping goroutine leak. Before the fix, `for range pingTicker.C` blocked
+// forever after the handler returned — `time.Ticker.Stop` does not close the
+// channel. Each disconnected client leaked one goroutine. With the fix, the
+// goroutine exits via a done channel and goroutine count returns near its
+// baseline after many connect/disconnect cycles.
+func TestHandleWebSocket_PingGoroutineDoesNotLeak(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// Let httptest.Server's accept loop and any first-request goroutines
+	// settle before snapshotting the baseline.
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	const N = 30
+	for i := 0; i < N; i++ {
+		c := dialWS(t, srv)
+		// Abrupt close — handler's ReadMessage returns an error and the
+		// deferred cleanup (including the ping-goroutine shutdown) runs.
+		_ = c.Close()
+	}
+
+	// Poll for goroutine count to drain back near baseline. Tolerate a
+	// small delta to absorb scheduler/GC noise; a real leak would show
+	// ~N extra goroutines permanently.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine()-baseline < N/3 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("ping goroutine leak: baseline=%d, after %d connections=%d (expected delta < %d)",
+		baseline, N, runtime.NumGoroutine(), N/3)
 }
