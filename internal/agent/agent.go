@@ -114,6 +114,21 @@ type Agent struct {
 
 	// Metrics recorder — nil means no-op (NoopRecorder equivalent).
 	ragMetrics metrics.Recorder
+
+	// Title generator hook — nil means the post-turn title hook is a no-op.
+	// The Titler is defined as a minimal interface so the agent package does
+	// not depend on TitleGenerator's internals (Group D wires the concrete
+	// implementation). Enqueue MUST be non-blocking; drops on queue-full.
+	titler Titler
+	aiCfg  config.AIConfig
+}
+
+// Titler is the minimal interface the agent needs to enqueue async title
+// generation jobs after saving a conversation. The concrete implementation
+// (TitleGenerator) lives elsewhere; we keep this interface tiny so the
+// agent layer does not import provider machinery.
+type Titler interface {
+	Enqueue(ctx context.Context, convID string)
 }
 
 func New(
@@ -324,6 +339,21 @@ func (a *Agent) WithRAGHydeConf(conf config.RAGHydeConf, hypothesisFn func(conte
 // When r is nil the agent behaves as if a NoopRecorder is set — no panic, no log.
 func (a *Agent) WithRAGMetrics(r metrics.Recorder) *Agent {
 	a.ragMetrics = r
+	return a
+}
+
+// WithTitler wires the async title-generation worker. Pass nil to disable
+// (the post-save hook is a no-op when titler is nil OR aiCfg.Enabled is false).
+func (a *Agent) WithTitler(t Titler) *Agent {
+	a.titler = t
+	return a
+}
+
+// WithAIConfig stores the AI config (used for the title-generation enabled
+// flag). Without this, the post-save hook stays a no-op even if WithTitler
+// is called — wiring from main must call both.
+func (a *Agent) WithAIConfig(cfg config.AIConfig) *Agent {
+	a.aiCfg = cfg
 	return a
 }
 

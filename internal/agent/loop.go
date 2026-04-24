@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"daimon/internal/audit"
@@ -36,6 +37,44 @@ func userScope(channelID, senderID string) string {
 		return channelID
 	}
 	return channelID + ":" + senderID
+}
+
+// minMessagesForTitle is the turn threshold for auto-title generation.
+// Three complete user/assistant exchanges == 6 messages in provider format.
+const minMessagesForTitle = 6
+
+// minFirstUserRunesForTitle avoids generating titles from trivial greetings
+// like "hola" or "ok" — the first real user message must carry enough
+// content to be summarisable.
+const minFirstUserRunesForTitle = 20
+
+// shouldGenerateTitle returns true when an async title job SHOULD be
+// enqueued for this conversation. All branches are defensive against nil /
+// short conversations / already-titled convs.
+func shouldGenerateTitle(conv *store.Conversation) bool {
+	if conv == nil {
+		return false
+	}
+	if len(conv.Messages) < minMessagesForTitle {
+		return false
+	}
+	if t := strings.TrimSpace(conv.Metadata["title"]); t != "" {
+		return false
+	}
+	first := firstUserMessageText(conv.Messages)
+	return utf8.RuneCountInString(first) >= minFirstUserRunesForTitle
+}
+
+// firstUserMessageText returns the text content of the first user-role
+// message in the conversation, or empty string when none exists. Media
+// blocks are ignored — only text counts toward the "real content" check.
+func firstUserMessageText(msgs []provider.ChatMessage) string {
+	for _, m := range msgs {
+		if m.Role == "user" {
+			return m.Content.TextOnly()
+		}
+	}
+	return ""
 }
 
 func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage) {
@@ -96,8 +135,19 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 	turnStart := time.Now()
 	var totalInputTokens, totalOutputTokens int
 
-	scope := userScope(msg.ChannelID, msg.SenderID)
-	convID := "conv_" + scope
+	// Resolve convID: explicit ConversationID on the incoming message
+	// (populated by the web channel when `?conversation_id=` was sent on
+	// the WS upgrade) overrides the userScope derivation. The scope used
+	// for memory/RAG search is the convID minus the "conv_" prefix, which
+	// is exactly what userScope would have produced for the pair
+	// (ChannelID, SenderID) — keeping the invariant that memory scope and
+	// convID encode the same identity.
+	convID := msg.ConversationID
+	if convID == "" {
+		convID = "conv_" + userScope(msg.ChannelID, msg.SenderID)
+	}
+	scope := strings.TrimPrefix(convID, "conv_")
+
 	conv, err := a.store.LoadConversation(ctx, convID)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
@@ -680,6 +730,14 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 	conv.UpdatedAt = time.Now()
 	_ = a.store.SaveConversation(ctx, *conv)
+
+	// Post-save: enqueue a title-generation job when the conv has grown
+	// past the eligibility threshold and has no title yet. Hook is
+	// strictly non-blocking — Titler.Enqueue drops on queue-full without
+	// blocking the turn-end path.
+	if a.titler != nil && a.aiCfg.TitleGeneration.Enabled && shouldGenerateTitle(conv) {
+		a.titler.Enqueue(ctx, conv.ID)
+	}
 
 	if a.bus != nil {
 		a.bus.Emit(notify.Event{
