@@ -518,6 +518,20 @@ logging:
 limits:
   tool_timeout: 30s
   total_timeout: 120s
+
+conversations:
+  prune:
+    enabled: true                 # soft-delete pruner goroutine (SQLite only)
+    retention_days: 30            # 1..3650 — physical-delete age. Clamped.
+    interval_hours: 6             # 1..168 — ticker period. Clamped.
+
+ai:
+  title_generation:
+    enabled: true                 # async LLM title after turn 3 + first user msg ≥20 runes
+    model: ""                     # empty = provider default; follow-up adds per-provider cheap-tier override
+    worker_count: 2               # 1..8
+    queue_size: 32                # 4..256 — pending-job cap, drops on full
+    call_timeout_ms: 30000        # 1000..120000 — per-job provider timeout
 ```
 
 ### Config Resolution Rules
@@ -527,6 +541,19 @@ limits:
 3. Apply defaults for any missing field.
 4. Validate: fail fast with a clear error if required fields are missing (e.g., `provider.api_key`).
 5. Expand `~` in all path fields to the user's home directory.
+
+### Conversations Lifecycle
+
+- **Soft delete**: `DELETE /api/conversations/{id}` sets `deleted_at` instead of removing the row. Soft-deleted conversations are hidden from list and detail endpoints.
+- **Restore**: `POST /api/conversations/{id}/restore` clears `deleted_at` during the retention window (default 30 days). 404 if the conv is already live or missing.
+- **Physical delete**: `ConversationPruner` goroutine runs every `interval_hours` and removes rows whose `deleted_at < now - retention_days`. SQLite only; FileStore skips the pruner.
+- **Paginated messages**: `GET /api/conversations/{id}/messages?before=<idx>&limit=<n>` returns a window of messages (newest-first page). Clamp: `limit ∈ [1, 200]`, default 50. Use the returned `oldest_index` as the next `before` cursor.
+- **Rename**: `PATCH /api/conversations/{id}` with `{"title": "..."}`. Validates 1..100 runes after trim, replaces newlines with spaces.
+- **Auto-title**: after turn 3 (if first user message ≥20 runes and `metadata.title` empty), the `TitleGenerator` worker enqueues a provider call and stores the result in `metadata.title`. Fully async — never blocks the turn path.
+
+### Resuming Conversations (WebSocket)
+
+Clients reconnect to `wss://host/ws/chat?conversation_id=<conv_id>` to resume a prior conversation. The backend binds every inbound message from that socket to the supplied `conversation_id` (see `IncomingMessage.ConversationID` → `processMessage` in `internal/agent/loop.go`). Omitting the param falls back to the prior behavior: a fresh `channel_id` per upgrade and `userScope(channel_id, sender_id)` for conv identity. `continue_turn` frames are tagged with the same `conversation_id`. Size cap: 200 runes; oversized IDs are logged and dropped.
 
 ---
 
