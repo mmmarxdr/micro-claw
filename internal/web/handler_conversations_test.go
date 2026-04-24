@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,63 @@ func (f *fakeWebStore) DeleteConversation(_ context.Context, id string) error {
 }
 
 func (f *fakeWebStore) DeleteMemory(_ context.Context, _ string, _ int64) error {
+	return store.ErrNotFound
+}
+
+// --- WebStore extensions added by conversations-liminal-resume Group B ---
+
+func (f *fakeWebStore) RestoreConversation(_ context.Context, _ string) error {
+	return store.ErrNotFound
+}
+
+func (f *fakeWebStore) DeleteConversationsOlderThan(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeWebStore) GetConversationMessages(_ context.Context, id string, beforeIndex, limit int) ([]provider.ChatMessage, bool, int, error) {
+	for _, c := range f.conversations {
+		if c.ID == id {
+			if limit <= 0 {
+				limit = 50
+			}
+			if limit > 200 {
+				limit = 200
+			}
+			total := len(c.Messages)
+			end := total
+			if beforeIndex >= 0 && beforeIndex < total {
+				end = beforeIndex
+			}
+			if end <= 0 {
+				return []provider.ChatMessage{}, false, 0, nil
+			}
+			start := end - limit
+			if start < 0 {
+				start = 0
+			}
+			out := make([]provider.ChatMessage, end-start)
+			copy(out, c.Messages[start:end])
+			return out, start > 0, start, nil
+		}
+	}
+	return nil, false, 0, store.ErrNotFound
+}
+
+func (f *fakeWebStore) UpdateConversationTitle(_ context.Context, id, title string) error {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return store.ErrInvalidTitle
+	}
+	for i, c := range f.conversations {
+		if c.ID == id {
+			if c.Metadata == nil {
+				c.Metadata = map[string]string{}
+			}
+			c.Metadata["title"] = trimmed
+			f.conversations[i] = c
+			return nil
+		}
+	}
 	return store.ErrNotFound
 }
 

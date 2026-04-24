@@ -15,6 +15,12 @@ var ErrNotFound = errors.New("not found")
 // but no encryption key has been configured via store.encryption_key or DAIMON_SECRET_KEY.
 var ErrEncryptionKeyNotConfigured = errors.New("encryption key not configured")
 
+// ErrInvalidTitle is returned by UpdateConversationTitle when the title is
+// empty after trimming. The 1..100 rune bound is enforced at the web-layer
+// validator; this sentinel covers the minimum viable invariant at the
+// store layer so nothing silently writes empty titles.
+var ErrInvalidTitle = errors.New("invalid title")
+
 type Conversation struct {
 	ID        string                 `json:"id"`
 	ChannelID string                 `json:"channel_id"`
@@ -129,9 +135,35 @@ type WebStore interface {
 	// filtered by channelID prefix. Pass "" for all channels.
 	CountConversations(ctx context.Context, channelID string) (int, error)
 
-	// DeleteConversation removes a conversation by its ID (scope_id).
+	// DeleteConversation performs a SOFT delete — sets deleted_at on the row.
 	// Returns ErrNotFound (wrapped) if no conversation with that ID exists.
+	// No-op (returns nil, not an error) when the conv is already soft-deleted.
 	DeleteConversation(ctx context.Context, scopeID string) error
+
+	// RestoreConversation clears deleted_at on a previously soft-deleted conv.
+	// Returns ErrNotFound (wrapped) if the conv does not exist OR is already
+	// live (two cases with identical observable behavior for the caller).
+	RestoreConversation(ctx context.Context, scopeID string) error
+
+	// DeleteConversationsOlderThan physically removes conversations that were
+	// soft-deleted before cutoff. Returns the number of rows removed.
+	// Intended for the background ConversationPruner.
+	DeleteConversationsOlderThan(ctx context.Context, cutoff time.Time) (int, error)
+
+	// GetConversationMessages returns a window of messages from a single
+	// conversation without having to load and serialize the entire blob.
+	// `beforeIndex = -1` (or any value >= total) means "load the most recent
+	// `limit` messages". `limit` is clamped to [1, 200]; 0 → 50.
+	// Returns: the window slice (defensive copy), hasMore=true when
+	// oldestIndex > 0, oldestIndex is the absolute index of the first
+	// returned message (useful as the next cursor for paging upward).
+	// Returns ErrNotFound on a missing or soft-deleted conv.
+	GetConversationMessages(ctx context.Context, id string, beforeIndex, limit int) ([]provider.ChatMessage, bool, int, error)
+
+	// UpdateConversationTitle sets metadata["title"] for a conversation. The
+	// title is validated by the caller (1..100 runes, newlines stripped).
+	// Returns ErrNotFound if the conv is missing or soft-deleted.
+	UpdateConversationTitle(ctx context.Context, id string, title string) error
 
 	// DeleteMemory removes a single memory entry by its rowid within scopeID.
 	// Returns ErrNotFound (wrapped) if no matching entry exists.

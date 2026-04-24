@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"daimon/internal/config"
+	"daimon/internal/provider"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver with database/sql
 )
@@ -118,11 +119,12 @@ func (s *SQLiteStore) SaveConversation(ctx context.Context, conv Conversation) e
 	return nil
 }
 
-// LoadConversation retrieves a conversation by ID. Returns ErrNotFound (wrapped) if not found.
+// LoadConversation retrieves a conversation by ID. Returns ErrNotFound (wrapped) if
+// not found or if the conv is soft-deleted (deleted_at IS NOT NULL).
 func (s *SQLiteStore) LoadConversation(ctx context.Context, id string) (*Conversation, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, channel_id, messages, metadata, created_at, updated_at
-		 FROM conversations WHERE id = ?`, id)
+		 FROM conversations WHERE id = ? AND deleted_at IS NULL`, id)
 
 	var conv Conversation
 	var messagesJSON, metadataJSON string
@@ -164,11 +166,11 @@ func (s *SQLiteStore) ListConversations(ctx context.Context, channelID string, l
 
 	if channelID != "" {
 		query = `SELECT id, channel_id, messages, metadata, created_at, updated_at
-		          FROM conversations WHERE channel_id = ? ORDER BY updated_at DESC`
+		          FROM conversations WHERE channel_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC`
 		args = append(args, channelID)
 	} else {
 		query = `SELECT id, channel_id, messages, metadata, created_at, updated_at
-		          FROM conversations ORDER BY updated_at DESC`
+		          FROM conversations WHERE deleted_at IS NULL ORDER BY updated_at DESC`
 	}
 
 	if limit > 0 {
@@ -222,7 +224,7 @@ func (s *SQLiteStore) ListConversationsPaginated(ctx context.Context, channelID 
 	// Build filter — empty channelID means all conversations.
 	// Non-empty channelID is matched as a prefix (e.g. "telegram:" matches all
 	// telegram conversations whose id starts with that string).
-	filterSQL := `(? = '' OR channel_id LIKE ?)`
+	filterSQL := `(? = '' OR channel_id LIKE ?) AND deleted_at IS NULL`
 	likeArg := channelID + "%"
 
 	// Count total matching rows.
@@ -297,11 +299,14 @@ func (s *SQLiteStore) CountConversations(ctx context.Context, channelID string) 
 	return count, nil
 }
 
-// DeleteConversation removes a conversation by its ID. Returns ErrNotFound (wrapped)
-// if no conversation with that ID exists.
+// DeleteConversation performs a soft delete by setting deleted_at = now().
+// Returns ErrNotFound (wrapped) if no conversation with that ID exists. When
+// the conv is already soft-deleted, the call is a no-op and returns nil —
+// the earliest delete timestamp wins (idempotent).
 func (s *SQLiteStore) DeleteConversation(ctx context.Context, scopeID string) error {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM conversations WHERE id = ?`, scopeID,
+		`UPDATE conversations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		time.Now().UTC(), scopeID,
 	)
 	if err != nil {
 		return fmt.Errorf("deleting conversation %s: %w", scopeID, err)
@@ -311,7 +316,148 @@ func (s *SQLiteStore) DeleteConversation(ctx context.Context, scopeID string) er
 		return fmt.Errorf("rows affected for conversation %s: %w", scopeID, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("deleting conversation %s: %w", scopeID, ErrNotFound)
+		// Either the row is missing OR already soft-deleted. Distinguish.
+		var count int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM conversations WHERE id = ?`, scopeID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("verifying existence of conversation %s: %w", scopeID, err)
+		}
+		if count == 0 {
+			return fmt.Errorf("deleting conversation %s: %w", scopeID, ErrNotFound)
+		}
+		// Already soft-deleted — idempotent no-op.
+	}
+	return nil
+}
+
+// RestoreConversation clears deleted_at on a soft-deleted conv. Returns
+// ErrNotFound if the conv does not exist OR is already live (the call site
+// cannot restore a live conv — nothing to undo).
+func (s *SQLiteStore) RestoreConversation(ctx context.Context, scopeID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`,
+		scopeID,
+	)
+	if err != nil {
+		return fmt.Errorf("restoring conversation %s: %w", scopeID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected for conversation %s: %w", scopeID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("restoring conversation %s: %w", scopeID, ErrNotFound)
+	}
+	return nil
+}
+
+// DeleteConversationsOlderThan physically removes conversations whose
+// deleted_at is before cutoff. Returns the count of rows deleted.
+// Intended for use by the ConversationPruner on a ticker.
+func (s *SQLiteStore) DeleteConversationsOlderThan(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
+		cutoff.UTC(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("pruning old conversations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// GetConversationMessages returns a window of messages from a single conv
+// without materializing the whole row's JSON blob through the Conversation
+// struct's media-touch side effects. For typical convs (<1000 msgs) this is
+// load-and-slice in Go; pathological very-large convs are a documented
+// follow-up that would move to json_extract('$[N]') or a messages table.
+func (s *SQLiteStore) GetConversationMessages(
+	ctx context.Context, id string, beforeIndex, limit int,
+) ([]provider.ChatMessage, bool, int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	var messagesJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT messages FROM conversations WHERE id = ? AND deleted_at IS NULL`, id,
+	).Scan(&messagesJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, 0, fmt.Errorf("loading conversation %s: %w", id, ErrNotFound)
+		}
+		return nil, false, 0, fmt.Errorf("loading conversation %s: %w", id, err)
+	}
+
+	var msgs []provider.ChatMessage
+	if err := json.Unmarshal([]byte(messagesJSON), &msgs); err != nil {
+		return nil, false, 0, fmt.Errorf("unmarshalling messages for conversation %s: %w", id, err)
+	}
+
+	total := len(msgs)
+	if total == 0 {
+		return []provider.ChatMessage{}, false, 0, nil
+	}
+
+	endExclusive := total
+	if beforeIndex >= 0 && beforeIndex < total {
+		endExclusive = beforeIndex
+	}
+	if endExclusive <= 0 {
+		return []provider.ChatMessage{}, false, 0, nil
+	}
+
+	start := endExclusive - limit
+	if start < 0 {
+		start = 0
+	}
+
+	window := msgs[start:endExclusive]
+	out := make([]provider.ChatMessage, len(window))
+	copy(out, window)
+
+	return out, start > 0, start, nil
+}
+
+// UpdateConversationTitle sets metadata.title on a conversation via JSON1's
+// json_set. Trust-but-verify policy: the web-layer validator is authoritative
+// for the 1..100 rune bound and newline stripping; this method only guards
+// the invariants it can see locally (empty after trim → ErrInvalidTitle).
+func (s *SQLiteStore) UpdateConversationTitle(ctx context.Context, id string, title string) error {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return fmt.Errorf("updating conversation title for %s: %w", id, ErrInvalidTitle)
+	}
+	// json_set on NULL metadata creates a new JSON object. We use
+	// COALESCE(metadata, '{}') as the baseline.
+	// Metadata column can be NULL, the JSON string "null" (from json.Marshal
+	// of a nil map), or a real object. Normalize all three to '{}' before
+	// json_set so we don't silently end up with `null` (which json_set
+	// treats as a valid non-object and may return unchanged).
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE conversations
+		   SET metadata = json_set(
+		        CASE
+		            WHEN metadata IS NULL OR metadata = '' OR metadata = 'null' THEN '{}'
+		            ELSE metadata
+		        END,
+		        '$.title', ?)
+		 WHERE id = ? AND deleted_at IS NULL`,
+		trimmed, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating conversation title %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected updating title %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("updating conversation title %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
