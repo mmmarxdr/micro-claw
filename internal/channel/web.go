@@ -60,14 +60,28 @@ func (c *wsConn) writeJSON(v any) error {
 // close closes the underlying connection.
 func (c *wsConn) close() { c.conn.Close() }
 
+// DocExtractor extracts plain text from binary document attachments (PDF,
+// DOCX, etc.) so the agent can read them on providers that do not support
+// native document blocks (currently: all of them, per anthropic_stream.go,
+// openai.go, gemini_stream.go translateBlocks fallback paths).
+//
+// Implementations are stateless. The wiring layer (cmd/daimon) injects an
+// adapter over rag.SelectExtractor so the channel package stays decoupled
+// from rag.
+type DocExtractor interface {
+	Supports(mime string) bool
+	Extract(ctx context.Context, data []byte, mime string) (text string, err error)
+}
+
 // WebChannel is a Channel + StreamSender + TelemetryEmitter backed by
 // WebSocket connections. Each connected client gets a unique channelID
 // "web:<uuid-prefix>" and its own *wsConn stored in the sync.Map.
 type WebChannel struct {
-	conns      sync.Map // map[string]*wsConn — channelID → wsConn
-	inbox      chan<- IncomingMessage
-	upgrader   websocket.Upgrader
-	mediaStore store.MediaStore // optional; nil when media uploads are not configured
+	conns        sync.Map // map[string]*wsConn — channelID → wsConn
+	inbox        chan<- IncomingMessage
+	upgrader     websocket.Upgrader
+	mediaStore   store.MediaStore // optional; nil when media uploads are not configured
+	docExtractor DocExtractor     // optional; nil disables inline document extraction
 }
 
 // SetMediaStore wires a MediaStore into the WebChannel so that attachment
@@ -75,6 +89,15 @@ type WebChannel struct {
 // first connection arrives (e.g. after NewServer wires its dependencies).
 func (w *WebChannel) SetMediaStore(ms store.MediaStore) {
 	w.mediaStore = ms
+}
+
+// SetDocExtractor wires a DocExtractor so that document attachments
+// (PDF/DOCX/text) are inlined as BlockText (with ExtractedFromAttachment=true)
+// instead of the placeholder "[document attached: ..., not processed by current
+// model]" path that providers fall through to. Call before the first
+// connection arrives. Pass nil to disable inline extraction.
+func (w *WebChannel) SetDocExtractor(d DocExtractor) {
+	w.docExtractor = d
 }
 
 const (
@@ -322,7 +345,7 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 				})
 			} else {
 				for _, att := range incoming.Attachments {
-					_, _, getErr := w.mediaStore.GetMedia(r.Context(), att.SHA256)
+					data, mime, getErr := w.mediaStore.GetMedia(r.Context(), att.SHA256)
 					if getErr != nil {
 						slog.Warn("websocket: attachment not found", "sha256", att.SHA256, "channel_id", connID)
 						_ = wc.writeJSON(wsMsg{
@@ -331,10 +354,43 @@ func (w *WebChannel) HandleWebSocket(rw http.ResponseWriter, r *http.Request) {
 						})
 						continue
 					}
+
+					// For document MIMEs (PDF/DOCX/text/markdown) the providers
+					// drop the bytes and substitute a placeholder string, so the
+					// model never sees the file. Inline the extracted text as a
+					// flagged BlockText instead — the model reads the content and
+					// the agent's RAG layer skips this block when forming queries.
+					blockType := content.BlockTypeFromMIME(mime)
+					if blockType == content.BlockDocument && w.docExtractor != nil && w.docExtractor.Supports(mime) {
+						extracted, exErr := w.docExtractor.Extract(r.Context(), data, mime)
+						trimmed := strings.TrimSpace(extracted)
+						if exErr == nil && trimmed != "" {
+							label := att.Filename
+							if label == "" {
+								label = att.SHA256[:8]
+							}
+							inline := fmt.Sprintf(
+								"[Attached file: %s — extracted text follows]\n\n%s\n\n[End of attached file: %s]",
+								label, trimmed, label,
+							)
+							blocks = append(blocks, content.ContentBlock{
+								Type:                    content.BlockText,
+								Text:                    inline,
+								ExtractedFromAttachment: true,
+							})
+							continue
+						}
+						slog.Warn("websocket: document text extraction failed, falling back to media block",
+							"sha256", att.SHA256,
+							"mime", mime,
+							"err", exErr,
+						)
+					}
+
 					blocks = append(blocks, content.ContentBlock{
-						Type:        content.BlockTypeFromMIME(att.MIME),
+						Type:        blockType,
 						MediaSHA256: att.SHA256,
-						MIME:        att.MIME,
+						MIME:        mime,
 						Size:        att.Size,
 						Filename:    att.Filename,
 					})

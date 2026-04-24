@@ -537,6 +537,10 @@ func main() {
 		}
 
 		webCh := channel.NewWebChannel(cfg.Web.AllowedOrigins...)
+		// Inline document text for attachments so PDFs/DOCX actually reach the
+		// model. Without this, providers drop the bytes and substitute a
+		// placeholder (see internal/provider/*_stream.go translateBlocks fallback).
+		webCh.SetDocExtractor(newAttachmentDocExtractor())
 		// Add WebChannel to the mux so the agent can receive/send web chat messages.
 		channels = append(channels, webCh)
 		mux = channel.NewMultiplexChannel(channels)

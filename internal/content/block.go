@@ -28,6 +28,12 @@ type ContentBlock struct {
 	MIME        string    `json:"mime,omitempty"`
 	Size        int64     `json:"size,omitempty"`
 	Filename    string    `json:"filename,omitempty"`
+	// ExtractedFromAttachment is true when Type == BlockText and Text holds
+	// the server-side extracted plain text of a document attachment (PDF,
+	// DOCX, etc.) that the underlying provider cannot render natively. The
+	// agent loop uses this flag to keep the RAG query focused on the user's
+	// typed input — see Blocks.UserText().
+	ExtractedFromAttachment bool `json:"extracted_from_attachment,omitempty"`
 }
 
 // Blocks is a slice of ContentBlock. It is the canonical Content type used by
@@ -61,6 +67,40 @@ func (bs Blocks) TextOnly() string {
 func (bs Blocks) HasMedia() bool {
 	for _, b := range bs {
 		if b.Type != BlockText {
+			return true
+		}
+	}
+	return false
+}
+
+// UserText returns the concatenation of text blocks the user actually typed,
+// excluding text blocks that hold server-side extracted attachment content
+// (ExtractedFromAttachment == true). Used by the agent's RAG layer so a
+// long PDF/DOCX dumped into a text block does not dominate the search query.
+func (bs Blocks) UserText() string {
+	if len(bs) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, b := range bs {
+		if b.Type != BlockText || b.Text == "" {
+			continue
+		}
+		if b.ExtractedFromAttachment {
+			continue
+		}
+		parts = append(parts, b.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// HasExtractedAttachment reports whether any block in bs holds server-side
+// extracted text from a document attachment. The agent loop uses this to
+// decide whether to skip RAG when the user's typed input is too short to
+// form a meaningful query (the file is the real query in that case).
+func (bs Blocks) HasExtractedAttachment() bool {
+	for _, b := range bs {
+		if b.Type == BlockText && b.ExtractedFromAttachment {
 			return true
 		}
 	}

@@ -174,16 +174,27 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 
 	// Context management via ContextManager (smart, legacy, or none strategy).
 	// The ContextManager is always present after New() — strategy controls behavior.
-	memories, _ := a.store.SearchMemory(ctx, scope, msg.Content.TextOnly(), a.config.MemoryResults)
+	// Memory search uses UserText (not TextOnly) so a long extracted attachment
+	// body does not dominate the cosine query and pull unrelated memories.
+	memories, _ := a.store.SearchMemory(ctx, scope, msg.Content.UserText(), a.config.MemoryResults)
 
 	// RAG: search for relevant document chunks when a DocumentStore is wired.
 	// When HyDE is enabled (and a hypothesis function is provided), we run a
 	// 3-way Reciprocal Rank Fusion merge across raw-BM25, hyde-BM25, and
 	// hyde-cosine lists. On any HyDE failure we fall through to the baseline
 	// path — retrieval must never fail.
+	//
+	// Skip RAG entirely when the user attached a document AND their typed text
+	// is too short to form a meaningful query (<30 runes). Without this guard,
+	// vague prompts like "este archivo que adjunto" pull unrelated chunks via
+	// BM25 ("archivo"/"adjunto" are weak signals) and the model conflates the
+	// retrieved context with the actual attachment — the failure mode that
+	// surfaced when a user uploaded a CV and got a summary of an unrelated
+	// AWS doc from the index.
 	var ragResults []rag.SearchResult
-	if a.ragStore != nil {
-		queryText := msg.Content.TextOnly()
+	queryText := msg.Content.UserText()
+	skipRAG := msg.Content.HasExtractedAttachment() && utf8.RuneCountInString(strings.TrimSpace(queryText)) < 30
+	if a.ragStore != nil && !skipRAG {
 		var queryVec []float32
 		if a.ragEmbedFn != nil {
 			if vec, err := a.ragEmbedFn(ctx, queryText); err == nil {

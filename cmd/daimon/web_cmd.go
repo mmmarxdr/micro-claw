@@ -219,6 +219,10 @@ func runWebCommand(args []string, cfgPath string) error {
 
 	// ---- Channels ----
 	webCh := channel.NewWebChannel(cfg.Web.AllowedOrigins...)
+	// Inline document text for attachments so PDFs/DOCX actually reach the
+	// model. Without this, providers drop the bytes and substitute a
+	// placeholder (see internal/provider/*_stream.go translateBlocks fallback).
+	webCh.SetDocExtractor(newAttachmentDocExtractor())
 	var channels []channel.Channel
 	channels = append(channels, webCh)
 
