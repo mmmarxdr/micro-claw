@@ -161,7 +161,7 @@ func (s *Server) handlePostKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxBytes := s.deps.Config.Media.MaxAttachmentBytes
+	maxBytes := s.config().Media.MaxAttachmentBytes
 	if maxBytes <= 0 {
 		maxBytes = 10 << 20
 	}

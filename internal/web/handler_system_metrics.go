@@ -70,10 +70,11 @@ func (s *Server) handleGetSystemMetrics(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 800*time.Millisecond)
 	defer cancel()
 
+	cfg := s.config()
 	resp := systemMetricsResponse{
 		Process: collectProcessMetrics(ctx, s.deps.StartedAt),
-		Host:    collectHostMetrics(ctx, s.deps.Config.Store.Path),
-		Storage: collectStorageMetrics(s.deps.Config.Store.Path, s.deps.Config.Audit.Path, s.deps.Config.SkillsDir),
+		Host:    collectHostMetrics(ctx, cfg.Store.Path),
+		Storage: collectStorageMetrics(cfg.Store.Path, cfg.Audit.Path, cfg.SkillsDir),
 	}
 
 	writeJSON(w, http.StatusOK, resp)

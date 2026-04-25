@@ -25,8 +25,10 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg := s.config()
+
 	// Override body limit for this handler.
-	maxBytes := s.deps.Config.Media.MaxAttachmentBytes
+	maxBytes := cfg.Media.MaxAttachmentBytes
 	if maxBytes <= 0 {
 		maxBytes = 10 << 20 // 10 MB default
 	}
@@ -60,7 +62,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check against allowed MIME prefixes.
-	if !mimeAllowed(detectedMIME, s.deps.Config.Media.AllowedMIMEPrefixes) {
+	if !mimeAllowed(detectedMIME, cfg.Media.AllowedMIMEPrefixes) {
 		writeError(w, http.StatusUnsupportedMediaType, "file type not allowed")
 		return
 	}

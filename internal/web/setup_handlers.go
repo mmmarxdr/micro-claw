@@ -26,7 +26,7 @@ type setupStatusResponse struct {
 // Always returns HTTP 200 — this is a status query, not an error condition.
 // This endpoint bypasses auth middleware.
 func (s *Server) handleGetSetupStatus(w http.ResponseWriter, r *http.Request) {
-	ok, missing := config.IsProviderConfigured(*s.deps.Config)
+	ok, missing := config.IsProviderConfigured(s.config())
 	resp := setupStatusResponse{
 		NeedsSetup: !ok,
 		Missing:    missing,
@@ -142,7 +142,7 @@ type validateKeyResponse struct {
 // This endpoint bypasses auth middleware.
 func (s *Server) handleValidateKey(w http.ResponseWriter, r *http.Request) {
 	// Guard: if already configured, this endpoint is disabled.
-	if ok, _ := config.IsProviderConfigured(*s.deps.Config); ok {
+	if ok, _ := config.IsProviderConfigured(s.config()); ok {
 		writeError(w, http.StatusForbidden, "setup already complete")
 		return
 	}
@@ -238,7 +238,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Capture the current active provider before any changes (for restart detection).
-	prevType := s.deps.Config.Models.Default.Provider
+	prevType := s.config().Models.Default.Provider
 
 	// Load existing config if present, otherwise start with defaults.
 	var base config.Config
@@ -277,7 +277,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure auth token exists. Prefer the current in-memory token (set at
 	// startup), then fall back to the on-disk value, then generate a new one.
-	authToken := s.deps.Config.Web.AuthToken
+	authToken := s.config().Web.AuthToken
 	if authToken == "" {
 		authToken = base.Web.AuthToken
 	}
@@ -306,7 +306,9 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reload provider fields in-memory (v2 shape).
+	// Reload provider fields in-memory (v2 shape) under the write lock so
+	// concurrent readers via s.config() see a consistent snapshot.
+	s.configMu.Lock()
 	s.deps.Config.Providers = base.Providers
 	s.deps.Config.Models = base.Models
 	s.deps.Config.Provider = nil // clear legacy pointer
@@ -314,6 +316,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if tokenIsNew && !stampedIssuedAt.IsZero() {
 		s.deps.Config.Web.AuthTokenIssuedAt = stampedIssuedAt
 	}
+	s.configMu.Unlock()
 
 	// Set HttpOnly cookie so the browser is authenticated automatically.
 	setAuthCookie(w, r, &base.Web, authToken)
@@ -366,10 +369,13 @@ func (s *Server) handleSetupReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reload in-memory.
+	// Reload in-memory under the write lock so concurrent readers via s.config()
+	// see a consistent snapshot.
+	s.configMu.Lock()
 	s.deps.Config.Providers = nil
 	s.deps.Config.Models.Default = config.ModelRef{}
 	s.deps.Config.Provider = nil
+	s.configMu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "needs_setup": true})
 }

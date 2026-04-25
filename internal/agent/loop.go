@@ -409,7 +409,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			if errors.Is(err, context.DeadlineExceeded) {
 				stopReason = "turn_timeout"
 			}
-			_ = a.auditor.Emit(ctx, audit.AuditEvent{
+			_ = a.auditorFn().Emit(ctx, audit.AuditEvent{
 				ID: uuid.New().String(), ScopeID: scope,
 				EventType: "llm_call", Timestamp: llmStart, DurationMs: llmDuration.Milliseconds(),
 				Iteration: i, StopReason: stopReason,
@@ -462,7 +462,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 			_ = a.channel.Send(ctx, errMsg)
 			return
 		}
-		_ = a.auditor.Emit(ctx, audit.AuditEvent{
+		_ = a.auditorFn().Emit(ctx, audit.AuditEvent{
 			ID: uuid.New().String(), ScopeID: scope,
 			EventType: "llm_call", Timestamp: llmStart, DurationMs: llmDuration.Milliseconds(),
 			Model: a.provider.Model(), InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
@@ -739,7 +739,7 @@ func (a *Agent) processMessage(ctx context.Context, msg channel.IncomingMessage)
 					"is_error":     result.IsError,
 				})
 			}
-			_ = a.auditor.Emit(ctx, audit.AuditEvent{
+			_ = a.auditorFn().Emit(ctx, audit.AuditEvent{
 				ID: uuid.New().String(), ScopeID: scope,
 				EventType: "tool_use", Timestamp: toolStart, DurationMs: toolDuration.Milliseconds(),
 				ToolName: tc.Name, ToolOK: !result.IsError, Details: result.Meta,

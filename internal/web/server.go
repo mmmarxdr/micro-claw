@@ -90,12 +90,12 @@ type Server struct {
 	mux         *http.ServeMux
 	wsUpgrader  websocket.Upgrader
 	rateLimiter *ipRateLimiter
-	// configMu guards read-modify-write sequences on s.deps.Config.
-	// Acquired as a full mutex (not RWMutex) because PUT is the only writer
-	// and concurrent GET handlers do an unguarded pointer read that is safe
-	// on 64-bit platforms (pointer swap is atomic). If multiple writers are
-	// added in the future, promote to sync.RWMutex.
-	configMu sync.Mutex
+	// configMu guards all access to s.deps.Config. Readers call config() which
+	// holds RLock and returns a snapshot; writers (handlePutConfig, rotateAuthToken,
+	// setup handlers) hold the full Lock. *s.deps.Config = merged is a multi-word
+	// struct assignment that is NOT atomic — readers observing a torn write would
+	// see a mix of old and new field values, which is a confirmed data race under -race.
+	configMu sync.RWMutex
 
 	// auditorMu guards hot-swaps of s.deps.Auditor. Reads (RLock) happen on
 	// each /ws/logs connection so they must be fast; the only writer is
@@ -128,9 +128,11 @@ func NewServer(deps ServerDeps) *Server {
 	// Auth — protects /api/* and /ws/* endpoints.
 	// Both accessors read from config on every request (INV-1, INV-8): never captured
 	// at startup so token rotation and IssuedAt updates are observed immediately.
+	// s.config() returns a snapshot under RLock so these closures never observe
+	// a torn struct from a concurrent handlePutConfig write.
 	handler = authMiddlewareDynamic(
-		func() string    { return s.deps.Config.Web.AuthToken },
-		func() time.Time { return s.deps.Config.Web.AuthTokenIssuedAt },
+		func() string    { return s.config().Web.AuthToken },
+		func() time.Time { return s.config().Web.AuthTokenIssuedAt },
 		handler,
 	)
 
@@ -213,7 +215,8 @@ func (s *Server) Start() error {
 	// runs, which is the correct behavior for stores that don't support
 	// soft delete.
 	if pruneStore, ok := s.deps.Store.(store.ConvPruneStore); ok {
-		pc := s.deps.Config.Conversations.Prune
+		cfg := s.config()
+		pc := cfg.Conversations.Prune
 		s.convPruner = store.NewConversationPruner(pruneStore, store.SystemClock{},
 			store.PrunerConfig{
 				Enabled:   pc.Enabled,
@@ -224,9 +227,10 @@ func (s *Server) Start() error {
 	}
 
 	go func() {
+		cfg := s.config()
 		var err error
-		if s.deps.Config.Web.TLSCert != "" && s.deps.Config.Web.TLSKey != "" {
-			err = s.srv.ListenAndServeTLS(s.deps.Config.Web.TLSCert, s.deps.Config.Web.TLSKey)
+		if cfg.Web.TLSCert != "" && cfg.Web.TLSKey != "" {
+			err = s.srv.ListenAndServeTLS(cfg.Web.TLSCert, cfg.Web.TLSKey)
 		} else {
 			err = s.srv.ListenAndServe()
 		}
@@ -248,13 +252,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
+// config returns a shallow snapshot of the current server config under RLock.
+// Callers use the returned value for the duration of a single request; they
+// must NOT store the snapshot across requests (it becomes stale on the next PUT).
+//
+// Use this in every read-only handler instead of accessing s.deps.Config.*
+// directly, to avoid observing a torn struct from the multi-word assignment in
+// handlePutConfig.
+func (s *Server) config() config.Config {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return *s.deps.Config
+}
+
 // mediaStore returns the MediaStore if media uploads are enabled, otherwise nil.
 // Callers should check for nil before using the store.
 func (s *Server) mediaStore() store.MediaStore {
 	if s.deps.MediaStore == nil {
 		return nil
 	}
-	if !config.BoolVal(s.deps.Config.Media.Enabled) {
+	if !config.BoolVal(s.config().Media.Enabled) {
 		return nil
 	}
 	return s.deps.MediaStore
@@ -262,7 +279,7 @@ func (s *Server) mediaStore() store.MediaStore {
 
 // routes registers all HTTP routes.
 func (s *Server) routes() {
-	ao := s.deps.Config.Web.AllowedOrigins // alias for readability
+	ao := s.config().Web.AllowedOrigins // alias for readability
 
 	// Setup endpoints — always accessible, bypass auth middleware via authMiddlewareDynamic exemption.
 	s.mux.HandleFunc("GET /api/setup/status", s.handleGetSetupStatus)

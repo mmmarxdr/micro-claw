@@ -90,7 +90,8 @@ func (s *Server) handleAddMCPServer(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-install bundled skill for known MCP recipes.
 	if s.deps.ConfigPath != "" {
-		installRecipeSkill(cfg.Name, s.deps.Config, s.deps.ConfigPath, s.deps.Agent)
+		cfgSnap := s.config()
+		installRecipeSkill(cfg.Name, &cfgSnap, s.deps.ConfigPath, s.deps.Agent)
 	}
 
 	writeJSON(w, http.StatusCreated, cfg)

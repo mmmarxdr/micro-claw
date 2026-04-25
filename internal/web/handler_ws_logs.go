@@ -84,11 +84,22 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	})
 
-	auditor := s.currentAuditor()
-	streamer, ok := auditor.(audit.LogStreamer)
-	if !ok {
+	// resolveStreamer fetches the current auditor under the server's RLock and
+	// type-asserts it to LogStreamer. Returns nil when the active backend does
+	// not support streaming (noop or file auditor). Re-calling on each tick
+	// ensures that after a hot-swap the connection transparently picks up the
+	// new backend — and stops touching the old (closed) one.
+	resolveStreamer := func() audit.LogStreamer {
+		aud := s.CurrentAuditor()
+		ls, _ := aud.(audit.LogStreamer)
+		return ls
+	}
+
+	// Check initial audit backend — report once if streaming is unavailable.
+	initialAud := s.CurrentAuditor()
+	if _, ok := initialAud.(audit.LogStreamer); !ok {
 		var msg string
-		switch auditor.(type) {
+		switch initialAud.(type) {
 		case audit.NoopAuditor:
 			msg = "Audit log is disabled. Set audit.enabled: true in your config (defaults to sqlite, which supports streaming)."
 		default:
@@ -109,21 +120,22 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	recent, err := streamer.RecentEvents(ctx, "", 100)
-	if err != nil {
-		slog.Warn("web: ws/logs initial query error", "error", err)
-	} else {
-		for i := len(recent) - 1; i >= 0; i-- {
-			if err := conn.WriteJSON(auditEventToLogEntry(recent[i])); err != nil {
-				return
+	// Send the last 100 events using the current streamer.
+	var cursorID string
+	if streamer := resolveStreamer(); streamer != nil {
+		recent, err := streamer.RecentEvents(ctx, "", 100)
+		if err != nil {
+			slog.Warn("web: ws/logs initial query error", "error", err)
+		} else {
+			for i := len(recent) - 1; i >= 0; i-- {
+				if err := conn.WriteJSON(auditEventToLogEntry(recent[i])); err != nil {
+					return
+				}
+			}
+			if len(recent) > 0 {
+				cursorID = recent[0].ID // recent[0] is the newest because query is DESC
 			}
 		}
-	}
-
-	// Track cursor: ID of the last event we sent.
-	var cursorID string
-	if len(recent) > 0 {
-		cursorID = recent[0].ID // recent[0] is the newest because query is DESC
 	}
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -154,6 +166,13 @@ func (s *Server) handleLogsWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ticker.C:
+			// Re-fetch the streamer on every tick. If a hot-swap has occurred,
+			// this picks up the new backend and drops the reference to the old
+			// one — making old.Close() safe (no concurrent readers remain).
+			streamer := resolveStreamer()
+			if streamer == nil {
+				continue
+			}
 			events, err := streamer.RecentEvents(ctx, cursorID, 50)
 			if err != nil {
 				slog.Warn("web: ws/logs poll error", "error", err)

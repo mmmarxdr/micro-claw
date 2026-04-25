@@ -400,6 +400,11 @@ func runWebCommand(args []string, cfgPath string) error {
 		IngestWorker:     ragWiring.Worker,
 		RAGMetrics:       ragWiring.Metrics,
 	})
+	// Wire the server's auditor accessor into the agent so that after a
+	// hot-swap (PUT /api/config with audit fields changed) the agent always
+	// emits to the current backend rather than a stale, closed one.
+	ag.WithAuditorAccessor(srv.CurrentAuditor)
+
 	// Ensure hot-added MCP children get cleaned up on shutdown.
 	defer ag.CloseHotMCPServers()
 

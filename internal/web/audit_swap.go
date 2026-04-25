@@ -7,12 +7,11 @@ import (
 	"daimon/internal/config"
 )
 
-// currentAuditor returns the running audit backend under a read lock so
-// concurrent /ws/logs handshakes can read it safely while a config PUT
-// hot-swaps it. Existing connections that already type-asserted the
-// returned interface keep using that snapshot — they are not affected
-// by subsequent swaps.
-func (s *Server) currentAuditor() audit.Auditor {
+// CurrentAuditor returns the running audit backend under a read lock so
+// concurrent callers can read it safely while a config PUT hot-swaps it.
+// It is exported so cmd/daimon/web_cmd.go can pass it as an accessor to
+// agent.Agent.WithAuditorAccessor, eliminating the stale-auditor race.
+func (s *Server) CurrentAuditor() audit.Auditor {
 	s.auditorMu.RLock()
 	defer s.auditorMu.RUnlock()
 	return s.deps.Auditor

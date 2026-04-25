@@ -84,7 +84,7 @@ type Agent struct {
 	provider        provider.Provider
 	store           store.Store
 	outputStore     store.OutputStore // for auto-indexing tool outputs
-	auditor         audit.Auditor
+	auditorFn       func() audit.Auditor
 
 	// tools / skills are protected by toolsMu / skillsMu so the dashboard's
 	// hot-add flow (RegisterMCPServer / ReplaceSkills) can mutate them while
@@ -156,7 +156,7 @@ func New(
 	ch channel.Channel,
 	prov provider.Provider,
 	st store.Store,
-	auditor audit.Auditor,
+	auditor audit.Auditor, // wrapped into a static accessor; use WithAuditorAccessor for hot-swap
 	tools map[string]tool.Tool,
 	skills []skill.SkillContent,
 	skillIndex skill.SkillIndex,
@@ -249,7 +249,7 @@ func New(
 		provider:        prov,
 		store:           st,
 		outputStore:     outputStore,
-		auditor:         auditor,
+		auditorFn:       func() audit.Auditor { return auditor },
 		tools:           tools,
 		mcpToolNames:    map[string][]string{},
 		mcpClients:      map[string]interface{ Close() error }{},
@@ -281,6 +281,15 @@ func New(
 	reg.Register("compact", "Force-compact conversation context", func(cc CommandContext) error {
 		return a.cmdCompact(cc)
 	})
+	return a
+}
+
+// WithAuditorAccessor replaces the static auditor wrapper set by New() with a
+// dynamic accessor. The accessor is called on every Emit — it MUST be
+// goroutine-safe (e.g. reading under an RLock). Use this when the auditor can
+// be hot-swapped at runtime so the agent always emits to the current backend.
+func (a *Agent) WithAuditorAccessor(fn func() audit.Auditor) *Agent {
+	a.auditorFn = fn
 	return a
 }
 

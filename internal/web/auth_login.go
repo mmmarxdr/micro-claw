@@ -29,7 +29,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expected := s.deps.Config.Web.AuthToken
+	cfg := s.config()
+	expected := cfg.Web.AuthToken
 
 	// Pre-setup mode: no token exists, cannot authenticate.
 	if expected == "" {
@@ -45,7 +46,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// FR-56: DO NOT update AuthTokenIssuedAt on login — only rotation resets it.
-	setAuthCookie(w, r, &s.deps.Config.Web, expected)
+	setAuthCookie(w, r, &cfg.Web, expected)
 	slog.Info("login successful")
 	w.WriteHeader(http.StatusNoContent)
 }

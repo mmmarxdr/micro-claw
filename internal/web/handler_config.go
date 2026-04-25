@@ -106,7 +106,7 @@ const maxPutBodySize = 64 * 1024
 
 // handleGetConfig returns the current config with all sensitive fields masked.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	cfg := *s.deps.Config // shallow copy
+	cfg := s.config() // snapshot under RLock — avoids torn struct from concurrent PUT
 
 	// Mask all provider api_keys in the v2 Providers map.
 	if cfg.Providers != nil {
@@ -185,210 +185,228 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 
 	cfgPath := s.deps.ConfigPath
 
-	// Guard the read-copy-validate-write sequence.
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
+	// The write lock must be released before calling handleGetConfig (which calls
+	// s.config() → RLock). RWMutex is not reentrant; holding the write lock and
+	// then acquiring RLock on the same goroutine deadlocks. The closure below
+	// encapsulates the entire locked section; defer Unlock() is safe here because
+	// the closure returns before the lock-free work begins.
+	var auditChanged bool
+	var badReqErr error
+	var internalErr error
 
-	// Deep-copy current config — never mutate the shared struct.
-	merged := *s.deps.Config
-	merged.Providers = deepCopyProviders(s.deps.Config.Providers)
+	func() {
+		s.configMu.Lock()
+		defer s.configMu.Unlock()
 
-	// Merge body.Providers (field-level: empty string = preserve existing).
-	if patch.Providers != nil {
-		if merged.Providers == nil {
-			merged.Providers = make(map[string]config.ProviderCredentials)
-		}
-		for name, creds := range patch.Providers {
-			existing := merged.Providers[name]
-			if creds.APIKey != "" {
-				existing.APIKey = creds.APIKey
+		// Deep-copy current config — never mutate the shared struct.
+		merged := *s.deps.Config
+		merged.Providers = deepCopyProviders(s.deps.Config.Providers)
+
+		// Merge body.Providers (field-level: empty string = preserve existing).
+		if patch.Providers != nil {
+			if merged.Providers == nil {
+				merged.Providers = make(map[string]config.ProviderCredentials)
 			}
-			if creds.BaseURL != "" {
-				existing.BaseURL = creds.BaseURL
+			for name, creds := range patch.Providers {
+				existing := merged.Providers[name]
+				if creds.APIKey != "" {
+					existing.APIKey = creds.APIKey
+				}
+				if creds.BaseURL != "" {
+					existing.BaseURL = creds.BaseURL
+				}
+				merged.Providers[name] = existing
 			}
-			merged.Providers[name] = existing
 		}
-	}
 
-	// Merge body.Models (non-empty fields only).
-	if patch.Models != nil {
-		if patch.Models.Default.Provider != "" {
-			merged.Models.Default.Provider = patch.Models.Default.Provider
+		// Merge body.Models (non-empty fields only).
+		if patch.Models != nil {
+			if patch.Models.Default.Provider != "" {
+				merged.Models.Default.Provider = patch.Models.Default.Provider
+			}
+			if patch.Models.Default.Model != "" {
+				merged.Models.Default.Model = patch.Models.Default.Model
+			}
 		}
-		if patch.Models.Default.Model != "" {
-			merged.Models.Default.Model = patch.Models.Default.Model
-		}
-	}
 
-	// Merge body.Tools (subtree-level: a present subtree fully replaces the
-	// stored one; absent subtrees — and web_fetch / mcp — are preserved).
-	if patch.Tools != nil {
-		if patch.Tools.Shell != nil {
-			merged.Tools.Shell = *patch.Tools.Shell
+		// Merge body.Tools (subtree-level: a present subtree fully replaces the
+		// stored one; absent subtrees — and web_fetch / mcp — are preserved).
+		if patch.Tools != nil {
+			if patch.Tools.Shell != nil {
+				merged.Tools.Shell = *patch.Tools.Shell
+			}
+			if patch.Tools.File != nil {
+				merged.Tools.File = *patch.Tools.File
+			}
+			if patch.Tools.HTTP != nil {
+				merged.Tools.HTTP = *patch.Tools.HTTP
+			}
 		}
-		if patch.Tools.File != nil {
-			merged.Tools.File = *patch.Tools.File
-		}
-		if patch.Tools.HTTP != nil {
-			merged.Tools.HTTP = *patch.Tools.HTTP
-		}
-	}
 
-	// Merge body.RAG. Embedding subtree replaces wholesale when present;
-	// missing fields (e.g. user didn't fill in api_key) are preserved from the
-	// stored config so re-saving from a partially-loaded form doesn't blank out
-	// secrets the UI never sees.
-	if patch.RAG != nil && patch.RAG.Embedding != nil {
-		newEmb := *patch.RAG.Embedding
-		stored := merged.RAG.Embedding
-		if newEmb.APIKey == "" {
-			newEmb.APIKey = stored.APIKey
+		// Merge body.RAG. Embedding subtree replaces wholesale when present;
+		// missing fields (e.g. user didn't fill in api_key) are preserved from the
+		// stored config so re-saving from a partially-loaded form doesn't blank out
+		// secrets the UI never sees.
+		if patch.RAG != nil && patch.RAG.Embedding != nil {
+			newEmb := *patch.RAG.Embedding
+			stored := merged.RAG.Embedding
+			if newEmb.APIKey == "" {
+				newEmb.APIKey = stored.APIKey
+			}
+			if newEmb.BaseURL == "" {
+				newEmb.BaseURL = stored.BaseURL
+			}
+			merged.RAG.Embedding = newEmb
 		}
-		if newEmb.BaseURL == "" {
-			newEmb.BaseURL = stored.BaseURL
-		}
-		merged.RAG.Embedding = newEmb
-	}
 
-	// Merge body.RAG.Retrieval field-by-field so that a partial PUT (e.g. only
-	// min_cosine_score) does not reset sibling fields to zero. Each field is
-	// only overwritten when the patch sends a non-zero value. Since zero is also
-	// a valid "disabled" sentinel for all three fields, we decode Retrieval as a
-	// pointer-to-struct so we can detect "sent vs absent" at the struct level.
-	// Within the struct we merge field-by-field because JSON has no nil for
-	// non-pointer scalars: a sent zero is indistinguishable from an absent field.
-	// Callers that want to reset a field to zero must omit the whole retrieval
-	// sub-tree and rely on the stored value already being zero.
-	if patch.RAG != nil && patch.RAG.Retrieval != nil {
-		p := *patch.RAG.Retrieval
-		if p.NeighborRadius != 0 {
-			merged.RAG.Retrieval.NeighborRadius = p.NeighborRadius
+		// Merge body.RAG.Retrieval field-by-field so that a partial PUT (e.g. only
+		// min_cosine_score) does not reset sibling fields to zero. Each field is
+		// only overwritten when the patch sends a non-zero value. Since zero is also
+		// a valid "disabled" sentinel for all three fields, we decode Retrieval as a
+		// pointer-to-struct so we can detect "sent vs absent" at the struct level.
+		// Within the struct we merge field-by-field because JSON has no nil for
+		// non-pointer scalars: a sent zero is indistinguishable from an absent field.
+		// Callers that want to reset a field to zero must omit the whole retrieval
+		// sub-tree and rely on the stored value already being zero.
+		if patch.RAG != nil && patch.RAG.Retrieval != nil {
+			p := *patch.RAG.Retrieval
+			if p.NeighborRadius != 0 {
+				merged.RAG.Retrieval.NeighborRadius = p.NeighborRadius
+			}
+			if p.MaxBM25Score != 0 {
+				merged.RAG.Retrieval.MaxBM25Score = p.MaxBM25Score
+			}
+			if p.MinCosineScore != 0 {
+				merged.RAG.Retrieval.MinCosineScore = p.MinCosineScore
+			}
 		}
-		if p.MaxBM25Score != 0 {
-			merged.RAG.Retrieval.MaxBM25Score = p.MaxBM25Score
-		}
-		if p.MinCosineScore != 0 {
-			merged.RAG.Retrieval.MinCosineScore = p.MinCosineScore
-		}
-	}
 
-	// Merge body.RAG.Hyde field-by-field so that a partial PUT does not reset
-	// sibling fields to zero. Enabled uses *bool so absent key preserves the
-	// stored value; all other fields use zero as the "absent" sentinel.
-	if patch.RAG != nil && patch.RAG.Hyde != nil {
-		p := *patch.RAG.Hyde
-		if p.Enabled != nil {
-			merged.RAG.Hyde.Enabled = *p.Enabled
+		// Merge body.RAG.Hyde field-by-field so that a partial PUT does not reset
+		// sibling fields to zero. Enabled uses *bool so absent key preserves the
+		// stored value; all other fields use zero as the "absent" sentinel.
+		if patch.RAG != nil && patch.RAG.Hyde != nil {
+			p := *patch.RAG.Hyde
+			if p.Enabled != nil {
+				merged.RAG.Hyde.Enabled = *p.Enabled
+			}
+			if p.Model != "" {
+				merged.RAG.Hyde.Model = p.Model
+			}
+			if p.HypothesisTimeout != 0 {
+				merged.RAG.Hyde.HypothesisTimeout = p.HypothesisTimeout
+			}
+			if p.QueryWeight != 0 {
+				merged.RAG.Hyde.QueryWeight = p.QueryWeight
+			}
+			if p.MaxCandidates != 0 {
+				merged.RAG.Hyde.MaxCandidates = p.MaxCandidates
+			}
 		}
-		if p.Model != "" {
-			merged.RAG.Hyde.Model = p.Model
-		}
-		if p.HypothesisTimeout != 0 {
-			merged.RAG.Hyde.HypothesisTimeout = p.HypothesisTimeout
-		}
-		if p.QueryWeight != 0 {
-			merged.RAG.Hyde.QueryWeight = p.QueryWeight
-		}
-		if p.MaxCandidates != 0 {
-			merged.RAG.Hyde.MaxCandidates = p.MaxCandidates
-		}
-	}
 
-	// Merge body.RAG.Metrics field-by-field. Enabled uses bool (zero = false),
-	// so we only overwrite when the patch struct pointer is non-nil.
-	// BufferSize uses zero as the "absent" sentinel — only overwrite when non-zero.
-	if patch.RAG != nil && patch.RAG.Metrics != nil {
-		p := *patch.RAG.Metrics
-		// For Metrics.Enabled: always copy the sent value (pointer-nil check
-		// at struct level ensures the key was actually sent).
-		merged.RAG.Metrics.Enabled = p.Enabled
-		if p.BufferSize != 0 {
-			merged.RAG.Metrics.BufferSize = p.BufferSize
+		// Merge body.RAG.Metrics field-by-field. Enabled uses bool (zero = false),
+		// so we only overwrite when the patch struct pointer is non-nil.
+		// BufferSize uses zero as the "absent" sentinel — only overwrite when non-zero.
+		if patch.RAG != nil && patch.RAG.Metrics != nil {
+			p := *patch.RAG.Metrics
+			// For Metrics.Enabled: always copy the sent value (pointer-nil check
+			// at struct level ensures the key was actually sent).
+			merged.RAG.Metrics.Enabled = p.Enabled
+			if p.BufferSize != 0 {
+				merged.RAG.Metrics.BufferSize = p.BufferSize
+			}
 		}
-	}
 
-	// Merge body.Conversations.Prune field-by-field. Enabled uses a *bool so
-	// that "user explicitly sent false" is respected; the other numeric
-	// fields use zero-as-absent (ApplyDefaults re-clamps after).
-	if patch.Conversations != nil && patch.Conversations.Prune != nil {
-		p := *patch.Conversations.Prune
-		if p.Enabled != nil {
-			merged.Conversations.Prune.Enabled = *p.Enabled
+		// Merge body.Conversations.Prune field-by-field. Enabled uses a *bool so
+		// that "user explicitly sent false" is respected; the other numeric
+		// fields use zero-as-absent (ApplyDefaults re-clamps after).
+		if patch.Conversations != nil && patch.Conversations.Prune != nil {
+			p := *patch.Conversations.Prune
+			if p.Enabled != nil {
+				merged.Conversations.Prune.Enabled = *p.Enabled
+			}
+			if p.RetentionDays != 0 {
+				merged.Conversations.Prune.RetentionDays = p.RetentionDays
+			}
+			if p.IntervalHours != 0 {
+				merged.Conversations.Prune.IntervalHours = p.IntervalHours
+			}
 		}
-		if p.RetentionDays != 0 {
-			merged.Conversations.Prune.RetentionDays = p.RetentionDays
-		}
-		if p.IntervalHours != 0 {
-			merged.Conversations.Prune.IntervalHours = p.IntervalHours
-		}
-	}
 
-	// Merge body.AI.TitleGeneration field-by-field. Enabled *bool per above;
-	// Model is a string where "" means "absent" (not "explicitly clear") —
-	// clearing the model override is not a UI concern in v1.
-	if patch.AI != nil && patch.AI.TitleGeneration != nil {
-		p := *patch.AI.TitleGeneration
-		if p.Enabled != nil {
-			merged.AI.TitleGeneration.Enabled = *p.Enabled
+		// Merge body.AI.TitleGeneration field-by-field. Enabled *bool per above;
+		// Model is a string where "" means "absent" (not "explicitly clear") —
+		// clearing the model override is not a UI concern in v1.
+		if patch.AI != nil && patch.AI.TitleGeneration != nil {
+			p := *patch.AI.TitleGeneration
+			if p.Enabled != nil {
+				merged.AI.TitleGeneration.Enabled = *p.Enabled
+			}
+			if p.Model != "" {
+				merged.AI.TitleGeneration.Model = p.Model
+			}
+			if p.WorkerCount != 0 {
+				merged.AI.TitleGeneration.WorkerCount = p.WorkerCount
+			}
+			if p.QueueSize != 0 {
+				merged.AI.TitleGeneration.QueueSize = p.QueueSize
+			}
+			if p.CallTimeoutMS != 0 {
+				merged.AI.TitleGeneration.CallTimeoutMS = p.CallTimeoutMS
+			}
 		}
-		if p.Model != "" {
-			merged.AI.TitleGeneration.Model = p.Model
-		}
-		if p.WorkerCount != 0 {
-			merged.AI.TitleGeneration.WorkerCount = p.WorkerCount
-		}
-		if p.QueueSize != 0 {
-			merged.AI.TitleGeneration.QueueSize = p.QueueSize
-		}
-		if p.CallTimeoutMS != 0 {
-			merged.AI.TitleGeneration.CallTimeoutMS = p.CallTimeoutMS
-		}
-	}
 
-	// Merge body.Audit field-by-field. Enabled uses *bool so absent key
-	// preserves the stored value; Type and Path use "" as the absent sentinel.
-	// auditChanged tracks whether any audit field was patched so the in-flight
-	// audit backend can be hot-swapped after the merge — see rebuildAuditor.
-	auditChanged := false
-	if patch.Audit != nil {
-		p := *patch.Audit
-		if p.Enabled != nil {
-			merged.Audit.Enabled = p.Enabled
-			auditChanged = true
+		// Merge body.Audit field-by-field. Enabled uses *bool so absent key
+		// preserves the stored value; Type and Path use "" as the absent sentinel.
+		// auditChanged tracks whether any audit field was patched so the in-flight
+		// audit backend can be hot-swapped after the lock is released.
+		if patch.Audit != nil {
+			p := *patch.Audit
+			if p.Enabled != nil {
+				merged.Audit.Enabled = p.Enabled
+				auditChanged = true
+			}
+			if p.Type != "" {
+				merged.Audit.Type = p.Type
+				auditChanged = true
+			}
+			if p.Path != "" {
+				merged.Audit.Path = p.Path
+				auditChanged = true
+			}
 		}
-		if p.Type != "" {
-			merged.Audit.Type = p.Type
-			auditChanged = true
-		}
-		if p.Path != "" {
-			merged.Audit.Path = p.Path
-			auditChanged = true
-		}
-	}
 
-	// Validate active provider has credentials.
-	if err := validateActiveCredentials(merged); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// Validate active provider has credentials.
+		if err := validateActiveCredentials(merged); err != nil {
+			badReqErr = err
+			return
+		}
+
+		// Write to disk atomically (config path may be empty in tests — skip if so).
+		if cfgPath != "" {
+			if err := config.AtomicWriteConfig(cfgPath, &merged); err != nil {
+				internalErr = err
+				return
+			}
+		}
+
+		// Swap in-memory config.
+		*s.deps.Config = merged
+	}()
+
+	if badReqErr != nil {
+		writeError(w, http.StatusBadRequest, badReqErr.Error())
+		return
+	}
+	if internalErr != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", internalErr))
 		return
 	}
 
-	// Write to disk atomically (config path may be empty in tests — skip if so).
-	if cfgPath != "" {
-		if err := config.AtomicWriteConfig(cfgPath, &merged); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to write config: %v", err))
-			return
-		}
-	}
-
-	// Swap in-memory config.
-	*s.deps.Config = merged
-
-	// Hot-swap the audit backend so changes take effect without a daemon
-	// restart. Done outside the configMu critical section but after the
-	// in-memory config is updated, so any concurrent /ws/logs handshake
-	// reads the new auditor.
+	// Hot-swap the audit backend so changes take effect without a daemon restart.
+	// Pass a snapshot taken under RLock — rebuildAuditor reads cfg.Audit.* directly
+	// and would race with a concurrent PUT writing *s.deps.Config otherwise.
 	if auditChanged {
-		s.rebuildAuditor(s.deps.Config)
+		snap := s.config()
+		s.rebuildAuditor(&snap)
 	}
 
 	// Respond with the masked GET body (same shape as GET /api/config).

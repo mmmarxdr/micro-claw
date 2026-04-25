@@ -31,7 +31,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Clear the browser's auth cookie. The new token is already on disk and in
 	// memory, so the old cookie is now invalid regardless of whether the browser
 	// honours Max-Age=0.
-	clearAuthCookie(w, r, &s.deps.Config.Web)
+	cfg := s.config()
+	clearAuthCookie(w, r, &cfg.Web)
 	slog.Info("logout successful: token rotated, cookie cleared")
 	w.WriteHeader(http.StatusNoContent)
 }
