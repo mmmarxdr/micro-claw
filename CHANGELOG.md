@@ -6,6 +6,52 @@ Releases follow [semver](https://semver.org). Pre-1.0 minors may break configura
 
 ---
 
+## [v0.10.1] — Frontend catch-up + audit/config race fixes
+
+**Release date**: 2026-04-30
+
+A patch release with two motivations:
+
+1. **The v0.10.0 release shipped the backend endpoints documented below
+   (system pulse, audit hot-swap, sidebar telemetry, audit-from-Settings)
+   but the embedded frontend bundle was still v0.8.0 and could not
+   consume them.** Users running `daimon update` saw a stale UI. v0.10.1
+   ships frontend v0.9.0 so the v0.10.0 UI is finally visible.
+2. Two CRITICAL data races surfaced by an internal review on v0.10.0
+   are closed.
+
+### Fixed
+
+- **Audit hot-swap data race.** The agent and `/ws/logs` held the
+  previous auditor after `PUT /api/config` swapped the backend, so a
+  `Close()` on the old one could fire concurrent with reads. The agent
+  now resolves the auditor through an accessor callback (`auditorFn`)
+  read under `auditorMu.RLock` on every `Emit`. WS logs re-resolves via
+  `s.CurrentAuditor()` on each 2s poll tick.
+- **Config snapshot torn-read.** `*s.deps.Config = merged` is a
+  non-atomic struct assignment; readers without a lock could observe
+  partially updated state. `configMu` is now `sync.RWMutex` and every
+  reader takes a snapshot via `s.config()`. `handlePutConfig` releases
+  the write lock before `rebuildAuditor` and `handleGetConfig` to avoid
+  the non-reentrant RWMutex deadlock.
+- **Embedded frontend bundle** updated to daimon-frontend v0.9.0. The
+  v0.10.0 features that shipped backend-only — sidebar telemetry,
+  system pulse panel, audit toggle in Settings, LogsPage/ToolsPage
+  Liminal redesigns, empty states, sidebar version footer — are now
+  reachable from the dashboard.
+
+### New
+
+- **Chat dock mini-player** (`daimon-frontend` PR #2 by
+  `@mauroasoriano22`). When you navigate away from `/chat`, the chat
+  compresses into a small dock anchored to the bottom-right corner.
+  Click to expand back to fullscreen; X to dismiss. Dismissal persists
+  in `localStorage` until you revisit `/chat`. The WebSocket and turn
+  state stay alive across navigation, so a long-running turn is no
+  longer killed when you peek at Memory or Settings.
+
+---
+
 ## [v0.10.0] — Audit hot-swap, system pulse, full Liminal coverage
 
 **Release date**: 2026-04-25
